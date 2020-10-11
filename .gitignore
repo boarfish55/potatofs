@@ -1,0 +1,7 @@
+.vimtags
+*.gdb
+*.o
+potatofs
+potatoctl
+potatofs_tests
+.deps

@@ -1,0 +1,79 @@
+DISCLAIMER
+==========
+This is a work in progress. The best you can currently expect from this
+filesystem is to cause performance degradation and possible data corruption.
+Do not use to store anything you're not willing to lose!
+
+OVERVIEW
+========
+PotatoFS is a FUSE filesystem implementation that aims to to store data on
+high-lacency backends, for instance one of the many cloud storage options.
+It then uses local, lower-lacenty storage to cache data and perform I/O
+operations on portions of cached data.
+
+There are a few major goals PotatoFS is trying to achieve:
+
+  1) Backend agnosticism:
+
+     PotatoFS invokes external commands in order to retrieve or store
+     data to the high-latency backends.
+
+  2) Avoid reimplementing encryption and compression:
+
+     PotatoFS should rely on external commands to compress and/or
+     encrypt data before sending it to the backends. If local encryption
+     is desired, it should be done at another layer, e.g. LUKS, or a
+     stackable filesystem.
+
+  3) As a stretch goal, concurrent mounting:
+
+     Multiple instances of PotatoFS should be able to mount the filesystem
+     concurrently while preserving consistency. This would be achieved by
+     having the PotatoFS instances communicate with one another.
+
+Non-goals:
+
+  1) Portability. Though I would like this to work on all BSDs, there is
+     a dependency on low-level FUSE, which not all BSDs support. We
+     currently don't care about endianness. On-disk format is
+     platform-dependant. Maybe one day we'll care and do all the
+     byte-swapping, though it's unsure how that would affect performance.
+
+  2) Find a cool unique name. Finding a free 5-letter acronym ending in
+     "-FS" is next to impossible these days:
+
+     So meet PotatoFS. Potatoes are nourishing and can easily complement
+     a wide variety of dishes.
+
+
+Author: Pascal Lalonde <plalonde@overnet.ca>
+
+See the COPYING file for licensing information.
+
+
+DESIGN NOTES
+============
+We should be able to use FUSE multithreading and splicing, however no
+writeback since we plan on allowing multiple writers, eventually.
+See: https://marc.info/?l=fuse-devel&m=150640983731277&w=2
+
+	"This mode assumes that all changes to the filesystem go through the
+	FUSE kernel module (size and atime/ctime/mtime attributes are kept
+	up-to-date by the kernel), so it's generally not suitable for network
+	filesystems."
+
+Currently the filesystem uses O_SYNC for directory data and inode tables.
+Maybe one day we can add journaling or soft updates.
+
+Inode struct is 4K. The reasoning behind this is that since we expect the
+backend to be *really* slow, we want to get the most of our fetching slabs.
+With the default values, inode tables can store 2048 inodes, and their first
+~4K of data is stored directly in the inode, meaning small directories and
+small files require no further download from the backend. This should make
+directory listing and things like 'head' or 'file', or 'grep' on small text
+files to proceed quickly enough. Doing a bit of stats on my own home
+directory, a large majority of files are under 4K in size.
+
+Directory entries are currently a fixed size, with 255 bytes reserved for
+file names. This is no ideal, and someday I might go back and handle
+variable-sized records for filenames.
