@@ -20,11 +20,20 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#define PROGNAME     "PotatoFS"
+#define MGR_PROGNAME "potatomgr"
+
 #define SLAB_VERSION 1
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
 #define COUNTERS_FILE_NAME        "counters"
+#define MGR_DEFAULT_CONFIG_PATH   "/etc/potatofs/mgr.conf"
+#define MGR_DEFAULT_PIDFILE_PATH  "/var/potatofs/potatomgr.pid"
+#define MGR_DEFAULT_SOCKET_PATH   "/var/potatofs/potatomgr.sock"
+#define MGR_DEFAULT_UNPRIV_USER   "potatomgr"
+#define MGR_DEFAULT_UNPRIV_GROUP  "potatomgr"
+#define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/mgr.pl"
 
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"

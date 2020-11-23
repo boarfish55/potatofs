@@ -50,6 +50,10 @@ Author: Pascal Lalonde <plalonde@overnet.ca>
 
 See the COPYING file for licensing information.
 
+Dependencies / license:
+- libuuid (BSD-3)
+- libfuse (LGPL-2)
+
 
 DESIGN NOTES
 ============

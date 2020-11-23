@@ -29,6 +29,7 @@
 #include "fs_info.h"
 #include "inodes.h"
 #include "exlog.h"
+#include "mgr.h"
 #include "slabs.h"
 
 extern char datadir[];
@@ -148,28 +149,80 @@ slab_realloc(struct oslab *b, struct exlog_err *e)
 /*
  * Disown must be called when no other thread is able to lookup
  * the slab. Essentially, when the slab isn't referenced in owned_slabs,
- * when destroying the slab tree.
+ * or when destroying the slab tree.
  */
 static void
 slab_disown(struct oslab *b)
 {
-	if (b->fd != -1 && close(b->fd) == -1) {
-		fs_info_set_error();
-		exlog_lerrno(LOG_ERR, errno, __func__);
-	}
-	LK_LOCK_DESTROY(&b->lock);
-	LK_LOCK_DESTROY(&b->bytes_lock);
-	free(b);
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	int              mgr = -1;
+	struct mgr_msg   m;
+	struct timespec  tp = {1, 0};
 
-	// TODO: tell the slab manager that we're releasing
-	// this slab.
+	if (b->fd != -1) {
+		exlog(LOG_ERR, "%s: fd is -1", __func__);
+		fs_info_set_error();
+		return;
+	}
+
+	for (;;) {
+		if ((mgr = mgr_connect(&e)) == -1) {
+			exlog_lerr(LOG_ERR, &e, __func__);
+			goto fail;
+		}
+
+		m.m = MGR_MSG_DISOWN;
+		m.ino = b->ino;
+		m.offset = b->base;
+		m.flags = b->hdr.v.f.flags;
+		m.oflags = b->oflags;
+
+		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			goto fail;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			goto fail;
+		}
+
+		if (m.m != MGR_MSG_DISOWN_OK) {
+			exlog(LOG_ERR, "%s: bad manager response: %d",
+			    __func__, m.m);
+			goto fail;
+		} else if (m.flags != b->hdr.v.f.flags || m.ino != b->ino ||
+		    m.offset != b->base) {
+			exlog(LOG_ERR, "%s: bad manager response; "
+			    "offset expected=%lu, received=%lu",
+			    "ino expected=%lu, received=%lu",
+			    __func__, b->base, m.offset, b->ino, m.ino);
+			goto fail;
+		}
+
+		close(mgr);
+		LK_LOCK_DESTROY(&b->lock);
+		LK_LOCK_DESTROY(&b->bytes_lock);
+		free(b);
+		return;
+fail:
+		/*
+		 * Disowning is important and hard to recover from
+		 * in case of failure. Loop until things recover,
+		 * or until an external action is taken.
+		 */
+		if (mgr != -1)
+			close(mgr);
+		fs_info_set_error();
+		nanosleep(&tp, NULL);
+	}
 }
 
 static void *
 slab_purge(void *unused)
 {
 	struct oslab    *b, *b2;
-	struct timespec now, t = {10, 0};
+	struct timespec  now, t = {10, 0};
 
 	while (!owned_slabs.do_shutdown) {
 		for (;;) {
@@ -277,7 +330,7 @@ slab_startup(size_t slab_size, uint64_t cachesize, uint32_t max_age,
 
 	/*
 	 * Keep a few descriptors for other things, such as the
-	 * stats FIFO, communication with the potatomgr, the fuse channel,
+	 * stats FIFO, communication with the mgr, the fuse channel,
 	 * syslog. It seems like FUSE is using a few FIFOs under the hood
 	 * too.
 	 */
@@ -495,14 +548,14 @@ struct oslab *
 slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
     struct exlog_err *e)
 {
-	char             path[PATH_MAX];
 	struct oslab    *b, needle;
 	struct oslab    *purged;
 	struct stat      st;
 	int              fd;
-	uint32_t         fd_flags;
 	ino_t            base;
 	struct timespec  t = {5, 0};
+	int              mgr = -1;
+	struct mgr_msg   m;
 
 	if (flags != 0 && flags != SLAB_ITBL) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
@@ -534,7 +587,8 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		if (b->hdr.v.f.flags & SLAB_REMOVED) {
 			if (slab_realloc(b, e) == -1) {
 				LK_UNLOCK(&b->lock);
-				goto fail;
+				b = NULL;
+				goto end;
 			}
 		}
 		LK_UNLOCK(&b->lock);
@@ -544,67 +598,61 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		goto end;
 	}
 
-	// TODO: this is where we'll ask the slab manager to make the slab
-	// available to us. We'll request, then wait for completion from
-	// the slab manager, then inform it that we claimed it.
-	// In the context of multiple nodes, the slab manager will handle
-	// the claim of ownership. Once we do that, this function
-	// should never O_CREAT a file.
-
-	if (slab_path(path, sizeof(path), ino, offset, flags, e) == -1)
-		return NULL;
-
-	fd_flags = O_RDWR;
-	if (oflags & OSLAB_SYNC)
-		fd_flags |= O_SYNC;
-	if (oflags & OSLAB_NOCREATE) {
-		if ((fd = open(path, fd_flags, 0600)) == -1) {
-			if (errno == ENOENT)
-				exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
-				    "%s: no such slab", __func__);
-			else
-				exlog_errf(e, EXLOG_OS, errno, "%s: failed "
-				    "to load slab %s", __func__, path);
-			goto end;
-		}
-	} else {
-		fd_flags |= O_CREAT;
-		if ((fd = open(path, fd_flags, 0600)) == -1) {
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: failed to load slab %s", __func__, path);
-			goto end;
-		}
-	}
-
-	if (flock(fd, LOCK_EX) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: failed to flock() slab %s", __func__, path);
-		goto fail;
-	}
-
 	if ((b = malloc(sizeof(struct oslab))) == NULL) {
 		exlog_errf(e, EXLOG_OS, errno, __func__);
-		goto fail;
+		goto end;
 	}
 
 	if (clock_gettime(CLOCK_MONOTONIC, &b->open_since) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: failed to set 'open_since' on slab");
-		goto fail;
+		goto fail_free_b;
 	}
 
-	b->fd = fd;
 	b->oflags = oflags;
 
 	if (LK_LOCK_INIT(&b->bytes_lock, e) == -1)
-		goto fail2;
+		goto fail_free_b;
 	if (LK_LOCK_INIT(&b->lock, e) == -1)
-		goto fail;
+		goto fail_destroy_bytes_lock;
 
+	if ((mgr = mgr_connect(e)) == -1)
+		goto fail_destroy_locks;
+
+	m.m = MGR_MSG_CLAIM;
+	m.ino = ino;
+	m.offset = offset;
+	m.flags = flags;
+	m.oflags = oflags;
+
+	if (mgr_send(mgr, -1, &m, e) == -1)
+		goto fail_destroy_locks;
+
+	if (mgr_recv(mgr, &fd, &m, e) == -1)
+		goto fail_destroy_locks;
+
+	if (m.m != MGR_MSG_CLAIM_OK) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
+		    "%s: bad manager response", __func__);
+		goto fail_destroy_locks;
+	} else if (m.offset != offset || m.ino != ino) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
+		    "%s: bad manager response; "
+		    "base expected=%lu, received=%lu",
+		    "ino expected=%lu, received=%lu",
+		    offset, m.offset, ino, m.ino, __func__);
+		goto fail_destroy_locks;
+	} else if (fd == -1) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
+		    "%s: bad manager response; fd is -1", __func__);
+		goto fail_destroy_locks;
+	}
+
+	b->fd = fd;
 	if (fstat(fd, &st) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: failed to fstat() slab %s", __func__, path);
-		goto fail;
+		    "%s: failed to fstat() slab", __func__);
+		goto fail_disown;
 	}
 
 	b->dirty = 0;
@@ -615,12 +663,12 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		b->hdr.v.f.flags = flags;
 		b->hdr.v.f.revision = 1;
 		if (slab_write_hdr(b, e) == -1)
-			goto fail;
+			goto fail_disown;
 	} else {
 		LK_WRLOCK(&b->lock);
 		if (slab_read_hdr(b, e) == -1) {
 			LK_UNLOCK(&b->lock);
-			goto fail;
+			goto fail_disown;
 		}
 		if (b->hdr.v.f.flags & SLAB_REMOVED) {
 			if (oflags & OSLAB_NOCREATE) {
@@ -629,11 +677,11 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 				    "%s: slab was removed and "
 				    "PSLAB_NOCREATE is set",
 				    __func__);
-				goto fail;
+				goto fail_disown;
 			}
 			if (slab_realloc(b, e) == -1) {
 				LK_UNLOCK(&b->lock);
-				goto fail;
+				goto fail_disown;
 			}
 		}
 		LK_UNLOCK(&b->lock);
@@ -647,9 +695,7 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	if (SPLAY_INSERT(slab_tree, &owned_slabs.head, b) != NULL) {
 		/* We're in a pretty bad situation here, let's disown. */
 		exlog_errf(e, EXLOG_OS, errno, __func__);
-		slab_disown(b);
-		b = NULL;
-		goto end;
+		goto fail_disown;
 	}
 	if (flags & SLAB_ITBL)
 		TAILQ_INSERT_TAIL(&owned_slabs.itbl_head, b, itbl_entry);
@@ -679,20 +725,23 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		}
 	}
 
-	// TODO: tell the slab manager that we've successfully opened
-	//       the slab.
-
 	goto end;
-fail:
+fail_disown:
+	slab_disown(b);
+	b = NULL;
+	goto end;
+fail_destroy_locks:
+	LK_LOCK_DESTROY(&b->lock);
+fail_destroy_bytes_lock:
 	LK_LOCK_DESTROY(&b->bytes_lock);
-fail2:
-	if (fd != -1)
-		close(fd);
+fail_free_b:
 	if (b != NULL) {
 		free(b);
 		b = NULL;
 	}
 end:
+	if (mgr != -1)
+		close(mgr);
 	MTX_UNLOCK(&owned_slabs.lock);
 	return b;
 }

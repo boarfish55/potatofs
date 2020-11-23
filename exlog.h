@@ -43,7 +43,10 @@ enum exlog_cerrcode {
 	EXLOG_ENAMETOOLONG, /* File name too long */
 	EXLOG_EBADF,        /* Bad file descriptor, or conflicting
 			       open flags */
-	EXLOG_EOVERFLOW     /* Variable size overflow */
+	EXLOG_EOVERFLOW,    /* Variable size overflow */
+	EXLOG_ESHORTIO,     /* Data sent or received is shorter than expected */
+	EXLOG_EMGR          /* Issue arised during communication with
+	                       slab manager */
 };
 
 #define EXLOG_INODE 0x0001

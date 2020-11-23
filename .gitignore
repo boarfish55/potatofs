@@ -4,4 +4,6 @@
 potatofs
 potatoctl
 potatofs_tests
+potatomgr
+mgr.pl
 .deps

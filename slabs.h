@@ -118,7 +118,7 @@ struct oslab {
 	rwlk               lock;
 
 	/* Set to 1 if we have non-fsync()'d data */
-	int                         dirty;
+	int                dirty;
 
 	struct slab_hdr    hdr;
 

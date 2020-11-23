@@ -30,11 +30,12 @@
 #include <limits.h>
 #include <stdio.h>
 #include "counters.h"
+#include "dirinodes.h"
+#include "exlog.h"
 #include "fs_info.h"
 #include "inodes.h"
-#include "dirinodes.h"
+#include "mgr.h"
 #include "openfiles.h"
-#include "exlog.h"
 
 struct fs_config {
 	uid_t       uid;
@@ -47,6 +48,7 @@ struct fs_config {
 	int         foreground;
 	const char *data_path;
 	int         noatime;
+	const char *mgr_path;
 } fs_config = {
 	0,                           /* uid */
 	0,                           /* gid */
@@ -57,7 +59,8 @@ struct fs_config {
 	SLAB_SIZE_DEFAULT,           /* slab_size */
 	0,                           /* foreground */
 	FS_DEFAULT_DATA_PATH,        /* data_path */
-	0                            /* disable atime if 1 */
+	0,                           /* disable atime if 1 */
+	MGR_DEFAULT_SOCKET_PATH      /* manager socket path */
 };
 
 enum {
@@ -222,11 +225,15 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		    "        PotatoFS base data directory where private data\n"
 		    "        is kept, as well as the stats fifo (default: %s)\n"
 		    "\n"
+		    "    -o mgr_path=<path>\n"
+		    "        Potato-manager unix socket path\n"
+		    "        (default: %s)\n"
+		    "\n"
 		    "    -o dbg=<module1,module2,...>\n"
 		    "        Enable debug logging for selected modules:\n",
 		    FS_DEFAULT_ENTRY_TIMEOUTS, SLAB_CACHE_SIZE_DEFAULT,
 		    SLAB_SIZE_DEFAULT, SLAB_MAX_AGE_DEFAULT,
-		    FS_DEFAULT_DATA_PATH);
+		    FS_DEFAULT_DATA_PATH, MGR_DEFAULT_SOCKET_PATH);
 		for (dbge = module_dbg_map; *dbge->name; dbge++)
 			fprintf(stderr, "          - %s\n", dbge->name);
 		exit(1);
@@ -491,6 +498,8 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	 */
 	if (c->cachesize == 0)
 		c->cachesize = stv.f_blocks * stv.f_frsize * 90 / 100;
+
+	mgr_init(c->mgr_path);
 
 	if (slab_startup(info.slab_size, c->cachesize,
 	    c->slab_max_age, &e) == -1)
