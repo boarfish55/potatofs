@@ -40,9 +40,10 @@
 #include "mgr.h"
 #include "slabs.h"
 
-int   debug_level = 0;
-char *mgr_exec = MGR_DEFAULT_BACKEND_EXEC;
-char *data_path = FS_DEFAULT_DATA_PATH;
+char         *dbg_spec = NULL;
+char         *mgr_exec = MGR_DEFAULT_BACKEND_EXEC;
+char         *data_path = FS_DEFAULT_DATA_PATH;
+extern char **environ;
 
 static void
 usage()
@@ -312,6 +313,32 @@ df(int c, struct mgr_msg *m, struct exlog_err *e)
 }
 
 static void
+bgworker()
+{
+	if (exlog_init(MGR_PROGNAME "-bgworker", dbg_spec, 0) == -1) {
+		exlog(LOG_ERR, "failed to initialize logging in bgworker");
+		exit(1);
+	}
+
+	setproctitle("bgworker");
+
+	for (;;) {
+		// Scan out queue
+			// for each slab in out queue:
+				// open, LOCK_EX|LOCK_NB
+				// Compute checksum
+				// upload, unlink
+				// close fd
+			// for each slab in main data dir:
+				// open, LOCK_EX|LOCK_NB
+				// copy to out queue if old enough and dirty
+					// check LOCK_EX|LOCK_NB on out queue target
+				// close
+		sleep(60);
+	}
+}
+
+static void
 worker(int lsock)
 {
 	int              fd;
@@ -319,6 +346,13 @@ worker(int lsock)
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	int              c;
 	struct timeval   tv = {5, 0};
+
+	if (exlog_init(MGR_PROGNAME "-worker", dbg_spec, 0) == -1) {
+		exlog(LOG_ERR, "failed to initialize logging in worker");
+		exit(1);
+	}
+
+	setproctitle("worker");
 
 	for (;;) {
 		if ((c = accept(lsock, NULL, 0)) == -1) {
@@ -361,22 +395,6 @@ worker(int lsock)
 	}
 }
 
-void
-bgtasks()
-{
-// Scan out queue
-	// for each slab in out queue:
-		// open, LOCK_EX|LOCK_NB
-		// Compute checksum
-		// upload, unlink
-		// close fd
-	// for each slab in main data dir:
-		// open, LOCK_EX|LOCK_NB
-		// copy to out queue if old enough and dirty
-			// check LOCK_EX|LOCK_NB on out queue target
-		// close
-}
-
 int
 main(int argc, char **argv)
 {
@@ -394,8 +412,9 @@ main(int argc, char **argv)
 	int                 lsock;
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
+	int                 bgworkers = 4;
 
-	while ((opt = getopt(argc, argv, "hvkc:d:p:e:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvkfc:d:p:e:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
@@ -404,14 +423,18 @@ main(int argc, char **argv)
 				printf(MGR_PROGNAME " version " VERSION "\n");
 				exit(0);
 			case 'd':
-				debug_level = atoi(optarg);
+				if ((dbg_spec = strdup(optarg)) == NULL)
+					err(1, "strdup");
 				break;
 			case 'D':
 				if ((data_path = strdup(optarg)) == NULL)
 					err(1, "strdup");
 				break;
-			case 'n':
+			case 'w':
 				workers = atoi(optarg);
+				break;
+			case 'W':
+				bgworkers = atoi(optarg);
 				break;
 			case 'e':
 				if ((mgr_exec = strdup(optarg)) == NULL)
@@ -438,6 +461,8 @@ main(int argc, char **argv)
 		}
 	}
 
+	setproctitle_init(argc, argv, environ);
+
 	act.sa_handler = &handle_sig;
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;
@@ -447,68 +472,95 @@ main(int argc, char **argv)
 		err(1, "sigaction");
 	}
 
-	if (!foreground && daemon(0, 0) == -1)
-		err(1, "daemon");
+	if (exlog_init(MGR_PROGNAME, dbg_spec, foreground) == -1)
+		err(1, "exlog_init");
 
-	openlog(MGR_PROGNAME, LOG_PID, LOG_DAEMON);
+	if (!foreground) {
+		if (daemon(0, 0) == -1)
+			err(1, "daemon");
+		setproctitle(MGR_PROGNAME " (parent)");
+	}
 
         if ((pid_f = fopen(pidfile_path, "w")) == NULL) {
-		syslog(LOG_ERR, "fopen: %m");
+		exlog_lerrno(LOG_ERR, errno, "fopen");
 		exit(1);
         }
         if (fprintf(pid_f, "%d\n", getpid()) == -1) {
-                syslog(LOG_ERR, "fprintf: %m");
+		exlog_lerrno(LOG_ERR, errno, "fprintf");
                 exit(1);
         }
         fclose(pid_f);
 
 	if (geteuid() == 0) {
-		// TODO: not err, syslog ...
-		if ((pw = getpwnam(unpriv_user)) == NULL)
-			err(1, "User %s not found in users database",
-			    unpriv_user);
-		if (setuid(pw->pw_uid) == -1)
-			err(1, "setuid");
-		if (seteuid(pw->pw_uid) == -1)
-			err(1, "seteuid");
+		if ((pw = getpwnam(unpriv_user)) == NULL) {
+			exlog_lerrno(LOG_ERR, errno,
+			    "User %s not found in users database", unpriv_user);
+			exit(1);
+		}
+		if (setuid(pw->pw_uid) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "setuid");
+			exit(1);
+		}
+		if (seteuid(pw->pw_uid) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "seteuid");
+			exit(1);
+		}
 
-		if ((gr = getgrnam(unpriv_group)) == NULL)
-			err(1, "Group %s not found in group database",
+		if ((gr = getgrnam(unpriv_group)) == NULL) {
+			exlog_lerrno(LOG_ERR, errno,
+			    "Group %s not found in group database",
 			    unpriv_group);
-		if (setgid(gr->gr_gid) == -1)
-			err(1, "setgid");
-		if (setegid(gr->gr_gid) == -1)
-			err(1, "setegid");
+			exit(1);
+		}
+		if (setgid(gr->gr_gid) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "setgid");
+			exit(1);
+		}
+		if (setegid(gr->gr_gid) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "setegid");
+			exit(1);
+		}
 	}
 
-	if (access(data_path, R_OK|X_OK) == -1)
-		err(1, "access");
-	if (access(mgr_exec, X_OK) == -1)
-		err(1, "access");
+	if (access(data_path, R_OK|X_OK) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "access: %s", data_path);
+		exit(1);
+	}
+	if (access(mgr_exec, X_OK) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "access: %s", mgr_exec);
+		exit(1);
+	}
 
-	// TODO: create BG processes for scanning slabs for upload.
-
-	if ((lsock = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1)
-		err(1, "socket");
+	if ((lsock = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "socket");
+		exit(1);
+	}
 	unlink(sock_path);
 
 	bzero(&saddr, sizeof(saddr));
 	saddr.sun_family = AF_LOCAL;
-	strncpy(saddr.sun_path, sock_path, sizeof(saddr.sun_path) - 1);
+	strlcpy(saddr.sun_path, sock_path, sizeof(saddr.sun_path));
 
-	if (bind(lsock, (struct sockaddr *)&saddr, SUN_LEN(&saddr)) == -1)
-		err(1, "bind");
+	if (bind(lsock, (struct sockaddr *)&saddr, SUN_LEN(&saddr)) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "bind");
+		exit(1);
+	}
 
-	if (listen(lsock, 64) == -1)
-		err(1, "listen");
+	if (listen(lsock, 64) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "listen");
+		exit(1);
+	}
 
-	for (n = 0; n < workers; n++) {
+	for (n = 0; n < workers + bgworkers; n++) {
 		switch (fork()) {
 		case -1:
 			killpg(0, 15);
 			err(1, "fork");
 		case 0:
-			worker(lsock);
+			if (n >= workers)
+				bgworker();
+			else
+				worker(lsock);
 			/* Never reached */
 			exit(1);
 		default:
@@ -516,6 +568,9 @@ main(int argc, char **argv)
 			break;
 		}
 	}
+
+	for (n = 0; n < workers + bgworkers; n++)
+		wait(NULL);
 
 	return 0;
 }

@@ -46,7 +46,7 @@ fs_info_init(struct fs_info *info, const char *data_path,
 	char    path[PATH_MAX];
 	char    instance_id[37];
 
-	strncpy(datadir, data_path, sizeof(datadir) - 1);
+	strlcpy(datadir, data_path, sizeof(datadir));
 
 	if (LK_LOCK_INIT(&fs_info_lock, e) == -1)
 		return -1;

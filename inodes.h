@@ -26,7 +26,6 @@
 #include "openfiles.h"
 #include "exlog.h"
 #include "slabs.h"
-#include "tree.h"
 
 struct inode {
 	union {

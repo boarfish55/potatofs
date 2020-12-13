@@ -97,7 +97,7 @@ int  exlog_fail(const struct exlog_err *);
 
 int  exlog_err_is(const struct exlog_err *, int, int);
 
-int  exlog_init(const char *, int);
+int  exlog_init(const char *, const char *, int);
 
 void exlog(int, const char *, ...);
 void exlog_dbg(exlog_mask_t, const char *, ...);

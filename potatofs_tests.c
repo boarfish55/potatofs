@@ -734,7 +734,7 @@ test_readlink_path_max()
 	if (unlink(p) == -1)
 		return ERR("", errno);
 
-	strncat(target, "a", sizeof(target) - 1);
+	strlcat(target, "a", sizeof(target));
 	if (symlink(target, p) == -1 && errno == ENAMETOOLONG)
 		return NULL;
 
@@ -1528,7 +1528,7 @@ test_name_max()
 	if (mkdir(p, 0700) == -1)
 		return ERR("", errno);
 
-	strncpy(path, p, sizeof(path) - 1);
+	strlcpy(path, p, sizeof(path));
 
 	memset(n1, 'm', sizeof(n1) - 1);
 	n1[sizeof(n1) - 1] = '\0';
@@ -1561,26 +1561,26 @@ test_path_max()
 	if (mkdir(p, 0700) == -1)
 		return ERR("", errno);
 
-	strncpy(path, p, sizeof(path) - 1);
+	strlcpy(path, p, sizeof(path));
 
 	/* We'll fill the last 10 bytes with our file name */
 	for (i = strlen(path); sizeof(path) - i > 10; i += strlen(pcomp)) {
-		strncat(path, pcomp, sizeof(path) - 1);
+		strlcat(path, pcomp, sizeof(path));
 		if (mkdir(path, 0700) == -1)
 			return ERR("", errno);
 	}
 
-	strncat(path, "/", sizeof(path) - 1);
+	strlcat(path, "/", sizeof(path));
 	i++;
 
 	memset(name, 'a', sizeof(path) - i - 1);
 	name[sizeof(path) - i - 1] = '\0';
 
-	strncat(path, name, sizeof(path) - 1);
+	strlcat(path, name, sizeof(path));
 	if (mknod(path, 0640, 0) == -1)
 		return ERR("", errno);
 
-	strncat(path, "a", sizeof(path) - 1);
+	strlcat(path, "a", sizeof(path));
 	if (mknod(path, 0640, 0) == -1 && errno == ENAMETOOLONG)
 		return NULL;
 

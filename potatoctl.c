@@ -779,7 +779,7 @@ main(int argc, char **argv)
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");
 
-	strncpy(datadir, argv[1], PATH_MAX - 1);
+	strlcpy(datadir, argv[1], PATH_MAX);
 	if (strcmp(argv[2], "top") != 0) {
 		if (fs_info_inspect(&fs_info, &e) == -1) {
 			exlog_prt(&e);

@@ -1164,7 +1164,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 	oi = NULL;
 
 	de.inode = inode->v.f.inode;
-	strncpy(de.name, name, sizeof(de.name) - 1);
+	strlcpy(de.name, name, sizeof(de.name));
 	de.name[sizeof(de.name) - 1] = '\0';
 
 	if ((parent_oi = inode_load(parent, 0, e)) == NULL)
@@ -1410,7 +1410,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	LK_RDLOCK(&fs_tree_lock);
 
 	new_de.inode = ino;
-	strncpy(new_de.name, newname, sizeof(new_de.name) - 1);
+	strlcpy(new_de.name, newname, sizeof(new_de.name));
 	new_de.name[sizeof(new_de.name) - 1] = '\0';
 
 	if ((parent_oi = inode_load(newparent, 0, &e)) == NULL) {
@@ -1769,7 +1769,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	}
 
 	new_de.inode = de.inode;
-	strncpy(new_de.name, newname, sizeof(new_de.name) - 1);
+	strlcpy(new_de.name, newname, sizeof(new_de.name));
 	new_de.name[sizeof(new_de.name) - 1] = '\0';
 
 	if (di_mkdirent(new_doi, &new_de, &replaced, &e) == -1) {
@@ -1888,7 +1888,7 @@ main(int argc, char **argv)
 	fuse_opt_add_arg(&args, "-osplice_move");
 	fuse_opt_add_arg(&args, "-osplice_read");
 
-	if (exlog_init(fs_config.dbg, 1) == -1)
+	if (exlog_init(PROGNAME, fs_config.dbg, 1) == -1)
 		err(1, "exlog_init");
 
 	if (fuse_parse_cmdline(&args, &mountpoint, NULL, NULL) != -1 &&

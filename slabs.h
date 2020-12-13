@@ -21,12 +21,12 @@
 #define SLABS_H
 
 #include <sys/queue.h>
+#include <sys/tree.h>
 #include "config.h"
 #include "openfiles.h"
 #include "exlog.h"
 #include "slabs.h"
 #include "util.h"
-#include "tree.h"
 
 /*
  * Slabs can either contain file data, inode tables or directory

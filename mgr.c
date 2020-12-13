@@ -29,7 +29,7 @@ static char mgr_path[PATH_MAX];
 void
 mgr_init(const char *path)
 {
-	strncpy(mgr_path, path, sizeof(mgr_path) - 1);
+	strlcpy(mgr_path, path, sizeof(mgr_path));
 }
 
 int
@@ -43,7 +43,7 @@ mgr_connect(struct exlog_err *e)
 
 	bzero(&mgr_addr, sizeof(mgr_addr));
 	mgr_addr.sun_family = AF_LOCAL;
-	strncpy(mgr_addr.sun_path, mgr_path, sizeof(mgr_addr.sun_path) - 1);
+	strlcpy(mgr_addr.sun_path, mgr_path, sizeof(mgr_addr.sun_path));
 
 	if (connect(mgr, (struct sockaddr *)&mgr_addr, sizeof(mgr_addr)) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: connect", __func__);

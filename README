@@ -53,6 +53,7 @@ See the COPYING file for licensing information.
 Dependencies / license:
 - libuuid (BSD-3)
 - libfuse (LGPL-2)
+- libbsd-dev (BSD-3, BSD-2, Expat)
 
 
 DESIGN NOTES

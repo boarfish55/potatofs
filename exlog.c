@@ -108,7 +108,7 @@ exlog_err_is(const struct exlog_err *e, int code, int subcode)
 }
 
 int
-exlog_init(const char *dbg_spec, int perror)
+exlog_init(const char *progname, const char *dbg_spec, int perror)
 {
 	char                              *dbg, *module, *save;
 	const struct module_dbg_map_entry *map;
@@ -120,7 +120,7 @@ exlog_init(const char *dbg_spec, int perror)
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		return -1;
 
-	openlog(PROGNAME, opt, LOG_USER);
+	openlog(progname, opt, LOG_USER);
 	if (dbg_spec == NULL || *dbg_spec == '\0') {
 		setlogmask(LOG_UPTO(LOG_INFO));
 		return 0;
