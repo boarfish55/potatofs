@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -43,7 +43,7 @@ static struct oinodes {
         PTHREAD_MUTEX_INITIALIZER
 };
 
-extern char *slab_zeroes;
+static char *slab_zeroes;
 
 static int
 inode_cmp(struct oinode *i1, struct oinode *i2)
@@ -136,6 +136,15 @@ alloc_inode(ino_t *inode, struct exlog_err *e)
 	exlog_errf(e, EXLOG_APP, EXLOG_ERES, "%s: unable to locate free "
 	    "inode; we looped up to base %lu", __func__, i);
 	return NULL;
+}
+
+int
+inode_startup(struct exlog_err *e)
+{
+	if ((slab_zeroes = calloc(slab_get_max_size(), 1)) == NULL)
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: failed to allocate zeroes", __func__);
+	return 0;
 }
 
 off_t
@@ -887,7 +896,7 @@ end:
 }
 
 void
-inode_free_all()
+inode_shutdown()
 {
 	struct oinode    *oi;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
@@ -928,6 +937,7 @@ inode_free_all()
 
 		MTX_UNLOCK(&open_inodes.lock);
 	}
+	free(slab_zeroes);
 }
 
 /*

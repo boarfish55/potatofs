@@ -36,7 +36,7 @@ Non-goals:
   1) Portability. Though I would like this to work on all BSDs, there is
      a dependency on low-level FUSE, which not all BSDs support. We
      currently don't care about endianness. On-disk format is
-     platform-dependant. Maybe one day we'll care and do all the
+     platform-dependent. Maybe one day we'll care and do all the
      byte-swapping, though it's unsure how that would affect performance.
 
   2) Find a cool unique name. Finding a free 5-letter acronym ending in
@@ -80,5 +80,5 @@ files to proceed quickly enough. Doing a bit of stats on my own home
 directory, a large majority of files are under 4K in size.
 
 Directory entries are currently a fixed size, with 255 bytes reserved for
-file names. This is no ideal, and someday I might go back and handle
+file names. This is not ideal, and someday I might go back and handle
 variable-sized records for filenames.

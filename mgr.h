@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -27,6 +27,7 @@ struct mgr_msg {
 	enum {
 		MGR_MSG_CLAIM = 1,
 		MGR_MSG_CLAIM_OK,
+		MGR_MSG_CLAIM_NOENT,
 		MGR_MSG_CLAIM_ERR,
 
 		MGR_MSG_DISOWN,

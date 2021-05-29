@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -69,6 +69,7 @@ mgr_connect(struct exlog_err *e)
 int
 mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct exlog_err *e)
 {
+	int             r;
 	struct msghdr   msg;
 	struct cmsghdr *cmsg;
 	union {
@@ -86,8 +87,16 @@ mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct exlog_err *e)
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
 
-	if (recvmsg(mgr, &msg, 0) == -1)
+again:
+	if ((r = recvmsg(mgr, &msg, 0)) == -1) {
+		if (errno == EINTR)
+			goto again;
 		return exlog_errf(e, EXLOG_OS, errno, "%s: recvmsg", __func__);
+	}
+
+	if (r == 0)
+		return exlog_errf(e, EXLOG_APP, EXLOG_EOF,
+		    "%s: recvmsg: eof", __func__);
 
 	if ((msg.msg_flags & MSG_TRUNC) || (msg.msg_flags & MSG_CTRUNC))
 		return exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
@@ -152,9 +161,13 @@ mgr_send(int mgr, int fd, struct mgr_msg *m, struct exlog_err *e)
 		*(int *)CMSG_DATA(cmsg) = fd;
 	}
 
-	if (sendmsg(mgr, &msg, 0) == -1)
+again:
+	if (sendmsg(mgr, &msg, 0) == -1) {
+		if (errno == EINTR)
+			goto again;
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: sendmsg", __func__);
+	}
 
 	return 0;
 }

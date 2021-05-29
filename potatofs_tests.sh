@@ -7,17 +7,24 @@ fatal() {
 
 basepath="$(mktemp -d -t potatofs.XXXXXX)"
 
+
 [ -x ./potatofs ] || fatal "potatofs is not found or executable"
 [ -x ./potatofs_tests ] || fatal "potatofs_tests is not found or executable"
 [ -d "$basepath" ] || fatal "temp dir not found"
 
 mountpoint="$basepath/mnt"
 datapath="$basepath/data"
+conf="$basepath/conf"
+echo "data_dir: $datapath" > "$conf"
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
+# TODO: add workers to config
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
-./potatofs -o data_path="$datapath",slab_max_age=5 "$mountpoint" &
+./potatomgr -c "$conf" -w 1 -W 1 -e "$PWD/mgr.pl.sample" \
+	-p "$datapath/potatomgr.pid" -s "$datapath/potatomgr.sock"
+# TODO: add slab_max_age to config
+./potatofs -o cfg_path="$conf",slab_max_age=5 "$mountpoint" &
 for i in 1 2 3 4 5; do
 	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then
 		break
@@ -28,7 +35,7 @@ done
 echo ""
 
 echo "*** Running tests ***"
-./potatofs_tests "$datapath" "$mountpoint"
+./potatofs_tests -c "$conf" "$mountpoint"
 st=$?
 echo ""
 
@@ -42,6 +49,7 @@ echo "*** fsck ***"
 echo ""
 
 echo "*** cleanup ***"
+kill `cat $datapath/potatomgr.pid`
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	echo "Done."

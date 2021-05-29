@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -27,6 +27,10 @@
 #include "util.h"
 
 struct fs_info {
+#define FS_INFO_VERSION 1
+	/* Increment the above definition anytime we modify this structure. */
+	uint32_t       fs_info_version;
+
 	uuid_t         instance_id;
 	struct statvfs stats;
 	size_t         slab_size;
@@ -41,6 +45,7 @@ struct fs_info {
 	uint8_t        error;
 };
 
+int     fs_info_create(struct exlog_err *);
 int     fs_info_init(struct fs_info *, const char *, size_t, struct exlog_err *);
 int     fs_info_get(struct fs_info *, struct exlog_err *);
 void    fs_info_set_error();

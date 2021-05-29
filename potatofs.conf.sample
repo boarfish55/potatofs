@@ -1,0 +1,11 @@
+# The base directory where all PotatoFS-related data will be stored.
+# It's recommended that this be on its own partition.
+data_dir: /var/potatofs
+
+# The path to the socket used for communication between the FUSE
+# process and the backend manager process.
+mgr_socket_path: /var/potatofs/potatomgr.sock
+
+# The backend script. See the mgr.pl.sample for a proof-of-concept
+# implementation.
+backend: /usr/local/bin/mgr.pl

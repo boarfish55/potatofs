@@ -13,6 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <utime.h>
+#include "config.h"
 #include "fs_info.h"
 #include "inodes.h"
 
@@ -20,8 +21,6 @@ char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
 
 extern locale_t log_locale;
-extern char     datadir[];
-extern size_t   slab_max_size;
 
 static struct path
 {
@@ -1545,7 +1544,7 @@ test_name_max()
 		return NULL;
 
 	return ERR("file creation with name longer than FS_NAME_MAX should "
-	    "have failed", errno);
+	    "have failed", 0);
 }
 
 char *
@@ -1556,7 +1555,7 @@ test_path_max()
 	char        name[FS_NAME_MAX + 1];
 	int         i;
 	/* POSIX PATH_MAX includes the nul byte. */
-	char        path[FS_PATH_MAX];
+	char        path[FS_PATH_MAX + 1];
 
 	if (mkdir(p, 0700) == -1)
 		return ERR("", errno);
@@ -1573,19 +1572,24 @@ test_path_max()
 	strlcat(path, "/", sizeof(path));
 	i++;
 
-	memset(name, 'a', sizeof(path) - i - 1);
-	name[sizeof(path) - i - 1] = '\0';
-
+	memset(name, 'a', sizeof(path) - i - 2);
+	name[sizeof(path) - i - 2] = '\0';
 	strlcat(path, name, sizeof(path));
+
+	/* This should succeed, since we're at PATH_MAX - 2. */
 	if (mknod(path, 0640, 0) == -1)
 		return ERR("", errno);
 
+	/*
+	 * This should fail, since we're at PATH_MAX -1, and we need
+	 * room for our nul byte.
+	 */
 	strlcat(path, "a", sizeof(path));
 	if (mknod(path, 0640, 0) == -1 && errno == ENAMETOOLONG)
 		return NULL;
 
 	return ERR("path creation with name longer than FS_PATH_MAX should "
-	    "have failed", errno);
+	    "have failed", 0);
 }
 
 struct potatofs_test {
@@ -1745,6 +1749,15 @@ struct potatofs_test {
 	{ "", NULL }
 };
 
+void
+usage()
+{
+	fprintf(stderr,
+	    "Usage: potatofs_tests [options] <mount point> [test substring]\n"
+	    "\t-h\t\t\tPrints this help\n"
+	    "\t-c <config path>\tPath to the configuration file\n");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1753,21 +1766,38 @@ main(int argc, char **argv)
 	struct exlog_err      e = EXLOG_ERR_INITIALIZER;
 	struct fs_info        fs_info;
 	int                   status = 0;
+	char                  opt;
 
-	if (argc < 3)
-		errx(1, "Usage: potatofs_tests <data path> "
-		    "<mount point> [test substring]");
+	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
+		switch (opt) {
+			case 'h':
+				usage();
+				exit(0);
+			case 'c':
+				if ((fs_config.cfg_path = strdup(optarg))
+				    == NULL)
+					err(1, "strdup");
+				break;
+			default:
+				usage();
+				exit(1);
+		}
+	}
 
-	if (snprintf(datadir, PATH_MAX, "%s", argv[1]) >= PATH_MAX - 1)
-		errx(1, "error: data path too long");
+	config_read();
 
+	if (argc - optind < 1) {
+		usage();
+		exit(1);
+	}
+
+	// TODO: need config path
 	if (fs_info_inspect(&fs_info, &e) == -1) {
 		exlog_prt(&e);
 		exit(1);
 	}
-	slab_max_size = fs_info.slab_size;
 
-	if (snprintf(mnt, sizeof(mnt), "%s", argv[2]) >= sizeof(mnt))
+	if (snprintf(mnt, sizeof(mnt), "%s", argv[optind++]) >= sizeof(mnt))
 		errx(1, "error: mount point path too long");
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
@@ -1775,7 +1805,8 @@ main(int argc, char **argv)
 
 	umask(0);
 	for (t = tests; t->fn != NULL; t++) {
-		if (argc == 4 &&  strstr(t->description, argv[3]) == NULL)
+		if (argc > optind &&
+		    strstr(t->description, argv[optind]) == NULL)
 			continue;
 
 		msg = t->fn();

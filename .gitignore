@@ -1,9 +1,13 @@
 .vimtags
-*.gdb
 *.o
 potatofs
 potatoctl
 potatofs_tests
 potatomgr
 mgr.pl
+potatofs.conf
+run.sh
+clean.sh
+gdb.*
 .deps
+TODO

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -30,6 +30,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <jansson.h>
+#include <unistd.h>
 #include "counters.h"
 #include "slabs.h"
 #include "fs_info.h"
@@ -68,16 +69,19 @@ struct fsck_stats {
 void
 usage()
 {
-	fprintf(stderr, "Usage: potatoctl <potatofs data path> <subcommand> <args...>\n");
-	fprintf(stderr, "           slab  <slab file>\n");
-	fprintf(stderr, "           dir   <dir inode#>\n");
-	fprintf(stderr, "           top   <delay>\n");
-	fprintf(stderr, "           fsck\n");
+	fprintf(stderr,
+	    "Usage: potatoctl [options] <subcommand> <args...>\n"
+	    "           slab  <slab file>\n"
+	    "           dir   <dir inode#>\n"
+	    "           top   <delay>\n"
+	    "           fsck\n"
+	    "\n"
+	    "\t-h\t\t\tPrints this help\n"
+	    "\t-c <config path>\tPath to the configuration file\n"
+	    "\t-D <data dir>\t\tThe base data directory used by PotatoFS\n");
 }
 
 extern struct counter counters[];
-extern size_t         slab_max_size;
-extern char           datadir[];
 extern locale_t       log_locale;
 
 struct fs_info        fs_info;
@@ -206,7 +210,7 @@ fsck(int argc, char **argv)
 	struct fsck_stats     stats = {0, 0, 0, 0};
 	size_t                n_free;
 
-	if (snprintf(itbl_path, sizeof(itbl_path), "%s/%s", datadir,
+	if (snprintf(itbl_path, sizeof(itbl_path), "%s/%s", fs_config.data_dir,
 	    ITBL_DIR) >= sizeof(itbl_path)) {
 		stats.errors++;
 		warnx("%s: potatofs base path too long", __func__);
@@ -251,9 +255,9 @@ fsck(int argc, char **argv)
 			free(b);
 			continue;
 		}
-		if (b->hdr.v.f.data_format_version != SLAB_VERSION) {
+		if (b->hdr.v.f.slab_version != SLAB_VERSION) {
 			warnx("unrecognized data format version: %s: %u",
-			    itbl, b->hdr.v.f.data_format_version);
+			    itbl, b->hdr.v.f.slab_version);
 			stats.errors++;
 			close(b->fd);
 			free(b);
@@ -335,7 +339,7 @@ top(int argc, char **argv)
 		exit(1);
 	}
 
-	if (snprintf(path, sizeof(path), "%s/counters", datadir)
+	if (snprintf(path, sizeof(path), "%s/counters", fs_config.data_dir)
 	    >= sizeof(path))
 		errx(1, "%s: counters path too long", __func__);
 
@@ -428,9 +432,9 @@ load_dir(char **data, struct inode *inode)
 			goto fail;
 		}
 
-		if (hdr.v.f.data_format_version != SLAB_VERSION) {
+		if (hdr.v.f.slab_version != SLAB_VERSION) {
 			warnx("unrecognized data format version: %s: %u",
-			    path, hdr.v.f.data_format_version);
+			    path, hdr.v.f.slab_version);
 			goto fail;
 		}
 
@@ -526,11 +530,11 @@ show_inode(int argc, char **argv)
 
 		printf("  slab: %s\n", path);
 		printf("    hdr:\n");
-		printf("      version:    %u\n",
-		    hdr.v.f.data_format_version);
-		printf("      checksum:   %u\n", hdr.v.f.checksum);
-		printf("      revision:   %lu\n", hdr.v.f.revision);
-		printf("      flags:     ");
+		printf("      slab_version: %u\n",
+		    hdr.v.f.slab_version);
+		printf("      checksum:     %u\n", hdr.v.f.checksum);
+		printf("      revision:     %lu\n", hdr.v.f.revision);
+		printf("      flags:       ");
 		if (hdr.v.f.flags & SLAB_ITBL)
 			printf(" itbl");
 		if (hdr.v.f.flags & SLAB_DIRTY)
@@ -538,9 +542,9 @@ show_inode(int argc, char **argv)
 		if (hdr.v.f.flags & SLAB_REMOVED)
 			printf(" removed");
 		printf("\n");
-		printf("      data size:  %lu\n",
+		printf("      data size:    %lu\n",
 		    st.st_size - sizeof(struct slab_hdr));
-		printf("      sparse:     %s\n",
+		printf("      sparse:       %s\n",
 		    (st.st_size < (inode.v.f.size % slab_get_max_size()))
 		    ? "yes" : "no");
 		printf("\n");
@@ -618,7 +622,7 @@ show_dir(int argc, char **argv)
 		printf("  slab: %s\n", path);
 		printf("    hdr:\n");
 		printf("      version:    %u\n",
-		    hdr.v.f.data_format_version);
+		    hdr.v.f.slab_version);
 		printf("      checksum:   %u\n", hdr.v.f.checksum);
 		printf("      revision:   %lu\n", hdr.v.f.revision);
 		printf("      flags:     ");
@@ -721,10 +725,10 @@ show_slab(int argc, char **argv)
 
 	printf("slab: %s\n", argv[0]);
 	printf("  hdr:\n");
-	printf("    version:    %u\n", hdr.v.f.data_format_version);
-	printf("    checksum:   %u\n", hdr.v.f.checksum);
-	printf("    revision:   %lu\n", hdr.v.f.revision);
-	printf("    flags:     ");
+	printf("    slab_version:    %u\n", hdr.v.f.slab_version);
+	printf("    checksum:        %u\n", hdr.v.f.checksum);
+	printf("    revision:        %lu\n", hdr.v.f.revision);
+	printf("    flags:          ");
 	if (hdr.v.f.flags & SLAB_ITBL)
 		printf(" itbl");
 	if (hdr.v.f.flags & SLAB_DIRTY)
@@ -770,16 +774,34 @@ main(int argc, char **argv)
 {
 	struct subc      *c;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	char             *data_dir = FS_DEFAULT_DATA_PATH;
+	char              opt;
 
-	if (argc < 3) {
-		usage();
-		exit(1);
+	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
+		switch (opt) {
+			case 'h':
+				usage();
+				exit(0);
+			case 'D':
+				if ((data_dir = strdup(optarg)) == NULL)
+					err(1, "strdup");
+				break;
+			case 'c':
+				if ((fs_config.cfg_path = strdup(optarg))
+				    == NULL)
+					err(1, "strdup");
+				break;
+			default:
+				usage();
+				exit(1);
+		}
 	}
+
+	config_read();
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");
 
-	strlcpy(datadir, argv[1], PATH_MAX);
 	if (strcmp(argv[2], "top") != 0) {
 		if (fs_info_inspect(&fs_info, &e) == -1) {
 			exlog_prt(&e);
@@ -789,12 +811,13 @@ main(int argc, char **argv)
 			warnx("WARNING: filesystem not marked clean!!!");
 			warnx("         Run fsck.");
 		}
-		slab_max_size = fs_info.slab_size;
 	}
 
 	for (c = subcommands; c->fn; c++) {
-		if (strcmp(c->name, argv[2]) == 0)
-			return c->fn(argc - 3, argv + 3);
+		if (strcmp(c->name, argv[optind]) == 0) {
+			optind++;
+			return c->fn(argc - optind, argv + optind);
+		}
 	}
 
 	usage();

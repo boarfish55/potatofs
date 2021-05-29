@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -18,6 +18,7 @@
  */
 
 #include <sys/file.h>
+#include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -37,19 +38,29 @@
 #include <unistd.h>
 #include <jansson.h>
 #include "config.h"
+#include "fs_info.h"
 #include "mgr.h"
 #include "slabs.h"
 
-char         *dbg_spec = NULL;
-char         *mgr_exec = MGR_DEFAULT_BACKEND_EXEC;
-char         *data_path = FS_DEFAULT_DATA_PATH;
-extern char **environ;
+char            *dbg_spec = NULL;
+struct timeval   socket_timeout = {60, 0};
+extern char    **environ;
 
 static void
 usage()
 {
 	fprintf(stderr, "Usage: " MGR_PROGNAME
-	    " [-fhv] [-d level] [-c config] [-p pidfile] [-s socket path]\n");
+	    " [-fhv] [-d level] [-c config] [-p pidfile]\n");
+	fprintf(stderr,
+	    "\t-h\t\tPrints this help\n"
+	    "\t-v\t\tPrints version\n"
+	    "\t-d <spec>\tDebug specification\n"
+	    "\t-w <workers>\tHow many workers to spawn\n"
+	    "\t-W <workers>\tHow many background workers to spawn\n"
+	    "\t-f\t\tRun in the foreground, do not fork\n"
+	    "\t-c <path>\tPath to configuration\n"
+	    "\t-p <path>\tPID file path\n"
+	    "\t-T <timeout>\tUnix socket timeout\n");
 }
 
 static void
@@ -61,6 +72,7 @@ handle_sig(int sig)
 		exit(sig);
 	case SIGTERM:
 		syslog(LOG_NOTICE, "SIGTERM received, exiting.");
+		killpg(0, 15);
 		exit(sig);
 	case SIGINT:
 		syslog(LOG_NOTICE, "SIGINT received, exiting.");
@@ -110,9 +122,9 @@ mgr_spawn(char **argv, int *wstatus, char *stdout, size_t stdout_len,
 			close(p_err[1]);
 		}
 
-		chdir(data_path);
+		chdir(fs_config.data_dir);
 
-		if (execv(mgr_exec, argv) == -1) {
+		if (execv(fs_config.mgr_exec, argv) == -1) {
 			close(p_out[1]);
 			close(p_err[1]);
 			return exlog_errf(e, EXLOG_OS, errno, "%s: execv",
@@ -222,8 +234,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	int  fd;
 
 	if (slab_path(path, sizeof(path), m->ino, m->offset, m->flags, e) == -1)
-		// TODO: send error before returning
-		return -1;
+		goto fail;
 
 	if (m->oflags & OSLAB_SYNC)
 		fd_flags |= O_SYNC;
@@ -232,12 +243,17 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 
 	if (m->oflags & OSLAB_NOCREATE) {
 		if ((fd = open(path, fd_flags, 0600)) == -1) {
-			if (errno == ENOENT)
-				exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
-				    "%s: no such slab", __func__);
-			else
+			if (errno == ENOENT) {
+				m->m = MGR_MSG_CLAIM_NOENT;
+				if (mgr_send(c, fd, m, e) == -1) {
+					exlog_lerr(LOG_ERR, e, "%s", __func__);
+					return -1;
+				}
+				return 0;
+			} else {
 				exlog_errf(e, EXLOG_OS, errno, "%s: failed "
 				    "to load slab %s", __func__, path);
+			}
 			goto fail;
 		}
 	} else {
@@ -258,11 +274,14 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	m->m = MGR_MSG_CLAIM_OK;
 	if (mgr_send(c, fd, m, e) == -1) {
 		exlog_lerr(LOG_ERR, e, "%s", __func__);
-		exit(1);
+		return -1;
 	}
 	close(fd);
 	return 0;
 fail:
+	m->m = MGR_MSG_CLAIM_ERR;
+	if (mgr_send(c, fd, m, e) == -1)
+		exlog_lerr(LOG_ERR, e, "%s", __func__);
 	return -1;
 }
 
@@ -321,6 +340,7 @@ bgworker()
 	}
 
 	setproctitle("bgworker");
+	exlog(LOG_INFO, "%s: ready", __func__);
 
 	for (;;) {
 		// Scan out queue
@@ -345,7 +365,7 @@ worker(int lsock)
 	struct mgr_msg   m;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	int              c;
-	struct timeval   tv = {5, 0};
+	int              r;
 
 	if (exlog_init(MGR_PROGNAME "-worker", dbg_spec, 0) == -1) {
 		exlog(LOG_ERR, "failed to initialize logging in worker");
@@ -353,44 +373,67 @@ worker(int lsock)
 	}
 
 	setproctitle("worker");
+	exlog(LOG_INFO, "%s: ready", __func__);
 
 	for (;;) {
 		if ((c = accept(lsock, NULL, 0)) == -1) {
-			if (errno != EINTR)
+			switch (errno) {
+			case EINTR:
+				continue;
+			case EMFILE:
 				exlog_lerrno(LOG_ERR, errno,
 				    "%s: accept", __func__);
-			continue;
+				sleep(5);
+				continue;
+			default:
+				exlog_lerrno(LOG_ERR, errno,
+				    "%s: accept", __func__);
+				exit(1);
+			}
 		}
 
-		if (setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv,
-		    sizeof(tv)) == -1) {
+		if (setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout,
+		    sizeof(socket_timeout)) == -1) {
 			exlog_lerr(LOG_ERR, &e, "%s", __func__);
 			continue;
 		}
 
-		if (mgr_recv(c, &fd, &m, &e) == -1) {
-			if (exlog_err_is(&e, EXLOG_OS, EAGAIN))
-				exlog(LOG_NOTICE,
-				    "read timeout on client socket %d", c);
-			else
-				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-		}
+		for (;;) {
+			exlog_zerr(&e);
+			if ((r = mgr_recv(c, &fd, &m, &e)) == -1) {
+				if (exlog_err_is(&e, EXLOG_OS, EAGAIN))
+					exlog(LOG_NOTICE,
+					    "read timeout on socket %d", c);
+				else if (!exlog_err_is(&e, EXLOG_APP,
+				    EXLOG_EOF))
+					exlog_lerr(LOG_ERR, &e, "%s", __func__);
+				close(c);
+				break;
+			}
 
-		switch (m.m) {
-		case MGR_MSG_CLAIM:
-			if (claim(c, &m, &e) == -1)
+			switch (m.m) {
+			case MGR_MSG_CLAIM:
+				claim(c, &m, &e);
+				break;
+			case MGR_MSG_DISOWN:
+				disown(c, &m, fd, &e);
+				break;
+			case MGR_MSG_FS_USAGE:
+				df(c, &m, &e);
+				break;
+			default:
+				exlog(LOG_ERR, "%s: wrong message %d",
+				    __func__, m.m);
+				close(c);
+				break;
+			}
+			if (exlog_fail(&e)) {
 				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-			break;
-		case MGR_MSG_DISOWN:
-			if (disown(c, &m, fd, &e) == -1)
-				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-			break;
-		case MGR_MSG_FS_USAGE:
-			if (df(c, &m, &e) == -1)
-				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-			break;
-		default:
-			exlog(LOG_ERR, "%s: wrong message %d", __func__, m.m);
+				if (e.layer == EXLOG_OS) {
+					close(c);
+					break;
+				}
+			}
 		}
 	}
 }
@@ -400,7 +443,6 @@ main(int argc, char **argv)
 {
 	char                opt;
 	struct              sigaction act, oact;
-	char               *config_path = MGR_DEFAULT_CONFIG_PATH;
 	char               *pidfile_path = MGR_DEFAULT_PIDFILE_PATH;
 	int                 foreground = 0;
 	FILE               *pid_f;
@@ -408,13 +450,15 @@ main(int argc, char **argv)
         struct group       *gr;
 	char               *unpriv_user = MGR_DEFAULT_UNPRIV_USER;
 	char               *unpriv_group = MGR_DEFAULT_UNPRIV_GROUP;
-	char               *sock_path = MGR_DEFAULT_SOCKET_PATH;
 	int                 lsock;
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
 	int                 bgworkers = 4;
+	struct statvfs      stv;
+	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
+	off_t               cache_size = 0, cache_size_limit;
 
-	while ((opt = getopt(argc, argv, "hvkfc:d:p:e:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
@@ -426,34 +470,26 @@ main(int argc, char **argv)
 				if ((dbg_spec = strdup(optarg)) == NULL)
 					err(1, "strdup");
 				break;
-			case 'D':
-				if ((data_path = strdup(optarg)) == NULL)
-					err(1, "strdup");
-				break;
 			case 'w':
 				workers = atoi(optarg);
 				break;
 			case 'W':
 				bgworkers = atoi(optarg);
 				break;
-			case 'e':
-				if ((mgr_exec = strdup(optarg)) == NULL)
-					err(1, "strdup");
-				break;
 			case 'f':
 				foreground = 1;
 				break;
 			case 'c':
-				if ((config_path = strdup(optarg)) == NULL)
+				if ((fs_config.cfg_path = strdup(optarg))
+				    == NULL)
 					err(1, "strdup");
 				break;
 			case 'p':
 				if ((pidfile_path = strdup(optarg)) == NULL)
 					err(1, "strdup");
 				break;
-			case 's':
-				if ((sock_path = strdup(optarg)) == NULL)
-					err(1, "strdup");
+			case 'T':
+				socket_timeout.tv_sec = atoi(optarg);
 				break;
 			default:
 				usage();
@@ -474,6 +510,8 @@ main(int argc, char **argv)
 
 	if (exlog_init(MGR_PROGNAME, dbg_spec, foreground) == -1)
 		err(1, "exlog_init");
+
+	config_read();
 
 	if (!foreground) {
 		if (daemon(0, 0) == -1)
@@ -522,12 +560,40 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (access(data_path, R_OK|X_OK) == -1) {
-		exlog_lerrno(LOG_ERR, errno, "access: %s", data_path);
+	if (access(fs_config.data_dir, R_OK|X_OK) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "access: %s", fs_config.data_dir);
 		exit(1);
 	}
-	if (access(mgr_exec, X_OK) == -1) {
-		exlog_lerrno(LOG_ERR, errno, "access: %s", mgr_exec);
+	if (access(fs_config.mgr_exec, X_OK) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "access: %s", fs_config.mgr_exec);
+		exit(1);
+	}
+
+	if (statvfs(fs_config.data_dir, &stv) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "statvfs");
+		exit(1);
+	}
+	cache_size_limit = stv.f_blocks * stv.f_frsize * 90 / 100;
+
+	/*
+	 * Default to 90% partition size for the slab cache size.
+	 */
+	// TODO: Do something with this, we can't cache more slabs
+	// locally than what's computed here.
+	if (cache_size == 0 || cache_size > cache_size_limit)
+		cache_size = cache_size_limit;
+
+	exlog(LOG_INFO, "%s: cache size is %llu", __func__, cache_size);
+
+	if (fs_info_create(&e) == -1) {
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		exit(1);
+	}
+
+	// max_open = cache_size / (fs_config.slab_size + sizeof(struct slab_hdr));
+
+	if (slab_make_dirs(&e) == -1) {
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
 
@@ -535,11 +601,12 @@ main(int argc, char **argv)
 		exlog_lerrno(LOG_ERR, errno, "socket");
 		exit(1);
 	}
-	unlink(sock_path);
+	unlink(fs_config.mgr_sock_path);
 
 	bzero(&saddr, sizeof(saddr));
 	saddr.sun_family = AF_LOCAL;
-	strlcpy(saddr.sun_path, sock_path, sizeof(saddr.sun_path));
+	strlcpy(saddr.sun_path, fs_config.mgr_sock_path,
+	    sizeof(saddr.sun_path));
 
 	if (bind(lsock, (struct sockaddr *)&saddr, SUN_LEN(&saddr)) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "bind");

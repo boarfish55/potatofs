@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -34,11 +34,17 @@
  * to each when we're dealing with that type of slab, or empty otherwise.
  */
 struct slab_hdr {
+#define SLAB_VERSION 1
 	union {
 		struct slab_hdr_fields {
+			/*
+			 * Increment the SLAB_VERSION definition anytime we
+			 * modify this structure.
+			 */
+			uint32_t slab_version;
+
 			// TODO: reserve space for crc32
 			uint32_t checksum;
-			uint32_t data_format_version;
 			uint32_t flags;
 
 			/*
@@ -133,8 +139,9 @@ struct oslab {
 #define OSLAB_SYNC     0x00000002
 };
 
-int slab_startup(size_t, uint64_t, uint32_t, struct exlog_err *);
+int slab_configure(uint64_t, uint32_t, struct exlog_err *);
 int slab_shutdown(struct exlog_err *);
+int slab_make_dirs(struct exlog_err *);
 
 /*
  * Computes the path/filename of a slab based on the slab type

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -25,16 +25,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "config.h"
 #include "counters.h"
 #include "fs_info.h"
 #include "inodes.h"
 #include "exlog.h"
 #include "mgr.h"
 #include "slabs.h"
-
-extern char datadir[];
-size_t      slab_max_size;
-char       *slab_zeroes;
 
 static struct {
 	/*
@@ -159,7 +156,7 @@ slab_disown(struct oslab *b)
 	struct mgr_msg   m;
 	struct timespec  tp = {1, 0};
 
-	if (b->fd != -1) {
+	if (b->fd == -1) {
 		exlog(LOG_ERR, "%s: fd is -1", __func__);
 		fs_info_set_error();
 		return;
@@ -193,6 +190,8 @@ slab_disown(struct oslab *b)
 			goto fail;
 		} else if (m.flags != b->hdr.v.f.flags || m.ino != b->ino ||
 		    m.offset != b->base) {
+			/* We close the fd here to avoid deadlocks. */
+			close(b->fd);
 			exlog(LOG_ERR, "%s: bad manager response; "
 			    "offset expected=%lu, received=%lu",
 			    "ino expected=%lu, received=%lu",
@@ -201,6 +200,7 @@ slab_disown(struct oslab *b)
 		}
 
 		close(mgr);
+		close(b->fd);
 		LK_LOCK_DESTROY(&b->lock);
 		LK_LOCK_DESTROY(&b->bytes_lock);
 		free(b);
@@ -303,30 +303,39 @@ slab_hdr_data(struct oslab *b)
 }
 
 int
-slab_startup(size_t slab_size, uint64_t cachesize, uint32_t max_age,
-    struct exlog_err *e)
+slab_make_dirs(struct exlog_err *e)
 {
-	int            r, i;
+	char path[PATH_MAX];
+	int  i;
+
+	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir, ITBL_DIR)
+	    >= sizeof(path))
+		return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+		    "%s: bad inode table dir; too long", __func__);
+
+	if (mkdir_x(path, 0700) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, __func__);
+
+	for (i = 0; i < SLAB_DIRS; i++) {
+		if (snprintf(path, sizeof(path), "%s/%02x",
+		    fs_config.data_dir, i) >= sizeof(path))
+			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+			    "%s: bad slab dir; too long", __func__);
+		if (mkdir_x(path, 0700) == -1)
+			return exlog_errf(e, EXLOG_OS, errno, __func__);
+	}
+
+	return 0;
+}
+
+int
+slab_configure(uint64_t max_open, uint32_t max_age, struct exlog_err *e)
+{
+	int            r;
 	pthread_attr_t attr;
-	uint64_t       max_open;
 	struct rlimit  nofile, locks;
-	char           path[PATH_MAX];
 
-	if (slab_size < SLAB_SIZE_FLOOR ||
-	    slab_size > SLAB_SIZE_CEIL ||
-	    (slab_size & (slab_size - 1)) != 0)
-		return exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
-		    "slab size must be a power of two, between %lu and %lu",
-		    SLAB_SIZE_FLOOR, SLAB_SIZE_CEIL);
-
-	slab_max_size = slab_size;
-	if ((slab_zeroes = calloc(slab_max_size, 1)) == NULL)
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: failed to allocate zeroes", __func__);
-
-	max_open = cachesize / (slab_max_size + sizeof(struct slab_hdr));
-	if (max_open > 0)
-		owned_slabs.max_open = max_open;
+	owned_slabs.max_open = max_open;
 
 	/*
 	 * Keep a few descriptors for other things, such as the
@@ -362,24 +371,6 @@ slab_startup(size_t slab_size, uint64_t cachesize, uint32_t max_age,
 
 	owned_slabs.max_age = (max_age == 0) ? owned_slabs.max_age : max_age;
 
-	if (snprintf(path, sizeof(path), "%s/%s", datadir, ITBL_DIR)
-	    >= sizeof(path))
-		return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
-		    "%s: bad inode table dir; too long", __func__);
-
-	if (mkdir_x(path, 0700) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, __func__);
-
-	for (i = 0; i < SLAB_DIRS; i++) {
-		if (snprintf(path, sizeof(path), "%s/%02x",
-		    datadir, i) >= sizeof(path))
-			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
-			    "%s: bad slab dir; too long", __func__);
-		if (mkdir_x(path, 0700) == -1)
-			return exlog_errf(e, EXLOG_OS, errno, __func__);
-	}
-
-	exlog(LOG_NOTICE, "cachesize is %lu", cachesize);
 	exlog(LOG_NOTICE, "max open slabs is %lu (RLIMIT_NOFILE is %u, "
 	    "RLIMIT_LOCKS is %u)", owned_slabs.max_open, nofile.rlim_cur,
 	    locks.rlim_cur);
@@ -388,12 +379,10 @@ slab_startup(size_t slab_size, uint64_t cachesize, uint32_t max_age,
 	if ((r = pthread_attr_init(&attr)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,
 		    "%s: failed to init pthread attributes", __func__);
-
 	if ((r = pthread_create(&slab_purger, &attr,
 	    &slab_purge, NULL)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,
 		    "%s: failed to init pthread attributes", __func__);
-
 	return 0;
 }
 
@@ -414,8 +403,7 @@ slab_load_itbl(ino_t ino, rwlk_flags lkf, struct exlog_err *e)
 		return NULL;
 	}
 
-	if ((b = slab_load(ino, 0, SLAB_ITBL, OSLAB_SYNC,
-	    e)) == NULL)
+	if ((b = slab_load(ino, 0, SLAB_ITBL, OSLAB_SYNC, e)) == NULL)
 		return NULL;
 
 	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
@@ -474,13 +462,13 @@ slab_inode_free(struct slab_itbl_hdr *hdr, ino_t ino)
 size_t
 slab_get_max_size()
 {
-	return slab_max_size;
+	return fs_config.slab_size;
 }
 
 size_t
 slab_inode_max()
 {
-	return slab_max_size / sizeof(struct inode);
+	return fs_config.slab_size / sizeof(struct inode);
 }
 
 int
@@ -509,7 +497,6 @@ slab_shutdown(struct exlog_err *e)
 
 	if ((r = pthread_join(slab_purger, NULL)) != 0)
 		return exlog_errf(e, EXLOG_OS, r, "%s", __func__);
-	free(slab_zeroes);
 	return 0;
 }
 
@@ -528,14 +515,14 @@ slab_path(char *path, size_t len, ino_t ino, off_t offset,
 
 	if (flags & SLAB_ITBL) {
 		if (snprintf(path, len, "%s/%s/%s%020lu",
-		    datadir, ITBL_DIR, ITBL_PREFIX, base) >= len) {
+		    fs_config.data_dir, ITBL_DIR, ITBL_PREFIX, base) >= len) {
 			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
 			    "%s: bad inode table name %lu; too long",
 			    __func__, base);
 		}
 	} else {
 		if (snprintf(path, len, "%s/%02lx/%s%020lu-%020lu",
-		    datadir, ino % SLAB_DIRS, SLAB_PREFIX, ino,
+		    fs_config.data_dir, ino % SLAB_DIRS, SLAB_PREFIX, ino,
 		    offset / slab_get_max_size()) >= len) {
 			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
 			    "%s: bad slab name %s; too long", __func__, path);
@@ -631,7 +618,11 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	if (mgr_recv(mgr, &fd, &m, e) == -1)
 		goto fail_destroy_locks;
 
-	if (m.m != MGR_MSG_CLAIM_OK) {
+	if (m.m == MGR_MSG_CLAIM_NOENT) {
+		exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+		    "%s: no such slab", __func__);
+		goto fail_destroy_locks;
+	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
 		    "%s: bad manager response", __func__);
 		goto fail_destroy_locks;
@@ -659,7 +650,7 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 
 	if (st.st_size == 0) {
 		bzero(&b->hdr, sizeof(b->hdr));
-		b->hdr.v.f.data_format_version = SLAB_VERSION;
+		b->hdr.v.f.slab_version = SLAB_VERSION;
 		b->hdr.v.f.flags = flags;
 		b->hdr.v.f.revision = 1;
 		if (slab_write_hdr(b, e) == -1)
@@ -816,7 +807,7 @@ slab_itbls(ino_t *bases, size_t n, struct exlog_err *e)
 		return i;
 
 	if (snprintf(path, sizeof(path), "%s/%s",
-	    datadir, ITBL_DIR) >= sizeof(path))
+	    fs_config.data_dir, ITBL_DIR) >= sizeof(path))
 		return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
 		    "%s: bad inode table name %lu; too long",
 		    __func__, base);

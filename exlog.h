@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -45,6 +45,7 @@ enum exlog_cerrcode {
 			       open flags */
 	EXLOG_EOVERFLOW,    /* Variable size overflow */
 	EXLOG_ESHORTIO,     /* Data sent or received is shorter than expected */
+	EXLOG_EOF,          /* End-of-file */
 	EXLOG_EMGR          /* Issue arised during communication with
 	                       slab manager */
 };

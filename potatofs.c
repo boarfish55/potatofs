@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -29,6 +29,7 @@
 #include <fuse_lowlevel.h>
 #include <limits.h>
 #include <stdio.h>
+#include "config.h"
 #include "counters.h"
 #include "dirinodes.h"
 #include "exlog.h"
@@ -37,32 +38,6 @@
 #include "mgr.h"
 #include "openfiles.h"
 
-struct fs_config {
-	uid_t       uid;
-	gid_t       gid;
-	char       *dbg;
-	uint64_t    cachesize;
-	uint32_t    entry_timeouts;
-	uint32_t    slab_max_age;
-	size_t      slab_size;
-	int         foreground;
-	const char *data_path;
-	int         noatime;
-	const char *mgr_path;
-} fs_config = {
-	0,                           /* uid */
-	0,                           /* gid */
-	NULL,                        /* dbg */
-	0, /* cachesize */
-	FS_DEFAULT_ENTRY_TIMEOUTS,   /* entry_timeouts */
-	SLAB_MAX_AGE_DEFAULT,        /* slab_max_age */
-	SLAB_SIZE_DEFAULT,           /* slab_size */
-	0,                           /* foreground */
-	FS_DEFAULT_DATA_PATH,        /* data_path */
-	0,                           /* disable atime if 1 */
-	MGR_DEFAULT_SOCKET_PATH      /* manager socket path */
-};
-
 enum {
 	OPT_HELP,
 	OPT_VERSION,
@@ -70,21 +45,19 @@ enum {
 	OPT_NOATIME
 };
 
-
 #define FS_OPT(t, p, v) { t, offsetof(struct fs_config, p), v }
 static struct fuse_opt fs_opts[] = {
 	/* Enable debug mode for specific modules. */
 	FS_OPT("dbg=%s", dbg, 0),
 	/* Limit on the local storage size for slabs. */
-	FS_OPT("cachesize=%llu", cachesize, 0),
-	FS_OPT("slab_size=%u", slab_size, 0),
+	FS_OPT("max_open_slabs=%llu", max_open_slabs, 0),
 	FS_OPT("entry_timeouts=%u", entry_timeouts, 0),
 	FS_OPT("slab_max_age=%u", slab_max_age, 0),
-	FS_OPT("data_path=%s", data_path, 0),
 	FUSE_OPT_KEY("-h", OPT_HELP),
 	FUSE_OPT_KEY("-V", OPT_VERSION),
 	FUSE_OPT_KEY("-f", OPT_FOREGROUND),
 	FUSE_OPT_KEY("noatime", OPT_NOATIME),
+	FS_OPT("cfg_path=%s", cfg_path, 0),
 	FUSE_OPT_END
 };
 
@@ -207,33 +180,22 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		    "        How long to cache inode attributes and name\n"
 		    "        entries (default: %d)\n"
 		    "\n"
-		    "    -o cachesize=<bytes>\n"
-		    "        Limit on local size cache. Slabs will be flushed\n"
-		    "        out to the backend if space is running low\n"
-		    "        (default: %lu)\n"
-		    "\n"
-		    "    -o slab_size=<bytes>\n"
-		    "        The maximum size of slabs stored on the slow\n"
-		    "        backend; can only be be changed at filesystem\n"
-		    "        creation (default: %u)\n"
+		    "    -o max_open_slabs=<int>\n"
+		    "        Maximum slabs open simultaneously. Slabs will\n"
+		    "        be closed early if we reach this amount.\n"
+		    "        (default: %d)\n"
 		    "\n"
 		    "    -o slab_max_age=<seconds>\n"
 		    "        Time after which a slab is disowned after it is\n"
 		    "        no longer referenced (default: %u)\n"
 		    "\n"
-		    "    -o data_path=<path>\n"
-		    "        PotatoFS base data directory where private data\n"
-		    "        is kept, as well as the stats fifo (default: %s)\n"
-		    "\n"
-		    "    -o mgr_path=<path>\n"
-		    "        Potato-manager unix socket path\n"
-		    "        (default: %s)\n"
+		    "    -o cfg_path=<path>\n"
+		    "        PotatoFS configuration file path (default: %s)\n"
 		    "\n"
 		    "    -o dbg=<module1,module2,...>\n"
 		    "        Enable debug logging for selected modules:\n",
-		    FS_DEFAULT_ENTRY_TIMEOUTS, SLAB_CACHE_SIZE_DEFAULT,
-		    SLAB_SIZE_DEFAULT, SLAB_MAX_AGE_DEFAULT,
-		    FS_DEFAULT_DATA_PATH, MGR_DEFAULT_SOCKET_PATH);
+		    FS_DEFAULT_ENTRY_TIMEOUTS, SLAB_MAX_OPEN_DEFAULT,
+		    SLAB_MAX_AGE_DEFAULT, DEFAULT_CONFIG_PATH);
 		for (dbge = module_dbg_map; *dbge->name; dbge++)
 			fprintf(stderr, "          - %s\n", dbge->name);
 		exit(1);
@@ -244,7 +206,6 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		exit(0);
 	case OPT_FOREGROUND:
 		fuse_opt_add_arg(outargs, "-f");
-		fs_config.foreground = 1;
 	case OPT_NOATIME:
 		fs_config.noatime = 1;
 	}
@@ -451,17 +412,19 @@ fs_destroy(void *unused)
 
 	LK_WRLOCK(&fs_tree_lock);
 
-	inode_free_all();
+	inode_shutdown();
 
 	if (slab_shutdown(&e) == -1) {
 		exlog_lerr(LOG_CRIT, &e, __func__);
 		clean = 0;
 	}
+	exlog_zerr(&e);
 
 	if (counter_shutdown(&e) == -1) {
 		exlog_lerr(LOG_CRIT, &e, __func__);
 		clean = 0;
 	}
+	exlog_zerr(&e);
 
 	LK_UNLOCK(&fs_tree_lock);
 
@@ -472,11 +435,9 @@ fs_destroy(void *unused)
 static void
 fs_init(void *userdata, struct fuse_conn_info *conn)
 {
-	struct statvfs    stv;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	struct fs_config *c = (struct fs_config *)userdata;
 	struct oinode    *oi;
-	struct fs_info    info;
 	struct dir_entry  default_dir[2] = {
 		{ ".", FS_ROOT_INODE, sizeof(struct dir_entry) },
 		{ "..", FS_ROOT_INODE, 0 }
@@ -484,31 +445,23 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 
 	exlog(LOG_NOTICE, "entry timeouts: %u", c->entry_timeouts);
 
-	if (counter_init(c->data_path, &e) == -1 ||
-	    fs_info_init(&info, c->data_path, c->slab_size, &e) == -1)
+	if (counter_init(fs_config.data_dir, &e) == -1)
 		goto fail;
 
-	if (statvfs(c->data_path, &stv) == -1) {
-		exlog_errf(&e, EXLOG_OS, errno, __func__);
-		goto fail;
-	}
+	mgr_init(c->mgr_sock_path);
 
-	/*
-	 * Default to 90% partition size for the slab cache size.
-	 */
-	if (c->cachesize == 0)
-		c->cachesize = stv.f_blocks * stv.f_frsize * 90 / 100;
-
-	mgr_init(c->mgr_path);
-
-	if (slab_startup(info.slab_size, c->cachesize,
-	    c->slab_max_age, &e) == -1)
+	if (slab_configure(c->max_open_slabs, c->slab_max_age, &e) == -1)
 		goto fail;
 
-	exlog(LOG_NOTICE, "atime is %s",
-	    (c->noatime) ? "disabled" : "enabled");
+	if (inode_startup(&e) == -1)
+		goto fail;
+
+	exlog(LOG_NOTICE, "atime is %s", (c->noatime) ? "disabled" : "enabled");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL) {
+		if (!exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT))
+			goto fail;
+
 		exlog_zerr(&e);
 		if (inode_make(FS_ROOT_INODE, c->uid, c->gid,
 		    S_IFDIR|0755, NULL, &e) == -1)
@@ -1887,6 +1840,8 @@ main(int argc, char **argv)
 	fuse_opt_add_arg(&args, "-osplice_write");
 	fuse_opt_add_arg(&args, "-osplice_move");
 	fuse_opt_add_arg(&args, "-osplice_read");
+
+	config_read();
 
 	if (exlog_init(PROGNAME, fs_config.dbg, 1) == -1)
 		err(1, "exlog_init");

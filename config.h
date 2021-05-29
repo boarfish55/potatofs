@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -20,20 +20,22 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <stdint.h>
+
 #define PROGNAME     "PotatoFS"
 #define MGR_PROGNAME "potatomgr"
-
-#define SLAB_VERSION 1
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
 #define COUNTERS_FILE_NAME        "counters"
-#define MGR_DEFAULT_CONFIG_PATH   "/etc/potatofs/mgr.conf"
 #define MGR_DEFAULT_PIDFILE_PATH  "/var/potatofs/potatomgr.pid"
 #define MGR_DEFAULT_SOCKET_PATH   "/var/potatofs/potatomgr.sock"
 #define MGR_DEFAULT_UNPRIV_USER   "potatomgr"
 #define MGR_DEFAULT_UNPRIV_GROUP  "potatomgr"
 #define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/mgr.pl"
+#define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
 
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"
@@ -71,6 +73,9 @@
 #define SLAB_MAX_AGE_DEFAULT    60
 #define SLAB_CACHE_SIZE_DEFAULT 10737418240
 
+/* This should fit in most default ulimits and leave extra room. */
+#define SLAB_MAX_OPEN_DEFAULT   768
+
 #define FS_PATH_MAX 4096
 #define FS_NAME_MAX  255
 #define FS_LINK_MAX  127
@@ -81,5 +86,25 @@
  */
 #define __inline inline
 #define __unused __attribute__((__unused__))
+
+struct fs_config {
+	uid_t       uid;
+	gid_t       gid;
+	char       *dbg;
+	uint64_t    cache_size;
+	rlim_t      max_open_slabs;
+	uint32_t    entry_timeouts;
+	uint32_t    slab_max_age;
+	size_t      slab_size;
+	const char *data_dir;
+	int         noatime;
+	const char *mgr_sock_path;
+	const char *mgr_exec;
+	const char *cfg_path;
+};
+
+extern struct fs_config fs_config;
+
+void config_read();
 
 #endif

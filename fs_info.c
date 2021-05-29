@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -34,26 +34,23 @@
 
 static rwlk            fs_info_lock;
 static struct fs_info  fs_info;
-char                   datadir[PATH_MAX];
 const char            *potatofs_stat_path = "stats";
 
 int
-fs_info_init(struct fs_info *info, const char *data_path,
-    size_t slab_size, struct exlog_err *e)
+fs_info_create(struct exlog_err *e)
 {
 	int     fd = -1;
 	ssize_t r;
 	char    path[PATH_MAX];
-	char    instance_id[37];
 
-	strlcpy(datadir, data_path, sizeof(datadir));
+	if (fs_config.slab_size < SLAB_SIZE_FLOOR ||
+	    fs_config.slab_size > SLAB_SIZE_CEIL ||
+	    (fs_config.slab_size & (fs_config.slab_size - 1)) != 0)
+		return exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		    "slab_size must be a power of two, between %lu and %lu",
+		    SLAB_SIZE_FLOOR, SLAB_SIZE_CEIL);
 
-	if (LK_LOCK_INIT(&fs_info_lock, e) == -1)
-		return -1;
-
-	LK_WRLOCK(&fs_info_lock);
-
-	if (snprintf(path, sizeof(path), "%s/%s", datadir,
+	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
 		    "%s: failed to statvfs file; too long", __func__);
@@ -66,6 +63,12 @@ fs_info_init(struct fs_info *info, const char *data_path,
 		goto end;
 	}
 
+	if (flock(fd, LOCK_EX) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: failed to flock() fs_info %s", __func__, path);
+		goto end;
+	}
+
 	if ((r = read_x(fd, &fs_info, sizeof(fs_info))) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: fs stat cannot be read", __func__);
@@ -75,9 +78,10 @@ fs_info_init(struct fs_info *info, const char *data_path,
 	if (r == 0) {
 		bzero(&fs_info, sizeof(fs_info));
 
-		fs_info.slab_size = slab_size;
+		fs_info.slab_size = fs_config.slab_size;
 		uuid_generate(fs_info.instance_id);
 
+		fs_info.fs_info_version = FS_INFO_VERSION;
 		fs_info.stats.f_bsize = FS_BLOCK_SIZE;
 		fs_info.stats.f_frsize = FS_BLOCK_SIZE;
 
@@ -110,6 +114,74 @@ fs_info_init(struct fs_info *info, const char *data_path,
 		    __func__, r, sizeof(fs_info));
 		goto end;
 	}
+end:
+	if (fd > 0)
+		close(fd);
+	return exlog_fail(e);
+}
+
+int
+fs_info_load(struct fs_info *info, const char *data_path,
+    size_t slab_size, struct exlog_err *e)
+{
+	int     fd = -1;
+	ssize_t r;
+	char    path[PATH_MAX];
+	char    instance_id[37];
+
+	if (LK_LOCK_INIT(&fs_info_lock, e) == -1)
+		return -1;
+
+	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
+	    potatofs_stat_path) >= sizeof(path)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		    "%s: failed to statvfs file; too long", __func__);
+		goto end;
+	}
+
+	if ((fd = open(path, O_CREAT|O_RDWR, 0600)) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: fs stat cannot be opened", __func__);
+		goto end;
+	}
+
+	if (flock(fd, LOCK_EX) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: failed to flock() fs_info %s", __func__, path);
+		goto end;
+	}
+
+	if ((r = read_x(fd, &fs_info, sizeof(fs_info))) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: fs stat cannot be read", __func__);
+		goto end;
+	}
+
+	if (r < sizeof(fs_info)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		    "%s: fs_info structure size mismatch; "
+		    "incompatible version?", __func__);
+		goto end;
+	}
+
+	if (fs_info.fs_info_version != FS_INFO_VERSION) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		    "%s: fs_info structure version mismatch; "
+		    "incompatible version?", __func__);
+		goto end;
+	}
+
+	if (fs_info.clean != 0)
+		fs_info.error = 1;
+	fs_info.clean = 0;
+
+	if ((r = write_x(fd, &fs_info, sizeof(fs_info))) < sizeof(fs_info)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		    "%s: failed to write potatofs_fs_info structure; "
+		    "write() returned %d instead of %d:",
+		    __func__, r, sizeof(fs_info));
+		goto end;
+	}
 
 	uuid_unparse_lower(fs_info.instance_id, instance_id);
 	exlog(LOG_NOTICE, "filesystem statfs initialized, instance_id is %s",
@@ -119,7 +191,6 @@ end:
 		close(fd);
 	if (info != NULL)
 		memcpy(info, &fs_info, sizeof(fs_info));
-	LK_UNLOCK(&fs_info_lock);
 	return exlog_fail(e);
 }
 
@@ -167,7 +238,7 @@ fs_info_shutdown(int clean, struct exlog_err *e)
 
 	LK_WRLOCK(&fs_info_lock);
 
-	if (snprintf(path, sizeof(path), "%s/%s", datadir,
+	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
 		    "%s: failed to statvfs file; too long", __func__);
@@ -179,6 +250,12 @@ fs_info_shutdown(int clean, struct exlog_err *e)
 	if ((fd = open(path, O_RDWR, 0600)) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: fs stat cannot be opened: %s", __func__, path);
+		goto end;
+	}
+
+	if (flock(fd, LOCK_EX) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: failed to flock() fs_info %s", __func__, path);
 		goto end;
 	}
 
@@ -204,8 +281,8 @@ fs_info_inspect(struct fs_info *fs, struct exlog_err *e)
 	int     fd;
 	ssize_t r;
 
-	if (snprintf(fs_info_path, sizeof(fs_info_path), "%s/%s", datadir,
-	    potatofs_stat_path) >= sizeof(fs_info_path))
+	if (snprintf(fs_info_path, sizeof(fs_info_path), "%s/%s",
+	    fs_config.data_dir, potatofs_stat_path) >= sizeof(fs_info_path))
 		return exlog_errf(e, EXLOG_OS, EXLOG_ENAMETOOLONG,
 		    "%s: potatofs base path too long", __func__);
 

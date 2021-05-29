@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2021 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -188,7 +188,8 @@ int inode_nlink_ino(ino_t, int, struct exlog_err *);
 int inode_cp_ino(ino_t, struct inode *, struct exlog_err *);
 
 /* Free all remaining inodes at filesystem shutdown. No locks required. */
-void inode_free_all();
+void inode_shutdown();
+int  inode_startup();
 
 /* For testing only, acquires no lock */
 int inode_inspect(ino_t, struct inode *, struct exlog_err *);
