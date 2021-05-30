@@ -294,6 +294,11 @@ df(int c, struct mgr_msg *m, struct exlog_err *e)
 	json_error_t      jerr;
 	char             *args[] = {"df", NULL};
 
+	// TODO: This need to move to a bgworker, we won't
+	// let potatofs wait for this command to complete.
+	// This needs to be read from fs_info, so we can
+	// get a LOCK_SH on it.
+
 	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
 	    stderr, sizeof(stderr), e) == -1) {
 		exlog_lerr(LOG_ERR, e, "%s", __func__);
@@ -343,6 +348,10 @@ bgworker()
 	exlog(LOG_INFO, "%s: ready", __func__);
 
 	for (;;) {
+		// Refresh 'df' data
+			// Lock fs_info file
+			// Run command
+			// Unlock fs_info
 		// Scan out queue
 			// for each slab in out queue:
 				// open, LOCK_EX|LOCK_NB

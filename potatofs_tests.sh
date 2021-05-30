@@ -12,17 +12,22 @@ basepath="$(mktemp -d -t potatofs.XXXXXX)"
 [ -x ./potatofs_tests ] || fatal "potatofs_tests is not found or executable"
 [ -d "$basepath" ] || fatal "temp dir not found"
 
+cp mgr.pl.sample "$basepath/mgr.pl"
+
 mountpoint="$basepath/mnt"
 datapath="$basepath/data"
 conf="$basepath/conf"
-echo "data_dir: $datapath" > "$conf"
+cat > "$conf" << EOF
+data_dir: $datapath
+mgr_socket_path: $datapath/potatomgr.sock
+backend: $basepath/mgr.pl
+EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
-# TODO: add workers to config
+# TODO: add workers/pid to config
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
-./potatomgr -c "$conf" -w 1 -W 1 -e "$PWD/mgr.pl.sample" \
-	-p "$datapath/potatomgr.pid" -s "$datapath/potatomgr.sock"
+./potatomgr -c "$conf" -w 1 -W 1 -p "$basepath/potatomgr.pid"
 # TODO: add slab_max_age to config
 ./potatofs -o cfg_path="$conf",slab_max_age=5 "$mountpoint" &
 for i in 1 2 3 4 5; do
@@ -45,11 +50,11 @@ wait
 echo ""
 
 echo "*** fsck ***"
-./potatoctl "$datapath" fsck
+./potatoctl -c "$conf" fsck
 echo ""
 
 echo "*** cleanup ***"
-kill `cat $datapath/potatomgr.pid`
+kill `cat $basepath/potatomgr.pid`
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	echo "Done."

@@ -21,6 +21,8 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <errno.h>
+#include <time.h>
+#include <unistd.h>
 #include "config.h"
 #include "mgr.h"
 
@@ -37,18 +39,30 @@ mgr_connect(struct exlog_err *e)
 {
 	int                 mgr;
 	struct sockaddr_un  mgr_addr;
+	struct timespec     tp = {1, 0};
 
-	if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: socket", __func__);
+	for (;;) {
+		if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "%s: socket", __func__);
+			goto fail;
+		}
 
-	bzero(&mgr_addr, sizeof(mgr_addr));
-	mgr_addr.sun_family = AF_LOCAL;
-	strlcpy(mgr_addr.sun_path, mgr_path, sizeof(mgr_addr.sun_path));
+		bzero(&mgr_addr, sizeof(mgr_addr));
+		mgr_addr.sun_family = AF_LOCAL;
+		strlcpy(mgr_addr.sun_path, mgr_path, sizeof(mgr_addr.sun_path));
 
-	if (connect(mgr, (struct sockaddr *)&mgr_addr, sizeof(mgr_addr)) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: connect", __func__);
-
-	return mgr;
+		if (connect(mgr, (struct sockaddr *)&mgr_addr, sizeof(mgr_addr)) == -1) {
+			exlog_lerrno(LOG_ERR, errno, "%s: connect", __func__);
+			goto fail;
+		}
+		return mgr;
+fail:
+		if (mgr != -1)
+			close(mgr);
+		nanosleep(&tp, NULL);
+	}
+	/* Never reached. */
+	return -1;
 }
 
 // TODO: not needed?
