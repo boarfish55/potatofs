@@ -65,21 +65,6 @@ fail:
 	return -1;
 }
 
-// TODO: not needed?
-//int
-//mgr_recv_nofd(int mgr, struct mgr_msg *m, struct exlog_err *e)
-//{
-//	ssize_t r;
-//
-//	r = read_x(mgr, m, sizeof(struct mgr_msg));
-//	if (r == -1)
-//		return exlog_errf(e, EXLOG_OS, errno, "%s: read", __func__);
-//	else if (r < sizeof(struct mgr_msg))
-//		return exlog_errf(e, EXLOG_APP, EXLOG_ESHORTIO,
-//		    "%s: read", __func__);
-//	return 0;
-//}
-
 int
 mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct exlog_err *e)
 {
@@ -131,21 +116,6 @@ again:
 	}
 	return 0;
 }
-
-// TODO: not needed?
-//int
-//mgr_send_nofd(int mgr, struct mgr_msg *m, struct exlog_err *e)
-//{
-//	ssize_t r;
-//
-//	r = write_x(mgr, m, sizeof(struct mgr_msg));
-//	if (r == -1)
-//		return exlog_errf(e, EXLOG_OS, errno, "%s: write", __func__);
-//	else if (r < sizeof(struct mgr_msg))
-//		return exlog_errf(e, EXLOG_APP, EXLOG_ESHORTIO,
-//		    "%s: write", __func__);
-//	return 0;
-//}
 
 int
 mgr_send(int mgr, int fd, struct mgr_msg *m, struct exlog_err *e)
