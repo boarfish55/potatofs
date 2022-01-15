@@ -20,6 +20,7 @@
 #ifndef COUNTERS_H
 #define COUNTERS_H
 
+#include <pthread.h>
 #include <stdint.h>
 #include "exlog.h"
 

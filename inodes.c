@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <uuid/uuid.h>
 #include "counters.h"
+#include "fs_error.h"
 #include "fs_info.h"
 #include "inodes.h"
 #include "exlog.h"
@@ -133,7 +134,7 @@ alloc_inode(ino_t *inode, struct exlog_err *e)
 			return NULL;
 	}
 
-	exlog_errf(e, EXLOG_APP, EXLOG_ERES, "%s: unable to locate free "
+	exlog_errf(e, EXLOG_APP, EXLOG_RES, "%s: unable to locate free "
 	    "inode; we looped up to base %lu", __func__, i);
 	return NULL;
 }
@@ -173,7 +174,7 @@ inode_dealloc(ino_t ino, struct exlog_err *e)
 	slab_write_hdr(b, e);
 
 	if (slab_close_itbl(b, &e_close_tbl) == -1) {
-		fs_info_set_error();
+		fs_error_set();
 		exlog_lerr(LOG_ERR, &e_close_tbl, __func__);
 	}
 
@@ -207,7 +208,7 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 
 	if (written > ULLONG_MAX - offset) {
 		LK_UNLOCK(&oi->bytes_lock);
-		return exlog_errf(e, EXLOG_APP, EXLOG_EOVERFLOW,
+		return exlog_errf(e, EXLOG_APP, EXLOG_OVERFLOW,
 		    "%s: inode max size overflow: %lu", __func__,
 		    oi->ino.v.f.inode);
 	}
@@ -247,7 +248,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 
 	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 	if (!slab_inode_free(hdr, ino)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EEXIST,
+		exlog_errf(e, EXLOG_APP, EXLOG_EXIST,
 		    "%s: inode already allocated: %lu", __func__, ino);
 		goto fail;
 	}
@@ -261,7 +262,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	if (r == 0)
 		bzero(&inode, sizeof(inode));
 	else if (r < sizeof(inode)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short read for inode: %lu", __func__, ino);
 		goto fail;
 	}
@@ -299,7 +300,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 		goto fail;
 
 	if (w < sizeof(struct inode)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short write while saving inode %lu", __func__, ino);
 		// TODO: corrupted at this point; maybe move to lost+found?
 		goto fail;
@@ -324,7 +325,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	return 0;
 fail:
 	if (b && slab_close_itbl(b, &e_close_tbl) == -1) {
-		fs_info_set_error();
+		fs_error_set();
 		exlog_lerr(LOG_ERR, &e_close_tbl, __func__);
 	}
 	return -1;
@@ -401,7 +402,7 @@ inode_fallocate(struct oinode *oi, off_t offset, off_t len,
 	int   done = 0;
 
 	if (mode != 0)
-		return exlog_errf(e, EXLOG_APP, EXLOG_EOPNOTSUPP,
+		return exlog_errf(e, EXLOG_APP, EXLOG_OPNOTSUPP,
 		    "%s: non-zero mode isn't support by fallocate() "
 		    "at this time", __func__);
 
@@ -450,8 +451,8 @@ inode_truncate(struct oinode *oi, off_t offset, struct exlog_err *e)
 	    c_off += slab_get_max_size()) {
 		b = slab_at(oi, c_off, OSLAB_NOCREATE, e);
 		if (b == NULL) {
-			if (!exlog_err_is(e, EXLOG_APP, EXLOG_ENOENT)) {
-				fs_info_set_error();
+			if (!exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
+				fs_error_set();
 				exlog_lerr(LOG_ERR, e, __func__);
 			}
 			exlog_zerr(e);
@@ -466,20 +467,20 @@ inode_truncate(struct oinode *oi, off_t offset, struct exlog_err *e)
 		    > (oi->ino.v.f.size / slab_get_max_size())
 		    || (c_off % slab_get_max_size() == 0)) {
 			if (slab_unlink(b, e) == -1) {
-				fs_info_set_error();
+				fs_error_set();
 				exlog_lerr(LOG_ERR, e, __func__);
 				exlog_zerr(e);
 			}
 		} else {
 			if (slab_truncate(b,
 			    c_off % slab_get_max_size(), e) == -1) {
-				fs_info_set_error();
+				fs_error_set();
 				exlog_lerr(LOG_ERR, e, __func__);
 				exlog_zerr(e);
 			}
 		}
 		if (slab_forget(b, e) == -1) {
-			fs_info_set_error();
+			fs_error_set();
 			exlog_lerr(LOG_ERR, e, __func__);
 			exlog_zerr(e);
 		}
@@ -661,7 +662,7 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 
 	if (slab_inode_free(hdr, ino)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no such inode allocated: %lu", __func__, ino);
 		goto fail;
 	}
@@ -672,7 +673,7 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	if (r == -1) {
 		goto fail;
 	} else if (r < sizeof(struct inode)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short read while reading inode %lu", __func__, ino);
 		goto fail;
 	}
@@ -687,7 +688,7 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	b = NULL;
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EBUSY,
+		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
 		    "%s: inode already loaded %lu", __func__, ino);
 		goto fail_no_itbl;
 	}
@@ -801,7 +802,7 @@ inode_sync(struct oinode *oi, struct exlog_err *e)
 	    offset += slab_get_max_size()) {
 		b = slab_at(oi, offset, OSLAB_NOCREATE, e);
 		if (b == NULL) {
-			if (exlog_err_is(e, EXLOG_APP, EXLOG_ENOENT)) {
+			if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_zerr(e);
 				continue;
 			}
@@ -809,7 +810,7 @@ inode_sync(struct oinode *oi, struct exlog_err *e)
 		}
 
 		if (slab_sync(b, e) == -1) {
-			fs_info_set_error();
+			fs_error_set();
 			exlog_lerr(LOG_ERR, e, "%s: ino=%lu (%p)", __func__,
 			    oi->ino, oi);
 		}
@@ -883,7 +884,7 @@ inode_flush(struct oinode *oi, int data_only, struct exlog_err *e)
 	} else if (s < ((data_only)
 	    ?  inode_max_inline_b()
 	    : sizeof(struct inode))) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short write while saving inode %lu", __func__, ino);
 		goto end;
 	}
@@ -955,7 +956,7 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 	struct oslab *b;
 
 	if (oi->oflags & INODE_ORO)
-		return exlog_errf(e, EXLOG_APP, EXLOG_EBADF,
+		return exlog_errf(e, EXLOG_APP, EXLOG_BADF,
 		    "%s: write attemped on read-only open inode %lu",
 		    __func__, oi->ino.v.f.inode);
 
@@ -1184,7 +1185,7 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 	struct oslab *b;
 
 	if (oi->oflags & INODE_ORO)
-		return exlog_errf(e, EXLOG_APP, EXLOG_EBADF,
+		return exlog_errf(e, EXLOG_APP, EXLOG_BADF,
 		    "%s: write attemped on read-only open inode %lu",
 		    __func__, oi->ino.v.f.inode);
 
@@ -1277,7 +1278,7 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 
 	if (slab_inode_free(hdr, ino)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no such inode allocated: %lu", __func__, ino);
 		goto fail;
 	}
@@ -1288,7 +1289,7 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 	if (r == -1) {
 		goto fail;
 	} else if (r < sizeof(struct inode)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short read while reading inode %lu", __func__, ino);
 		goto fail;
 	}

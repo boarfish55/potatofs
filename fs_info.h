@@ -29,28 +29,27 @@
 struct fs_info {
 #define FS_INFO_VERSION 1
 	/* Increment the above definition anytime we modify this structure. */
-	uint32_t       fs_info_version;
+	uint32_t        fs_info_version;
 
-	uuid_t         instance_id;
-	struct statvfs stats;
-	size_t         slab_size;
+	uuid_t          instance_id;
+	size_t          slab_size;
+
+	struct statvfs  stats;
+	struct timespec stats_last_update;
 
 	/*
 	 * Filesystem was shutdown cleanly; if zero at startup, error
 	 * below should be set to 1.
 	 */
-	uint8_t        clean;
+	uint8_t         clean;
 
 	/* Filesystem encountered errors and needs fsck */
-	uint8_t        error;
+	uint8_t         error;
 };
 
-int     fs_info_create(struct exlog_err *);
-int     fs_info_init(struct fs_info *, const char *, size_t, struct exlog_err *);
-int     fs_info_get(struct fs_info *, struct exlog_err *);
-void    fs_info_set_error();
-uint8_t fs_info_error();
-int     fs_info_shutdown(int, struct exlog_err *);
-int     fs_info_inspect(struct fs_info *, struct exlog_err *);
+int fs_info_open(struct fs_info *, struct exlog_err *);
+int fs_info_read(struct fs_info *, struct exlog_err *);
+int fs_info_write(const struct fs_info *, struct exlog_err *);
+int fs_info_inspect(struct fs_info *, struct exlog_err *);
 
 #endif

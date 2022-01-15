@@ -399,7 +399,7 @@ load_dir(char **data, struct inode *inode)
 	memcpy(d, inode->v.data + sizeof(struct inode_fields), i);
 
 	for (; i < inode->v.f.size; i += r) {
-		if (slab_path(path, sizeof(path), ino, i, 0, &e) == -1) {
+		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
 			exlog_prt(&e);
 			goto fail;
 		}
@@ -496,7 +496,7 @@ show_inode(int argc, char **argv)
 		errx(1, "inode provided is invalid");
 
 	if (inode_inspect(ino, &inode, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT))
+		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			errx(1, "inode is not allocated");
 		exlog_prt(&e);
 		exit(1);
@@ -507,7 +507,7 @@ show_inode(int argc, char **argv)
 
 	for (i = inode_max_inline_b(); i < inode.v.f.size;
 	    i += slab_get_max_size()) {
-		if (slab_path(path, sizeof(path), ino, i, 0, &e) == -1) {
+		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
 			exlog_prt(&e);
 			exit(1);
 		}
@@ -578,7 +578,7 @@ show_dir(int argc, char **argv)
 		errx(1, "inode provided is invalid");
 
 	if (inode_inspect(ino, &inode, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT))
+		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			errx(1, "inode is not allocated");
 		exlog_prt(&e);
 		exit(1);
@@ -602,7 +602,7 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 
 	for (; i < inode.v.f.size; i += r) {
-		if (slab_path(path, sizeof(path), ino, i, 0, &e) == -1) {
+		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
 			exlog_prt(&e);
 			exit(1);
 		}

@@ -54,6 +54,8 @@ Dependencies / license:
 - libuuid (BSD-3)
 - libfuse (LGPL-2)
 - libbsd-dev (BSD-3, BSD-2, Expat)
+- liblmdb (OpenLDAP)
+- zlib (zlib)
 
 
 DESIGN NOTES

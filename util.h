@@ -29,6 +29,8 @@
 typedef pthread_rwlock_t rwlk;
 typedef uint16_t         rwlk_flags;
 
+#define RWLK_INITIALIZER PTHREAD_RWLOCK_INITIALIZER
+
 /* Lock flags */
 #define LK_LOCK_NONE 0x0000
 #define LK_LOCK_RD   0x0001
@@ -60,5 +62,6 @@ ssize_t pread_x(int, void *, size_t, off_t);
 ssize_t write_x(int, const void *, size_t);
 ssize_t pwrite_x(int, const void *, size_t, off_t);
 int     mkdir_x(const char *, mode_t);
+int     open_wflock(const char *, int, mode_t, int);
 
 #endif

@@ -496,7 +496,7 @@ test_unlink()
 
 	if (access(p, R_OK|F_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT)) {
+			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_prt(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -548,7 +548,7 @@ test_rmdir()
 
 	if (access(p, R_OK|X_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT)) {
+			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_prt(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -930,7 +930,7 @@ test_rename_replace()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT)) {
+			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_prt(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -1016,7 +1016,7 @@ test_rename_replace_crossdir()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_ENOENT)) {
+			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_prt(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -1237,7 +1237,7 @@ test_file_content()
 	 * are exhausted in the inode. For the inline bytes, they should
 	 * be \0, since they're actually stored in the inode.
 	 */
-	if (slab_path(path, sizeof(path), ino, 0, 0, &e) == -1) {
+	if (slab_path(path, sizeof(path), ino, 0, 0, 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1291,7 +1291,7 @@ test_file_content()
 	 * The second slab should be all 'c'.
 	 */
 	if (slab_path(path, sizeof(path), ino,
-	    SLAB_SIZE_DEFAULT, 0, &e) == -1) {
+	    SLAB_SIZE_DEFAULT, 0, 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1404,7 +1404,7 @@ test_fallocate_large()
 	close(fd);
 
 	if (slab_path(path, sizeof(path), st.st_ino,
-	    slab_get_max_size(), 0, &e) == -1) {
+	    slab_get_max_size(), 0, 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1510,7 +1510,7 @@ test_exlog_over_line_max()
 	for (i = 0; i < sizeof(msg) - 1; i++)
 		msg[i] = 'a';
 	msg[i] = '\0';
-	exlog_errf(&e, EXLOG_APP, EXLOG_EINVAL, msg);
+	exlog_errf(&e, EXLOG_APP, EXLOG_INVAL, msg);
 	if (strcmp(e.msg + LINE_MAX - 5, " ...") != 0)
 		return ERR("truncated message formatting incorrect", 0);
 	return NULL;

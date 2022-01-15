@@ -27,6 +27,7 @@
 #include <string.h>
 #include "config.h"
 #include "counters.h"
+#include "fs_error.h"
 #include "fs_info.h"
 #include "inodes.h"
 #include "exlog.h"
@@ -158,7 +159,7 @@ slab_disown(struct oslab *b)
 
 	if (b->fd == -1) {
 		exlog(LOG_ERR, "%s: fd is -1", __func__);
-		fs_info_set_error();
+		fs_error_set();
 		return;
 	}
 
@@ -169,10 +170,8 @@ slab_disown(struct oslab *b)
 		}
 
 		m.m = MGR_MSG_DISOWN;
-		m.ino = b->ino;
-		m.offset = b->base;
-		m.flags = b->hdr.v.f.flags;
-		m.oflags = b->oflags;
+		m.v.disown.ino = b->ino;
+		m.v.disown.offset = b->base;
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
 			exlog_lerr(LOG_ERR, &e, "%s", __func__);
@@ -188,14 +187,15 @@ slab_disown(struct oslab *b)
 			exlog(LOG_ERR, "%s: bad manager response: %d",
 			    __func__, m.m);
 			goto fail;
-		} else if (m.flags != b->hdr.v.f.flags || m.ino != b->ino ||
-		    m.offset != b->base) {
+		} else if (m.v.disown.ino != b->ino ||
+		    m.v.disown.offset != b->base) {
 			/* We close the fd here to avoid deadlocks. */
 			close(b->fd);
 			exlog(LOG_ERR, "%s: bad manager response; "
 			    "offset expected=%lu, received=%lu",
 			    "ino expected=%lu, received=%lu",
-			    __func__, b->base, m.offset, b->ino, m.ino);
+			    __func__, b->base, m.v.disown.offset, b->ino,
+			    m.v.disown.ino);
 			goto fail;
 		}
 
@@ -213,7 +213,7 @@ fail:
 		 */
 		if (mgr != -1)
 			close(mgr);
-		fs_info_set_error();
+		fs_error_set();
 		nanosleep(&tp, NULL);
 	}
 }
@@ -231,7 +231,7 @@ slab_purge(void *unused)
 		}
 
 		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
-			fs_info_set_error();
+			fs_error_set();
 			exlog_lerrno(LOG_ERR, errno,
 			    "%s: failed to get current time", __func__);
 			continue;
@@ -310,7 +310,7 @@ slab_make_dirs(struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir, ITBL_DIR)
 	    >= sizeof(path))
-		return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: bad inode table dir; too long", __func__);
 
 	if (mkdir_x(path, 0700) == -1)
@@ -319,7 +319,7 @@ slab_make_dirs(struct exlog_err *e)
 	for (i = 0; i < SLAB_DIRS; i++) {
 		if (snprintf(path, sizeof(path), "%s/%02x",
 		    fs_config.data_dir, i) >= sizeof(path))
-			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+			return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 			    "%s: bad slab dir; too long", __func__);
 		if (mkdir_x(path, 0700) == -1)
 			return exlog_errf(e, EXLOG_OS, errno, __func__);
@@ -398,7 +398,7 @@ slab_load_itbl(ino_t ino, rwlk_flags lkf, struct exlog_err *e)
 	struct slab_itbl_hdr *hdr;
 
 	if (!(lkf & (LK_LOCK_RD|LK_LOCK_RW))) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: neither read nor write lock requested", __func__);
 		return NULL;
 	}
@@ -502,9 +502,10 @@ slab_shutdown(struct exlog_err *e)
 
 int
 slab_path(char *path, size_t len, ino_t ino, off_t offset,
-    uint32_t flags, struct exlog_err *e)
+    uint32_t flags, int name_only, struct exlog_err *e)
 {
-	ino_t base;
+	ino_t  base;
+	size_t l;
 
 	if (flags & SLAB_ITBL) {
 		base = ((ino - 1) / slab_inode_max()) *
@@ -513,21 +514,28 @@ slab_path(char *path, size_t len, ino_t ino, off_t offset,
 		base = offset / slab_get_max_size();
 	}
 
-	if (flags & SLAB_ITBL) {
-		if (snprintf(path, len, "%s/%s/%s%020lu",
-		    fs_config.data_dir, ITBL_DIR, ITBL_PREFIX, base) >= len) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
-			    "%s: bad inode table name %lu; too long",
-			    __func__, base);
+	if (name_only) {
+		if (flags & SLAB_ITBL) {
+			l = snprintf(path, len, "%s%020lu", ITBL_PREFIX, base);
+		} else {
+			l = snprintf(path, len, "%s%020lu-%020lu",
+			    SLAB_PREFIX, ino, offset / slab_get_max_size());
 		}
 	} else {
-		if (snprintf(path, len, "%s/%02lx/%s%020lu-%020lu",
-		    fs_config.data_dir, ino % SLAB_DIRS, SLAB_PREFIX, ino,
-		    offset / slab_get_max_size()) >= len) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
-			    "%s: bad slab name %s; too long", __func__, path);
+		if (flags & SLAB_ITBL) {
+			l = snprintf(path, len, "%s/%s/%s%020lu",
+			    fs_config.data_dir, ITBL_DIR, ITBL_PREFIX, base);
+		} else {
+			l = snprintf(path, len, "%s/%02lx/%s%020lu-%020lu",
+			    fs_config.data_dir, ino % SLAB_DIRS, SLAB_PREFIX,
+			    ino, offset / slab_get_max_size());
 		}
 	}
+
+	if (l >= len)
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: bad inode table name %lu; too long",
+		    __func__, base);
 	return 0;
 }
 
@@ -537,15 +545,13 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 {
 	struct oslab    *b, needle;
 	struct oslab    *purged;
-	struct stat      st;
-	int              fd;
 	ino_t            base;
 	struct timespec  t = {5, 0};
 	int              mgr = -1;
 	struct mgr_msg   m;
 
 	if (flags != 0 && flags != SLAB_ITBL) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: flags must be either none of SLAB_ITBL",
 		    __func__);
 		return NULL;
@@ -607,76 +613,60 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		goto fail_destroy_locks;
 
 	m.m = MGR_MSG_CLAIM;
-	m.ino = ino;
-	m.offset = offset;
-	m.flags = flags;
-	m.oflags = oflags;
+	m.v.claim.ino = ino;
+	m.v.claim.offset = offset;
+	m.v.claim.flags = flags;
+	m.v.claim.oflags = oflags;
 
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		goto fail_destroy_locks;
 
-	if (mgr_recv(mgr, &fd, &m, e) == -1)
+	if (mgr_recv(mgr, &b->fd, &m, e) == -1)
 		goto fail_destroy_locks;
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
-		exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no such slab", __func__);
 		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response", __func__);
 		goto fail_destroy_locks;
-	} else if (m.offset != offset || m.ino != ino) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
+	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response; "
 		    "base expected=%lu, received=%lu",
 		    "ino expected=%lu, received=%lu",
-		    offset, m.offset, ino, m.ino, __func__);
+		    offset, m.v.claim.offset, ino, m.v.claim.ino, __func__);
 		goto fail_destroy_locks;
-	} else if (fd == -1) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EMGR,
-		    "%s: bad manager response; fd is -1", __func__);
+	} else if (b->fd == -1) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response; mgr returned fd -1", __func__);
 		goto fail_destroy_locks;
-	}
-
-	b->fd = fd;
-	if (fstat(fd, &st) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: failed to fstat() slab", __func__);
-		goto fail_disown;
 	}
 
 	b->dirty = 0;
 
-	if (st.st_size == 0) {
-		bzero(&b->hdr, sizeof(b->hdr));
-		b->hdr.v.f.slab_version = SLAB_VERSION;
-		b->hdr.v.f.flags = flags;
-		b->hdr.v.f.revision = 1;
-		if (slab_write_hdr(b, e) == -1)
+	LK_WRLOCK(&b->lock);
+	if (slab_read_hdr(b, e) == -1) {
+		LK_UNLOCK(&b->lock);
+		goto fail_disown;
+	}
+	if (b->hdr.v.f.flags & SLAB_REMOVED) {
+		if (oflags & OSLAB_NOCREATE) {
+			LK_UNLOCK(&b->lock);
+			exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
+			    "%s: slab was removed and "
+			    "OSLAB_NOCREATE is set",
+			    __func__);
 			goto fail_disown;
-	} else {
-		LK_WRLOCK(&b->lock);
-		if (slab_read_hdr(b, e) == -1) {
+		}
+		if (slab_realloc(b, e) == -1) {
 			LK_UNLOCK(&b->lock);
 			goto fail_disown;
 		}
-		if (b->hdr.v.f.flags & SLAB_REMOVED) {
-			if (oflags & OSLAB_NOCREATE) {
-				LK_UNLOCK(&b->lock);
-				exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
-				    "%s: slab was removed and "
-				    "PSLAB_NOCREATE is set",
-				    __func__);
-				goto fail_disown;
-			}
-			if (slab_realloc(b, e) == -1) {
-				LK_UNLOCK(&b->lock);
-				goto fail_disown;
-			}
-		}
-		LK_UNLOCK(&b->lock);
 	}
+	LK_UNLOCK(&b->lock);
 
 	b->refcnt = 1;
 
@@ -808,7 +798,7 @@ slab_itbls(ino_t *bases, size_t n, struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s",
 	    fs_config.data_dir, ITBL_DIR) >= sizeof(path))
-		return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: bad inode table name %lu; too long",
 		    __func__, base);
 	if ((itbl_dir = opendir(path)) == NULL)
@@ -928,7 +918,7 @@ slab_splice_fd(struct oslab *b, off_t offset, size_t count,
 	*fd = b->fd;
 	*rel_offset += sizeof(b->hdr);
 	if (write_fd && slab_set_dirty_hdr(b, &e) == -1) {
-		fs_info_set_error();
+		fs_error_set();
 		exlog_lerr(LOG_ERR, &e, __func__);
 	}
 }
@@ -942,12 +932,12 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, struct exlog_err *e)
 	ino_t         base;
 
 	if (flags != 0 && flags != SLAB_ITBL) {
-		exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: flags must be either none of SLAB_ITBL", __func__);
 		return NULL;
 	}
 
-	if (slab_path(path, sizeof(path), ino, offset, flags, e) == -1)
+	if (slab_path(path, sizeof(path), ino, offset, flags, 0, e) == -1)
 		return NULL;
 
 	if (flags & SLAB_ITBL) {
@@ -959,7 +949,7 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, struct exlog_err *e)
 
 	if ((fd = open(path, O_RDONLY)) == -1) {
 		if (errno == ENOENT)
-			exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+			exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 			    "%s: no such slab", __func__);
 		else
 			exlog_errf(e, EXLOG_OS, errno, "%s: failed "

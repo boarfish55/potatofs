@@ -98,7 +98,7 @@ again:
 		    "%s: recvmsg: eof", __func__);
 
 	if ((msg.msg_flags & MSG_TRUNC) || (msg.msg_flags & MSG_CTRUNC))
-		return exlog_errf(e, EXLOG_APP, EXLOG_EINVAL,
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: recvmsg: control message truncated", __func__);
 
 	if (fd != NULL) {

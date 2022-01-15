@@ -20,7 +20,9 @@
 #ifndef MGR_H
 #define MGR_H
 
+#include <sys/statvfs.h>
 #include <stdint.h>
+#include "fs_info.h"
 #include "exlog.h"
 
 struct mgr_msg {
@@ -34,26 +36,39 @@ struct mgr_msg {
 		MGR_MSG_DISOWN_OK,
 		MGR_MSG_DISOWN_ERR,
 
-		MGR_MSG_FS_USAGE,
-		MGR_MSG_FS_USAGE_OK,
-		MGR_MSG_FS_USAGE_ERR
+		// TODO:
+		MGR_MSG_SET_FS_ERROR,
+		MGR_MSG_SET_FS_ERROR_OK,
+		MGR_MSG_SET_FS_ERROR_ERR,
+
+		MGR_MSG_FS_INFO,
+		MGR_MSG_FS_INFO_OK,
+		MGR_MSG_FS_INFO_ERR
 	} m;
 
-	uint32_t flags;
-	uint32_t oflags;
-	/*
-	 * If SLAB_ITBL is set in flags, ino will be used to
-	 * select which inode table to claim, offset will be unused.
-	 */
-	ino_t    ino;
-	off_t    offset;
+	union {
+		struct {
+			uint32_t flags;
+			uint32_t oflags;
 
-	/*
-	 * In "FS_USAGE" messages, "capacity" is used to record
-	 * the total backend capacity, while "offset" stores
-	 * the current count of bytes allocated.
-	 */
-	off_t    capacity;
+			/*
+			 * If SLAB_ITBL is set in flags, ino will be used to
+			 * select which inode table to claim, offset will be
+			 * unused.
+			 */
+			ino_t    ino;
+			off_t    offset;
+		} claim;
+
+		struct {
+			ino_t    ino;
+			off_t    offset;
+		} disown;
+
+		struct fs_info fs_info;
+
+		uint8_t        fs_error;
+	} v;
 };
 
 void mgr_init(const char *);

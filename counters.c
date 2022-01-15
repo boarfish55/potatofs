@@ -31,6 +31,7 @@
 #include "config.h"
 #include "counters.h"
 #include "exlog.h"
+#include "util.h"
 
 struct counter counters[] = {
 	/* COUNTER_FS_GETATTR */
@@ -144,20 +145,14 @@ counter_flush(void *unused)
 	// TODO: this should all happen through a control socket, not
 	// a tempfile.
 	while (!counters_shutdown) {
-		if ((fd = open(counters_path,
-		    O_CREAT|O_WRONLY|O_TRUNC, 0644)) == -1) {
+		if ((fd = open_wflock(counters_path,
+		    O_CREAT|O_WRONLY|O_TRUNC, 0644, LOCK_EX)) == -1) {
 			exlog_lerrno(LOG_ERR, errno,
-			    "%s: failed to open counters file: %s", __func__,
-			    counters_path);
+			    "%s: failed to open_wflock() counters file: %s",
+			    __func__, counters_path);
 			goto sleep;
 		}
-		if (flock(fd, LOCK_EX) == -1) {
-			exlog_lerrno(LOG_ERR, errno,
-			    "%s: failed to lock counters file: %s", __func__,
-			    counters_path);
-			close(fd);
-			goto sleep;
-		}
+
 		if ((f = fdopen(fd, "w")) == NULL) {
 			exlog_lerrno(LOG_ERR, errno,
 			    "%s: failed to fdopen counters file: %s", __func__,
@@ -198,7 +193,7 @@ counter_init(const char *path, struct exlog_err *e)
 
 	if (snprintf(counters_path, sizeof(counters_path), "%s/%s",
 	    path, COUNTERS_FILE_NAME) >= sizeof(counters_path))
-		 return exlog_errf(e, EXLOG_APP, EXLOG_ENAMETOOLONG,
+		 return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		     "counters file name too long: %s", path);
 
 	if ((r = pthread_attr_init(&attr)) != 0)

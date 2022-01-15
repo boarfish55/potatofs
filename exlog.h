@@ -27,26 +27,31 @@
 enum exlog_errcode {
 	EXLOG_NONE = 0,
 	EXLOG_APP,      /* App-level error */
-	EXLOG_OS        /* OS-level error */
+	EXLOG_OS,       /* OS-level error */
+	EXLOG_MDB       /* LMDB error */
 };
 
 enum exlog_cerrcode {
-	EXLOG_ESUCCESS = 0,
-	EXLOG_EINVAL,       /* An invalid value was obtained */
-	EXLOG_ENOENT,       /* An entity doesn't exist */
-	EXLOG_EEXIST,       /* An entity already exists */
-	EXLOG_ENOTDIR,      /* Attempted to readdir() on a non-directory */
-	EXLOG_EIO,          /* Something abnormal happened during I/O op */
-	EXLOG_ERES,         /* Resource is exhausted, or limit reached */
-	EXLOG_EBUSY,        /* Resource is busy, or already loaded */
-	EXLOG_EOPNOTSUPP,   /* The operation is not supported */
-	EXLOG_ENAMETOOLONG, /* File name too long */
-	EXLOG_EBADF,        /* Bad file descriptor, or conflicting
+	EXLOG_SUCCESS = 0,
+	EXLOG_INVAL,        /* An invalid value was obtained */
+	EXLOG_NOENT,        /* An entity doesn't exist */
+	EXLOG_EXIST,        /* An entity already exists */
+	EXLOG_NOTDIR,       /* Attempted to readdir() on a non-directory */
+	EXLOG_IO,           /* Something abnormal happened during I/O op */
+	EXLOG_RES,          /* Resource is exhausted, or limit reached */
+	EXLOG_BUSY,         /* Resource is busy, or already loaded */
+	EXLOG_OPNOTSUPP,    /* The operation is not supported */
+	EXLOG_NAMETOOLONG,  /* File name too long */
+	EXLOG_LOCKBUSY,     /* A lock is already claimed */
+	EXLOG_BADF,         /* Bad file descriptor, or conflicting
 			       open flags */
-	EXLOG_EOVERFLOW,    /* Variable size overflow */
-	EXLOG_ESHORTIO,     /* Data sent or received is shorter than expected */
+	EXLOG_OVERFLOW,     /* Variable size overflow */
+	EXLOG_SHORTIO,      /* Data sent or received is shorter than expected */
 	EXLOG_EOF,          /* End-of-file */
-	EXLOG_EMGR          /* Issue arised during communication with
+	EXLOG_EXEC,         /* Error while running backend executable */
+	EXLOG_JSON,         /* JSON error */
+	EXLOG_CRC_MISMATCH, /* CRC mismatch in slab */
+	EXLOG_MGR           /* Issue arised during communication with
 	                       slab manager */
 };
 

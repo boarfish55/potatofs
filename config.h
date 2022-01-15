@@ -36,9 +36,13 @@
 #define MGR_DEFAULT_UNPRIV_GROUP  "potatomgr"
 #define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/mgr.pl"
 #define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
+#define DEFAULT_MDB_NAME          "slabs.mdb"
+#define DEFAULT_BGLOCK_NAME       "bgworker.lock"
 
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"
+#define OUTGOING_DIR  "outgoing"
+#define INCOMING_DIR  "incoming"
 #define SLAB_PREFIX   "b"
 #define SLAB_DIRS     256
 #define FS_ROOT_INODE 1

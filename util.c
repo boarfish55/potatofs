@@ -17,8 +17,10 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <stdlib.h>
 #include "exlog.h"
@@ -39,7 +41,7 @@ lk_lock(rwlk *lock, rwlk_flags flags, const char *lockname,
 	} else if (flags & LK_LOCK_RD) {
 		r = pthread_rwlock_rdlock(lock);
 	} else {
-		exlog_errf(&e, EXLOG_APP, EXLOG_EINVAL,
+		exlog_errf(&e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: neither read or write lock specified: %d",
 		    __func__, flags);
 		goto fail;
@@ -256,4 +258,24 @@ mkdir_x(const char *path, mode_t mode)
 			return -1;
 	}
 	return 0;
+}
+
+int
+open_wflock(const char *path, int flags, mode_t mode, int lk)
+{
+	int fd;
+
+	if (flags & O_CREAT) {
+		if ((fd = open(path, flags, mode)) == -1)
+			return -1;
+	} else
+		if ((fd = open(path, flags)) == -1)
+			return -1;
+
+	if (flock(fd, lk) == -1) {
+		close(fd);
+		return -1;
+	}
+
+	return fd;
 }

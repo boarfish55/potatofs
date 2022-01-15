@@ -35,7 +35,7 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 	ssize_t entries = 0;
 
 	if (!inode_isdir(oi))
-		return exlog_errf(e, EXLOG_APP, EXLOG_ENOTDIR,
+		return exlog_errf(e, EXLOG_APP, EXLOG_NOTDIR,
 		    "%s: not a directory", __func__);
 
 	while (entries < count) {
@@ -44,7 +44,7 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 		if (r == 0) {
 		    break;
 		} else if (r < sizeof(struct dir_entry)) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+			return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 			    "%s: corrupted directory; incomplete entries",
 			    __func__);
 		} else if (r == -1)
@@ -74,7 +74,7 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 
 /*
  * Fills 'de' with the dirent of 'name', if it exists. Returns
- * 0 on success, -1 with EXLOG_ENOENT if it doesn't exist, or
+ * 0 on success, -1 with EXLOG_NOENT if it doesn't exist, or
  * any other error if encountered.
  */
 int
@@ -91,7 +91,7 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
 		if (r == 0) {
 			break;
 		} else if (r < sizeof(struct dir_entry)) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+			return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 			    "%s: corrupted directory; incomplete entries",
 			    __func__);
 		} else if (r == -1)
@@ -103,7 +103,7 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
 		if (de->next == 0)
 			break;
 	}
-	return exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+	return exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 	    "%s: no such directory entry: %s (inode=%d)",
 	    __func__, name, inode_ino(oi));
 }
@@ -142,7 +142,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 		if (r == 0) {
 			break;
 		} else if (r < sizeof(struct dir_entry)) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+			return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 			    "%s: corrupted directory; incomplete entries",
 			    __func__);
 		} else if (r == -1)
@@ -150,7 +150,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 
 		if (strcmp(r_de.name, n_de.name) == 0) {
 			if (!replaced) {
-				return exlog_errf(e, EXLOG_APP, EXLOG_EEXIST,
+				return exlog_errf(e, EXLOG_APP, EXLOG_EXIST,
 				    "%s: file %s already exists", __func__,
 				    de->name);
 			}
@@ -180,7 +180,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	 */
 	r = inode_write(parent, offset, &n_de, sizeof(n_de), e);
 	if (r < sizeof(struct dir_entry)) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: partial dirent write, this directory might "
 		    "be corrupted", __func__);
 	} else if (r == -1)
@@ -188,7 +188,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 
 	r = inode_write(parent, prev_off, &prev_used, sizeof(prev_used), e);
 	if (r < sizeof(struct dir_entry)) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: partial dirent write, this directory "
 		    "might be corrupted", __func__);
 	}
@@ -228,7 +228,7 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 		if (r == 0) {
 			goto noent;
 		} else if (r < sizeof(struct dir_entry)) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+			return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 			    "%s: corrupted directory; incomplete entries",
 			    __func__);
 		} else if (r == -1)
@@ -249,7 +249,7 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 
 	r = inode_write(parent, prev_off, &prev_used, sizeof(prev_used), e);
 	if (r < sizeof(struct dir_entry)) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO, "%s: "
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO, "%s: "
 		    "partial dirent write while removing dirent; "
 		    "used dirent list corrupted", __func__);
 	}
@@ -257,7 +257,7 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 	if (prev_used.next == 0) {
 		if (inode_truncate(parent,
 		    prev_off + sizeof(prev_used), e) == -1) {
-			return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+			return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 			    "%s: failed to truncate dir inode",
 			    __func__);
 		}
@@ -269,14 +269,14 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 	if (r == -1) {
 		return -1;
 	} else if (r < sizeof(z_de)) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s partial dirent write, "
 		    "this directory might be corrupted", __func__);
 	}
 
 	return 0;
 noent:
-	return exlog_errf(e, EXLOG_APP, EXLOG_ENOENT,
+	return exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 	    "%s: no such dirent", __func__);
 }
 
@@ -291,7 +291,7 @@ di_parent(struct oinode *oi, struct exlog_err *e)
 	if (r == -1)
 		return -1;
 	else if (r < sizeof(struct dir_entry))
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: corrupted directory; incomplete entries",
 		    __func__);
 
@@ -309,7 +309,7 @@ di_setparent(struct oinode *oi, ino_t parent, struct exlog_err *e)
 	if (r == -1)
 		return -1;
 	else if (r < sizeof(struct dir_entry))
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: corrupted directory; incomplete entries",
 		    __func__);
 	de.inode = parent;
@@ -318,7 +318,7 @@ di_setparent(struct oinode *oi, ino_t parent, struct exlog_err *e)
 	if (r == -1)
 		return -1;
 	else if (r < sizeof(struct dir_entry))
-		return exlog_errf(e, EXLOG_APP, EXLOG_EIO,
+		return exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s partial dirent write, "
 		    "this directory might be corrupted", __func__);
 

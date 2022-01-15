@@ -43,7 +43,6 @@ struct slab_hdr {
 			 */
 			uint32_t slab_version;
 
-			// TODO: reserve space for crc32
 			uint32_t checksum;
 			uint32_t flags;
 
@@ -147,7 +146,7 @@ int slab_make_dirs(struct exlog_err *);
  * Computes the path/filename of a slab based on the slab type
  * and inode (for data slabs) or base inode (for itbl slabs).
  */
-int slab_path(char *, size_t, ino_t, off_t, uint32_t, struct exlog_err *);
+int slab_path(char *, size_t, ino_t, off_t, uint32_t, int, struct exlog_err *);
 
 /*
  * Returns a pointer to a slab which can be passed to other slab_*
