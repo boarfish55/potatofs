@@ -164,7 +164,7 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 		goto fail;
 	}
 
-	exlog(LOG_DEBUG, "%s: k=%u/%lu/%lu, v=%u/%lu\n", __func__,
+	exlog(LOG_DEBUG, "%s: k=%u/%lu/%lu, v=%u/%lu", __func__,
 	    ((struct slab_key *)mk.mv_data)->itbl,
 	    ((struct slab_key *)mk.mv_data)->ino,
 	    ((struct slab_key *)mk.mv_data)->offset,
@@ -336,10 +336,9 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 	if (pipe(p_err) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: pipe", __func__);
 
-	switch ((pid = fork())) {
-	case -1:
+	if ((pid = fork()) == -1) {
 		return exlog_errf(e, EXLOG_OS, errno, "%s: fork", __func__);
-	case 0:
+	} else if (pid == 0) {
 		close(p_out[0]);
 		close(p_err[0]);
 		if (p_out[1] != STDOUT_FILENO) {
@@ -363,79 +362,83 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 			return exlog_errf(e, EXLOG_OS, errno, "%s: execv",
 			    __func__);
 		}
-	default:
-		// TODO: need a timeout of some sort? Or let the script handle
-		// itself?
-		close(p_out[1]);
-		close(p_err[1]);
-
-		stdout_len--;
-		stderr_len--;
-		stdout_r = 0;
-		stderr_r = 0;
-		while (!stdout_closed || !stderr_closed) {
-			nfds = 0;
-			if (!stdout_closed) {
-				fds[nfds].fd = p_out[0];
-				fds[nfds++].events = POLLIN;
-			}
-			if (!stderr_closed) {
-				fds[nfds].fd = p_err[0];
-				fds[nfds++].events = POLLIN;
-			}
-
-			if ((poll_r = poll(fds, nfds, 10000)) == -1)
-				return exlog_errf(e, EXLOG_OS, errno,
-				    "%s: poll", __func__);
-
-			if (poll_r == 0) {
-				exlog(LOG_ERR, "%s: command timed out; "
-				    "aborting", __func__);
-				kill(pid, 9);
-			}
-
-			while (nfds-- > 0) {
-				if (fds[nfds].revents & POLLERR) {
-					if (fds[nfds].fd == p_out[1])
-						stdout_closed = 1;
-					else
-						stderr_closed = 1;
-					exlog(LOG_ERR, "%s: file descriptor %d "
-					    "closed unexpectedly", __func__,
-					    fds[nfds].fd);
-					continue;
-				}
-
-				if (!(fds[nfds].revents & POLLIN))
-					continue;
-
-				if (fds[nfds].fd == p_out[1]) {
-					r = read(p_out[1], stdout + stdout_r,
-					    stdout_len - stdout_r);
-					if (r > 0) {
-						stdout_r += r;
-					} else
-						stdout_closed = 1;
-				} else {
-					r = read(p_err[1], stderr + stderr_r,
-					    stderr_len - stderr_r);
-					if (r > 0)
-						stderr_r += r;
-					else
-						stderr_closed = 1;
-				}
-				if (r == -1)
-					exlog_lerrno(LOG_ERR, errno,
-					    "%s: file descriptor %d "
-					    "error", __func__, fds[nfds].fd);
-			}
-		}
-		stdout[stdout_r] = '\0';
-		stderr[stderr_r] = '\0';
-		if (waitpid(pid, wstatus, 0) == -1)
-			return exlog_errf(e, EXLOG_OS, errno, "%s: waitpid",
-			    __func__);
 	}
+
+	close(p_out[1]);
+	close(p_err[1]);
+
+	/*
+	 * Make room for \n.
+	 */
+	stdout_len--;
+	stderr_len--;
+
+	stdout_r = 0;
+	stderr_r = 0;
+	while (!stdout_closed || !stderr_closed) {
+		nfds = 0;
+		if (!stdout_closed) {
+			fds[nfds].fd = p_out[0];
+			fds[nfds++].events = POLLIN;
+		}
+		if (!stderr_closed) {
+			fds[nfds].fd = p_err[0];
+			fds[nfds++].events = POLLIN;
+		}
+
+		if ((poll_r = poll(fds, nfds,
+		    BACKEND_TIMEOUT_SECONDS * 1000)) == -1)
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: poll", __func__);
+
+		if (poll_r == 0) {
+			exlog(LOG_ERR, "%s: command timed out after %d "
+			    "seconds; aborting",
+			    __func__, BACKEND_TIMEOUT_SECONDS);
+			kill(pid, 9);
+		}
+
+		while (nfds-- > 0) {
+			if (fds[nfds].revents & POLLERR) {
+				if (fds[nfds].fd == p_out[1])
+					stdout_closed = 1;
+				else
+					stderr_closed = 1;
+				exlog(LOG_ERR, "%s: file descriptor %d "
+				    "closed unexpectedly", __func__,
+				    fds[nfds].fd);
+				continue;
+			}
+
+			if (!(fds[nfds].revents & POLLIN))
+				continue;
+
+			if (fds[nfds].fd == p_out[1]) {
+				r = read(p_out[1], stdout + stdout_r,
+				    stdout_len - stdout_r);
+				if (r > 0) {
+					stdout_r += r;
+				} else
+					stdout_closed = 1;
+			} else {
+				r = read(p_err[1], stderr + stderr_r,
+				    stderr_len - stderr_r);
+				if (r > 0)
+					stderr_r += r;
+				else
+					stderr_closed = 1;
+			}
+			if (r == -1)
+				exlog_lerrno(LOG_ERR, errno,
+				    "%s: file descriptor %d error",
+				    __func__, fds[nfds].fd);
+		}
+	}
+	stdout[stdout_r] = '\0';
+	stderr[stderr_r] = '\0';
+	if (waitpid(pid, wstatus, 0) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: waitpid", __func__);
+
 	return 0;
 }
 

@@ -47,6 +47,8 @@
 #define SLAB_DIRS     256
 #define FS_ROOT_INODE 1
 
+#define BACKEND_TIMEOUT_SECONDS 30
+
 /*
  * The block size is used for block headers and inode table headers.
  * It's the file I/O size used when potatofs is dealing with its own metadata.
@@ -83,13 +85,6 @@
 #define FS_PATH_MAX 4096
 #define FS_NAME_MAX  255
 #define FS_LINK_MAX  127
-
-/*
- * This is needed for header files we snatched from OpenBSD, like tree.h.
- * See OpenBSD's src/sys/sys/cdefs.h for how they usually assign those.
- */
-#define __inline inline
-#define __unused __attribute__((__unused__))
 
 struct fs_config {
 	uid_t       uid;
