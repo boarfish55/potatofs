@@ -101,21 +101,40 @@ handle_sig(int sig)
 			exlog_lerr(LOG_ERR, &e, "%s", __func__);
 	}
 
+	killpg(0, 15);
+
 	switch (sig) {
 	case SIGPIPE:
-		syslog(LOG_ERR, "SIGPIPE received, exiting.");
-		exit(sig);
 	case SIGTERM:
-		syslog(LOG_NOTICE, "SIGTERM received, exiting.");
-		killpg(0, 15);
-		exit(sig);
 	case SIGINT:
-		syslog(LOG_NOTICE, "SIGINT received, exiting.");
+		syslog((sig == SIGPIPE) ? LOG_ERR : LOG_NOTICE,
+		    "signal %d received, exiting.", sig);
 		exit(sig);
 	default:
 		syslog(LOG_ERR, "Unhandled signal received. Exiting.");
 		exit(sig);
 	}
+}
+
+static int
+set_fs_error()
+{
+	struct fs_info   fs_info;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+
+	if (fs_info_read(&fs_info, &e) == -1) {
+		exlog_lerr(LOG_CRIT, &e, "%s", __func__);
+		return -1;
+	}
+
+	fs_info.error = 1;
+
+	if (fs_info_write(&fs_info, &e) == -1) {
+		exlog_lerr(LOG_CRIT, &e, "%s", __func__);
+		return -1;
+	}
+
+	return 0;
 }
 
 static int
@@ -443,27 +462,28 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 }
 
 static int
-outq(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr, struct exlog_err *e)
+copy_outgoing_slab(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr,
+    struct exlog_err *e)
 {
 	int             dst_fd;
-	char            dst[PATH_MAX], dst_name[NAME_MAX + 1];
+	char            dst[PATH_MAX], name[NAME_MAX + 1];
 	char            buf[8192];
 	struct stat     st;
 	struct slab_hdr dst_hdr;
 	ssize_t         r;
 
-	if (slab_path(dst_name, sizeof(dst_name), ino, offset,
+	if (slab_path(name, sizeof(name), ino, offset,
 	    hdr->v.f.flags, 1, e) == -1)
 		return -1;
 
 	if (snprintf(dst, sizeof(dst), "%s/%s/%s", fs_config.data_dir,
-	    OUTGOING_DIR, dst_name) >= sizeof(dst))
+	    OUTGOING_DIR, name) >= sizeof(dst))
 		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: outq slab name too long", __func__);
 
-	if ((dst_fd = open_wflock(dst, O_CREAT|O_WRONLY, 0600, LOCK_EX))
-	    == -1) {
-		exlog_errf(e, EXLOG_OS, errno, "%s: failed "
+	if ((dst_fd = open_wflock(dst,
+	    O_CREAT|O_WRONLY, 0600, LOCK_EX)) == -1) {
+		return exlog_errf(e, EXLOG_OS, errno, "%s: failed "
 		    "to open_wflock() outq slab %s", __func__, dst);
 	}
 
@@ -480,30 +500,34 @@ outq(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr, struct exlog_err *e)
 			goto fail;
 		}
 		if (dst_hdr.v.f.revision >= hdr->v.f.revision) {
-			exlog(LOG_INFO, "slab in outq has a revision "
+			exlog(LOG_INFO, "slab in outgoing dir has a revision "
 			    "greater or equal to this one: %s "
-			    "(revision %llu >= %llu", dst_name,
+			    "(revision %llu >= %llu", dst,
 			    dst_hdr.v.f.revision, hdr->v.f.revision);
 			goto end;
 		}
-	} else {
-		/* Make room for the header we're about to fill in. */
-		if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1) {
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: lseek", __func__);
-			goto fail;
-		}
 	}
 
-	hdr->v.f.checksum = crc32_z(0L,
-	    (unsigned char *)hdr, sizeof(struct slab_hdr));
+copy_again:
+	/* Make room for the header we're about to fill in. */
+	if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: lseek", __func__);
+		goto fail;
+	}
+
+	if (lseek(fd, sizeof(struct slab_hdr), SEEK_SET) == -1) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: lseek", __func__);
+		goto fail;
+	}
+	hdr->v.f.checksum = crc32_z(0L, Z_NULL, 0);
 
 	while ((r = read(fd, buf, sizeof(buf)))) {
 		if (r == -1) {
 			if (errno == EINTR)
 				continue;
 			exlog_errf(e, EXLOG_OS, errno, "%s: read", __func__);
-			goto fail_unlink_dst;
+			goto fail;
 		}
 
 		hdr->v.f.checksum = crc32_z(hdr->v.f.checksum,
@@ -511,31 +535,36 @@ outq(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr, struct exlog_err *e)
 
 		r = write_x(dst_fd, buf, r);
 		if (r == -1) {
+			if (errno == ENOSPC) {
+				exlog(LOG_ERR, "%s: ran out of space; "
+				    "retrying", __func__);
+				sleep(5);
+				goto copy_again;
+			}
 			exlog_errf(e, EXLOG_OS, errno, "%s: write", __func__);
-			goto fail_unlink_dst;
+			goto fail;
 		}
 	}
 
 	if (lseek(dst_fd, 0, SEEK_SET) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: seek on dst_fd", __func__);
-		goto fail_unlink_dst;
+		goto fail;
 	}
 
-	if (write_x(dst_fd, hdr, sizeof(hdr)) < sizeof(hdr)) {
+	if (write_x(dst_fd, hdr, sizeof(struct slab_hdr)) <
+	    sizeof(struct slab_hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: short write on slab header", __func__);
-		goto fail_unlink_dst;
+		goto fail;
 	}
 end:
 	close(dst_fd);
 	return 0;
-fail_unlink_dst:
+fail:
 	if (unlink(dst) == -1)
 		exlog_lerrno(LOG_ERR, errno, "%s: unlink dst", __func__);
-fail:
-	if (dst_fd > -1)
-		close(dst_fd);
+	close(dst_fd);
 	return -1;
 }
 
@@ -569,41 +598,38 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "statvfs");
-	} else {
+	} else if (stv.f_bavail * stv.f_frsize < cache_size * 30 / 100)
 		// TODO: don't hardcode 70%
-		if (stv.f_bavail * stv.f_frsize < cache_size * 30 / 100) {
-			purge = 1;
+		purge = 1;
+
+	if (hdr.v.f.flags & SLAB_DIRTY &&
+	    now.tv_sec >= (hdr.v.f.last_claimed_at.tv_sec +
+	    fs_config.slab_max_claim_age)) {
+		if (copy_outgoing_slab(fd, m->v.disown.ino, m->v.disown.offset,
+		    &hdr, e) == -1)
+			goto fail;
+
+		if (purge) {
+			if (slab_path(src, sizeof(src), m->v.disown.ino,
+			    m->v.disown.offset, hdr.v.f.flags, 0, e) == -1)
+				goto fail;
+
+			if (unlink(src) == -1) {
+				exlog_lerrno(LOG_ERR, errno,
+				    "%s: unlink src %s", __func__, src);
+				purge = 0;
+			}
 		}
 	}
-	// TODO: here ... what's the logic here for purging and
-	// doing slabdb_put() ??
+
 	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 	if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
 	    m->v.disown.ino, m->v.disown.offset, hdr.v.f.revision,
 	    crc, (purge) ? uuid_zero : instance_id, e) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: slabdb_put", __func__);
+		set_fs_error();
 		goto fail;
-	}
-
-	if (hdr.v.f.flags & SLAB_DIRTY &&
-	    now.tv_sec >= (hdr.v.f.last_backend_sync.tv_sec +
-	    fs_config.slab_max_age)) {
-		if (outq(fd, m->v.disown.ino, m->v.disown.offset,
-		    &hdr, e) == -1)
-			goto fail;
-
-		if (slab_path(src, sizeof(src), m->v.disown.ino,
-		    m->v.disown.offset, hdr.v.f.flags, 0, e) == -1)
-			goto fail;
-
-		// TODO: Don't always unlink as this is inefficient. Only
-		// unlink if we have no more local space.
-		if (purge && unlink(src) == -1) {
-			exlog_lerrno(LOG_ERR, errno,
-			    "%s: unlink src", __func__);
-			goto fail;
-		}
 	}
 
 	close(fd);
@@ -810,13 +836,14 @@ check_slab_header(int fd, uint32_t header_crc, uint64_t rev,
  * revision match what's passed in the function args.
  */
 static int
-copy_slab(int dst_fd, int src_fd, uint32_t header_crc,
+copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
     uint64_t revision, struct exlog_err *e)
 {
 	struct slab_hdr hdr;
 	ssize_t         r;
 	char            buf[BUFSIZ];
 	uint32_t        crc;
+	struct timespec now;
 
 	if (lseek(src_fd, 0, SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
@@ -834,7 +861,7 @@ copy_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		 * backend doesn't have correct (latest?) version
 		 * of slab. Are we dealing with eventual consistency?
 		 */
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: mismatching slab revision: "
 		    "expected=%lu, slab=%lu", __func__,
 		    revision, hdr.v.f.revision);
@@ -847,6 +874,11 @@ copy_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	}
 
 write_hdr_again:
+	if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "%s: clock_gettime", __func__);
+		return -1;
+	}
+	hdr.v.f.last_claimed_at.tv_sec = now.tv_sec;
 	if (write_x(dst_fd, &hdr, sizeof(hdr)) == -1) {
 		if (errno == ENOSPC) {
 			exlog(LOG_ERR, "%s: ran out of space during; "
@@ -989,7 +1021,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail_close_dst;
 	}
 	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0, LOCK_SH)) != -1) {
-		if (copy_slab(dst_fd, outgoing_fd, header_crc,
+		if (copy_incoming_slab(dst_fd, outgoing_fd, header_crc,
 		    revision, e) == 0) {
 			close(outgoing_fd);
 			goto end;
@@ -1005,15 +1037,15 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		    "%s: inq slab name too long", __func__);
 		goto fail_close_dst;
 	}
-	if ((incoming_fd = open_wflock(in_path, O_RDWR,
-	    O_CREAT, LOCK_EX)) > 0) {
+	if ((incoming_fd = open_wflock(in_path, O_RDWR|O_CREAT,
+	    0600, LOCK_EX)) > 0) {
 		/*
 		 * Normally this shouldn't happen, but if for some reason
 		 * we failed to unlink from our incoming queue the open could
 		 * succeed. Furthermore, if the rev and CRC match, well,
 		 * use it.
 		 */
-		if (copy_slab(dst_fd, incoming_fd, header_crc,
+		if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 		    revision, e) == 0) {
 			close(incoming_fd);
 			goto end;
@@ -1085,7 +1117,8 @@ get_again:
 		goto fail_close_dst;
 	}
 
-	if (copy_slab(dst_fd, incoming_fd, header_crc, revision, e) == -1) {
+	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
+	    revision, e) == -1) {
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_INVAL)) {
 			exlog_zerr(e);
 			exlog(LOG_ERR, "%s: wrong revision/header_crc "
@@ -1112,35 +1145,6 @@ fail_close_dst:
 	close(dst_fd);
 fail:
 	m->m = MGR_MSG_CLAIM_ERR;
-	if (mgr_send(c, -1, m, e) == -1)
-		exlog_lerr(LOG_ERR, e, "%s", __func__);
-	return -1;
-}
-
-static int
-set_fs_error(int c, struct mgr_msg *m, struct exlog_err *e)
-{
-	struct fs_info fs_info;
-
-	if (fs_info_read(&fs_info, e) == -1) {
-		exlog_lerr(LOG_ERR, e, "%s", __func__);
-		goto fail;
-	}
-
-	exlog_zerr(e);
-	fs_info.error = 1;
-
-	if (fs_info_write(&fs_info, e) == -1) {
-		exlog_lerr(LOG_ERR, e, "%s", __func__);
-		goto fail;
-	}
-
-	m->m = MGR_MSG_SET_FS_ERROR_OK;
-	if (mgr_send(c, -1, m, e) == -1)
-		return -1;
-	return 0;
-fail:
-	m->m = MGR_MSG_SET_FS_ERROR_ERR;
 	if (mgr_send(c, -1, m, e) == -1)
 		exlog_lerr(LOG_ERR, e, "%s", __func__);
 	return -1;
@@ -1405,7 +1409,12 @@ worker(int lsock)
 				df(c, &m, &e);
 				break;
 			case MGR_MSG_SET_FS_ERROR:
-				set_fs_error(c, &m, &e);
+				if (set_fs_error() == -1)
+					m.m = MGR_MSG_SET_FS_ERROR_ERR;
+				else
+					m.m = MGR_MSG_SET_FS_ERROR_OK;
+				if (mgr_send(c, -1, &m, &e) == -1)
+					exlog_lerr(LOG_ERR, &e, "%s", __func__);
 				break;
 			default:
 				exlog(LOG_ERR, "%s: wrong message %d",

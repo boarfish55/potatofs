@@ -48,9 +48,9 @@ struct slab_hdr {
 
 			/*
 			 * This is populated by the slab manager only, after
-			 * successfully uploading to the backend.
+			 * successfully claiming ownership.
 			 */
-			struct timespec last_backend_sync;
+			struct timespec last_claimed_at;
 
 			/*
 			 * Because at startup multiple instance of potatofs

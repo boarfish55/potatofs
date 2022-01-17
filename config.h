@@ -76,8 +76,8 @@
  * of the filesystem where we store the slabs. This also sets a limit on
  * how many file descriptors we need to keep all local slabs open at once.
  */
-#define SLAB_MAX_AGE_DEFAULT    60
-#define SLAB_CACHE_SIZE_DEFAULT 10737418240
+#define SLAB_MAX_CLAIM_AGE_DEFAULT 60
+#define SLAB_CACHE_SIZE_DEFAULT    10737418240
 
 /* This should fit in most default ulimits and leave extra room. */
 #define SLAB_MAX_OPEN_DEFAULT   768
@@ -93,7 +93,7 @@ struct fs_config {
 	uint64_t    cache_size;
 	rlim_t      max_open_slabs;
 	uint32_t    entry_timeouts;
-	uint32_t    slab_max_age;
+	uint32_t    slab_max_claim_age;
 	size_t      slab_size;
 	const char *data_dir;
 	int         noatime;
