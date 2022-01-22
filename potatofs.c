@@ -53,7 +53,7 @@ static struct fuse_opt fs_opts[] = {
 	/* Limit on the local storage size for slabs. */
 	FS_OPT("max_open_slabs=%llu", max_open_slabs, 0),
 	FS_OPT("entry_timeouts=%u", entry_timeouts, 0),
-	FS_OPT("slab_max_claim_age=%u", slab_max_claim_age, 0),
+	FS_OPT("slab_max_dirty_sec=%u", slab_max_dirty_secs, 0),
 	FUSE_OPT_KEY("-h", OPT_HELP),
 	FUSE_OPT_KEY("-V", OPT_VERSION),
 	FUSE_OPT_KEY("-f", OPT_FOREGROUND),
@@ -186,9 +186,9 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		    "        be closed early if we reach this amount.\n"
 		    "        (default: %d)\n"
 		    "\n"
-		    "    -o slab_max_claim_age=<seconds>\n"
-		    "        Maximum time we can hold ownership over a slab,\n"
-		    "        after which it should be synced to the backend\n"
+		    "    -o slab_max_dirty_secs=<seconds>\n"
+		    "        How long before we initiate a copy of a slab\n"
+		    "        to the backend after it's been written to,\n"
 		    "        once it is no longer referenced. (default: %u)\n"
 		    "\n"
 		    "    -o cfg_path=<path>\n"
@@ -197,7 +197,7 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		    "    -o dbg=<module1,module2,...>\n"
 		    "        Enable debug logging for selected modules:\n",
 		    FS_DEFAULT_ENTRY_TIMEOUTS, SLAB_MAX_OPEN_DEFAULT,
-		    SLAB_MAX_CLAIM_AGE_DEFAULT, DEFAULT_CONFIG_PATH);
+		    SLAB_MAX_DIRTY_SECS_DEFAULT, DEFAULT_CONFIG_PATH);
 		for (dbge = module_dbg_map; *dbge->name; dbge++)
 			fprintf(stderr, "          - %s\n", dbge->name);
 		exit(1);
@@ -448,7 +448,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 
 	mgr_init(c->mgr_sock_path);
 
-	if (slab_configure(c->max_open_slabs, c->slab_max_claim_age, &e) == -1)
+	if (slab_configure(c->max_open_slabs, c->slab_max_dirty_secs, &e) == -1)
 		goto fail;
 
 	if (inode_startup(&e) == -1)

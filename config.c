@@ -31,7 +31,7 @@ struct fs_config fs_config = {
 	0,                           /* cachesize */
 	SLAB_MAX_OPEN_DEFAULT,       /* max_open_slabs */
 	FS_DEFAULT_ENTRY_TIMEOUTS,   /* entry_timeouts */
-	SLAB_MAX_CLAIM_AGE_DEFAULT,  /* slab_max_claim_age */
+	SLAB_MAX_DIRTY_SECS_DEFAULT, /* slab_dirty_secs */
 	SLAB_SIZE_DEFAULT,           /* slab_size */
 	FS_DEFAULT_DATA_PATH,        /* data_path */
 	0,                           /* disable atime if 1 */

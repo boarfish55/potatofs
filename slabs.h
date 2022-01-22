@@ -53,6 +53,13 @@ struct slab_hdr {
 			struct timespec last_claimed_at;
 
 			/*
+			 * Marker when the slab became dirty. This is used
+			 * to allow a slab to remain dirty for a while and
+			 * avoid sending it to outgoing too often.
+			 */
+			struct timespec dirty_since;
+
+			/*
 			 * Because at startup multiple instance of potatofs
 			 * have to decide who has ownership of a given slab,
 			 * whoever has the most recent revision wins. If
@@ -225,6 +232,9 @@ size_t  slab_get_max_size();
 
 /* Returns how many inodes at most can be contained in a slab. */
 size_t  slab_inode_max();
+
+/* Loop over all local slabs and perform a function. */
+int     slab_loop_files(void (*)(const char *), struct exlog_err *);
 
 /* To be used for testing only, acquires no lock */
 struct oslab *slab_inspect(ino_t, off_t, uint32_t, struct exlog_err *);

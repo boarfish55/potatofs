@@ -133,8 +133,6 @@ slab_set_dirty_hdr(struct oslab *b, struct exlog_err *e)
 static int
 slab_realloc(struct oslab *b, struct exlog_err *e)
 {
-	if (!(b->hdr.v.f.flags & SLAB_REMOVED))
-		return 0;
 	if ((ftruncate(b->fd, sizeof(b->hdr))) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, __func__);
 	b->hdr.v.f.flags &= ~SLAB_REMOVED;
@@ -274,6 +272,13 @@ slab_set_dirty(struct oslab *b)
 int
 slab_write_hdr_nolock(struct oslab *b, struct exlog_err *e)
 {
+	if (!(b->hdr.v.f.flags & SLAB_DIRTY)) {
+		if (clock_gettime(CLOCK_MONOTONIC,
+		    &b->hdr.v.f.dirty_since) == -1)
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: failed to set 'dirty_since' on slab");
+	}
+
 	b->hdr.v.f.flags |= SLAB_DIRTY;
 	if (pwrite_x(b->fd, &b->hdr, sizeof(b->hdr), 0)
 	    < sizeof(b->hdr))
@@ -300,6 +305,59 @@ void *
 slab_hdr_data(struct oslab *b)
 {
 	return b->hdr.v.f.data;
+}
+
+/*
+ * Loop over all local slabs, that is:
+ *    - All inode tables
+ *    - All slabs in the hashed dirs
+ */
+int
+slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
+{
+	char           path[PATH_MAX], f[PATH_MAX];
+	int            i;
+	DIR           *dir;
+	struct dirent *de;
+
+	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir, ITBL_DIR)
+	    >= sizeof(path))
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: bad inode table dir; too long", __func__);
+
+	if ((dir = opendir(path)) == NULL)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: opendir", __func__);
+	while ((de = readdir(dir))) {
+		if (snprintf(f, sizeof(f), "%s/%s", path,
+		    de->d_name) >= sizeof(f)) {
+			exlog(LOG_ERR, "%s: name too long", __func__);
+			goto fail_closedir;
+		}
+		fn(path);
+	}
+	closedir(dir);
+
+	for (i = 0; i < SLAB_DIRS; i++) {
+		if (snprintf(path, sizeof(path), "%s/%02x",
+		    fs_config.data_dir, i) >= sizeof(path))
+			return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+			    "%s: bad slab dir; too long", __func__);
+		if ((dir = opendir(path)) == NULL)
+			return exlog_errf(e, EXLOG_OS, errno, "%s: opendir", __func__);
+		while ((de = readdir(dir))) {
+			if (snprintf(f, sizeof(f), "%s/%s", path,
+			    de->d_name) >= sizeof(f)) {
+				exlog(LOG_ERR, "%s: name too long", __func__);
+				goto fail_closedir;
+			}
+			fn(path);
+		}
+		closedir(dir);
+	}
+	return 0;
+fail_closedir:
+	closedir(dir);
+	return -1;
 }
 
 int

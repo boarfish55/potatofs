@@ -546,13 +546,7 @@ copy_again:
 		}
 	}
 
-	if (lseek(dst_fd, 0, SEEK_SET) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: seek on dst_fd", __func__);
-		goto fail;
-	}
-
-	if (write_x(dst_fd, hdr, sizeof(struct slab_hdr)) <
+	if (pwrite_x(dst_fd, hdr, sizeof(struct slab_hdr), 0) <
 	    sizeof(struct slab_hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: short write on slab header", __func__);
@@ -578,19 +572,13 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	struct statvfs stv;
 	uint32_t       crc;
 
-	if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: clock_gettime", __func__);
 		goto fail;
 	}
 
-	if (lseek(fd, 0, SEEK_SET) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: lseek", __func__);
-		goto fail;
-	}
-
-	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: short read on slab header", __func__);
 		goto fail;
@@ -598,16 +586,28 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "statvfs");
-	} else if (stv.f_bavail * stv.f_frsize < cache_size * 30 / 100)
-		// TODO: don't hardcode 70%
+	} else if (stv.f_bavail * stv.f_frsize < cache_size * 10 / 100)
+		// TODO: don't hardcode 90%
+		// TODO: the bgworker should have a smaller threshold
+		/*
+		 * This should rarely happen, since the bgworker should
+		 * handle most purges based on LRU.
+		 */
 		purge = 1;
 
 	if (hdr.v.f.flags & SLAB_DIRTY &&
-	    now.tv_sec >= (hdr.v.f.last_claimed_at.tv_sec +
-	    fs_config.slab_max_claim_age)) {
+	    now.tv_sec >= (hdr.v.f.dirty_since.tv_sec +
+	    fs_config.slab_max_dirty_secs)) {
 		if (copy_outgoing_slab(fd, m->v.disown.ino, m->v.disown.offset,
 		    &hdr, e) == -1)
 			goto fail;
+
+		hdr.v.f.flags &= ~SLAB_DIRTY;
+		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: short read on slab header", __func__);
+			goto fail;
+		}
 
 		if (purge) {
 			if (slab_path(src, sizeof(src), m->v.disown.ino,
@@ -804,10 +804,7 @@ check_slab_header(int fd, uint32_t header_crc, uint64_t rev,
 	struct slab_hdr hdr;
 	uint32_t        crc;
 
-	if (lseek(fd, 0, SEEK_SET) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: lseek", __func__);
-
-	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr))
+	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr))
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: short read on slab header", __func__);
 
@@ -874,7 +871,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	}
 
 write_hdr_again:
-	if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return -1;
 	}
@@ -996,9 +993,11 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 
 	if (st.st_size > 0) {
 		/*
-		 * Someone downloaded this just before we could acquire
-		 * the lock. If header_crc and revision match
-		 * what we have in the DB, looks like we're done.
+		 * This is the most common case, where a slab was previously
+		 * claimed and is still present in our local disk cache.
+		 * The header CRC/revision check may be superfluous, but
+		 * until we are confident we can remove it, we will keep it
+		 * as an extra sanity check.
 		 */
 		if (check_slab_header(dst_fd, header_crc, revision, e) == 0) {
 			goto end;
@@ -1255,7 +1254,7 @@ bglock()
 static void
 bgworker()
 {
-	char              path[PATH_MAX], outq_path[PATH_MAX];
+	char              path[PATH_MAX], outgoing_dir[PATH_MAX];
 	DIR              *dir;
 	struct dirent    *de;
 	size_t            out_bytes;
@@ -1267,35 +1266,40 @@ bgworker()
 		exit(1);
 	}
 
+	// TODO: I think we need a "df" worker, a "scan" worker for the
+	// outgoing dir, and another one for the normal slab dirs.
 	setproctitle("bgworker");
 	exlog(LOG_INFO, "%s: ready", __func__);
 
 	for (;;) {
 		if ((bglock_fd = bglock()) != -1) {
+			/*
+			 * Exclusive tasks here ...
+			 */
 			if (bg_df(&e) == -1)
 				exlog_lerr(LOG_ERR, &e, "%s", __func__);
 			close(bglock_fd);
 		}
 
-		if (snprintf(outq_path, sizeof(outq_path), "%s/%s",
+		if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
 		    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path)) {
 			exlog(LOG_ERR, "%s: outq name too long", __func__);
-			goto fail_outq;
+			goto fail_sleep;
 		}
 
-		if ((dir = opendir(outq_path)) == NULL) {
+		if ((dir = opendir(outgoing_dir)) == NULL) {
 			exlog_lerrno(LOG_ERR, errno, "%s: opendir", __func__);
-			goto fail_outq;
+			goto fail_sleep;
 		}
 
 		while ((de = readdir(dir))) {
 			if (snprintf(path, sizeof(path), "%s/%s",
-			    outq_path, de->d_name) >= sizeof(path)) {
+			    outgoing_dir, de->d_name) >= sizeof(path)) {
 				exlog(LOG_ERR, "%s: name too long", __func__);
-				goto fail_outq;
+				goto fail_sleep;
 			}
 
-			// for each slab in out queue:
+			// for each slab in outgoing dir:
 				// open, LOCK_EX|LOCK_NB
 				// Compute checksum
 				// upload, unlink
@@ -1314,6 +1318,10 @@ fail:
 		closedir(dir);
 
 		/*
+		// TODO: scan ITBL_DIR
+		// TODO: scan all SLAB_DIRS
+		slab_loop_files();
+
 		// for each slab in main data dir:
 		while ((de = readdir(some_dir))) {
 			// open, LOCK_EX|LOCK_NB
@@ -1340,7 +1348,7 @@ fail:
 			// close
 		}
 		*/
-fail_outq:
+fail_sleep:
 		sleep(60);
 	}
 }
