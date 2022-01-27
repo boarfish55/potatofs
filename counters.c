@@ -128,7 +128,13 @@ struct counter counters[] = {
 	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_read_bytes" },
 
 	/* COUNTER_WRITE_BYTES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_write_bytes" }
+	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_write_bytes" },
+
+	/* COUNTER_BACKEND_IN_BYTES */
+	{ PTHREAD_MUTEX_INITIALIZER, 0, "backend_in_bytes" },
+
+	/* COUNTER_BACKEND_OUT_BYTES */
+	{ PTHREAD_MUTEX_INITIALIZER, 0, "backend_out_bytes" }
 };
 
 static char      counters_path[PATH_MAX];

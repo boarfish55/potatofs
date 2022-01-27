@@ -28,8 +28,7 @@ mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 # TODO: add workers/pid to config
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
 ./potatomgr -c "$conf" -w 1 -W 1 -p "$basepath/potatomgr.pid"
-# TODO: add slab_max_claim_age to config
-./potatofs -o cfg_path="$conf",slab_max_claim_age=5 "$mountpoint" &
+./potatofs -o cfg_path="$conf" "$mountpoint" &
 for i in 1 2 3 4 5; do
 	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then
 		break

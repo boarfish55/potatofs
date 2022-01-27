@@ -48,16 +48,10 @@ struct slab_hdr {
 
 			/*
 			 * This is populated by the slab manager only, after
-			 * successfully claiming ownership.
+			 * successfully claiming ownership. Useful for LRU
+			 * purge of local slabs.
 			 */
 			struct timespec last_claimed_at;
-
-			/*
-			 * Marker when the slab became dirty. This is used
-			 * to allow a slab to remain dirty for a while and
-			 * avoid sending it to outgoing too often.
-			 */
-			struct timespec dirty_since;
 
 			/*
 			 * Because at startup multiple instance of potatofs
@@ -154,6 +148,8 @@ int slab_make_dirs(struct exlog_err *);
  * and inode (for data slabs) or base inode (for itbl slabs).
  */
 int slab_path(char *, size_t, ino_t, off_t, uint32_t, int, struct exlog_err *);
+int slab_parse_path(const char *, uint32_t *, ino_t *, off_t *,
+        struct exlog_err *);
 
 /*
  * Returns a pointer to a slab which can be passed to other slab_*

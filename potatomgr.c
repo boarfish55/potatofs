@@ -42,6 +42,7 @@
 #include <uuid/uuid.h>
 #include <zlib.h>
 #include "config.h"
+#include "counters.h"
 #include "fs_info.h"
 #include "mgr.h"
 #include "slabs.h"
@@ -53,9 +54,10 @@ struct slab_key {
 };
 
 struct slab_val {
-	uint64_t revision;
-	uint32_t header_crc;
-	uuid_t   owner;
+	uint64_t        revision;
+	uint32_t        header_crc;
+	uuid_t          owner;
+	struct timespec last_claimed;
 };
 
 char            *dbg_spec = NULL;
@@ -63,7 +65,6 @@ struct timeval   socket_timeout = {60, 0};
 extern char    **environ;
 MDB_env         *mdb;
 uuid_t           instance_id;
-char             bglock_path[PATH_MAX];
 off_t            cache_size = 0;
 uuid_t           uuid_zero;
 
@@ -139,7 +140,8 @@ set_fs_error()
 
 static int
 slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
-    uint32_t header_crc, uuid_t owner, struct exlog_err *e)
+    uint32_t header_crc, uuid_t owner, const struct timespec *last_claimed,
+    struct exlog_err *e)
 {
 	int              r;
 	MDB_txn         *txn;
@@ -171,6 +173,7 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	v.revision = revision;
 	v.header_crc = header_crc;
 	uuid_copy(v.owner, owner);
+	memcpy(&v.last_claimed, last_claimed, sizeof(struct timespec));
 
 	mk.mv_size = sizeof(k);
 	mk.mv_data = &k;
@@ -210,7 +213,8 @@ fail:
  */
 static int
 slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint64_t *revision,
-    uint32_t *header_crc, uuid_t *owner, struct exlog_err *e)
+    uint32_t *header_crc, uuid_t *owner, struct timespec *last_claimed,
+    struct exlog_err *e)
 {
 	int              r;
 	MDB_txn         *txn;
@@ -462,8 +466,8 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 }
 
 static int
-copy_outgoing_slab(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr,
-    struct exlog_err *e)
+copy_outgoing_slab(int fd, ino_t ino, off_t offset,
+    const struct slab_hdr *hdr, struct exlog_err *e)
 {
 	int             dst_fd;
 	char            dst[PATH_MAX], name[NAME_MAX + 1];
@@ -502,7 +506,7 @@ copy_outgoing_slab(int fd, ino_t ino, off_t offset, struct slab_hdr *hdr,
 		if (dst_hdr.v.f.revision >= hdr->v.f.revision) {
 			exlog(LOG_INFO, "slab in outgoing dir has a revision "
 			    "greater or equal to this one: %s "
-			    "(revision %llu >= %llu", dst,
+			    "(revision %llu >= %llu)", dst,
 			    dst_hdr.v.f.revision, hdr->v.f.revision);
 			goto end;
 		}
@@ -520,7 +524,9 @@ copy_again:
 		exlog_errf(e, EXLOG_OS, errno, "%s: lseek", __func__);
 		goto fail;
 	}
-	hdr->v.f.checksum = crc32_z(0L, Z_NULL, 0);
+
+	memcpy(&dst_hdr, hdr, sizeof(struct slab_hdr));
+	dst_hdr.v.f.checksum = crc32_z(0L, Z_NULL, 0);
 
 	while ((r = read(fd, buf, sizeof(buf)))) {
 		if (r == -1) {
@@ -530,7 +536,7 @@ copy_again:
 			goto fail;
 		}
 
-		hdr->v.f.checksum = crc32_z(hdr->v.f.checksum,
+		dst_hdr.v.f.checksum = crc32_z(dst_hdr.v.f.checksum,
 		    (unsigned char *)buf, r);
 
 		r = write_x(dst_fd, buf, r);
@@ -546,8 +552,9 @@ copy_again:
 		}
 	}
 
-	if (pwrite_x(dst_fd, hdr, sizeof(struct slab_hdr), 0) <
-	    sizeof(struct slab_hdr)) {
+	dst_hdr.v.f.flags &= ~SLAB_DIRTY;
+
+	if (pwrite_x(dst_fd, &dst_hdr, sizeof(dst_hdr), 0) < sizeof(dst_hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: short write on slab header", __func__);
 		goto fail;
@@ -595,9 +602,7 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		 */
 		purge = 1;
 
-	if (hdr.v.f.flags & SLAB_DIRTY &&
-	    now.tv_sec >= (hdr.v.f.dirty_since.tv_sec +
-	    fs_config.slab_max_dirty_secs)) {
+	if (hdr.v.f.flags & SLAB_DIRTY) {
 		if (copy_outgoing_slab(fd, m->v.disown.ino, m->v.disown.offset,
 		    &hdr, e) == -1)
 			goto fail;
@@ -609,27 +614,29 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 			goto fail;
 		}
 
-		if (purge) {
-			if (slab_path(src, sizeof(src), m->v.disown.ino,
-			    m->v.disown.offset, hdr.v.f.flags, 0, e) == -1)
-				goto fail;
-
-			if (unlink(src) == -1) {
-				exlog_lerrno(LOG_ERR, errno,
-				    "%s: unlink src %s", __func__, src);
-				purge = 0;
-			}
-		}
 	}
 
 	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 	if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
 	    m->v.disown.ino, m->v.disown.offset, hdr.v.f.revision,
-	    crc, (purge) ? uuid_zero : instance_id, e) == -1) {
+	    crc, (purge) ? uuid_zero : instance_id,
+	    &hdr.v.f.last_claimed_at, e) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: slabdb_put", __func__);
 		set_fs_error();
 		goto fail;
+	}
+
+	if (purge) {
+		if (slab_path(src, sizeof(src), m->v.disown.ino,
+		    m->v.disown.offset, hdr.v.f.flags, 0, e) == -1)
+			goto fail;
+
+		if (unlink(src) == -1) {
+			exlog_lerrno(LOG_ERR, errno,
+			    "%s: unlink src %s", __func__, src);
+			purge = 0;
+		}
 	}
 
 	close(fd);
@@ -840,7 +847,6 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	ssize_t         r;
 	char            buf[BUFSIZ];
 	uint32_t        crc;
-	struct timespec now;
 
 	if (lseek(src_fd, 0, SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
@@ -871,11 +877,10 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	}
 
 write_hdr_again:
-	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
+	if (clock_gettime(CLOCK_MONOTONIC, &hdr.v.f.last_claimed_at) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return -1;
 	}
-	hdr.v.f.last_claimed_at.tv_sec = now.tv_sec;
 	if (write_x(dst_fd, &hdr, sizeof(hdr)) == -1) {
 		if (errno == ENOSPC) {
 			exlog(LOG_ERR, "%s: ran out of space during; "
@@ -926,6 +931,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	uint64_t        revision;
 	uint32_t        header_crc, crc;
 	uuid_t          owner;
+	struct timespec last_claimed;
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -933,7 +939,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 */
 	if (slabdb_get((m->v.claim.flags & SLAB_ITBL) ? 1 : 0,
 	    m->v.claim.ino, m->v.claim.offset, &revision, &header_crc,
-	    &owner, e) == -1) {
+	    &owner, &last_claimed, e) == -1) {
 		goto fail;
 	}
 
@@ -1100,7 +1106,8 @@ get_again:
 			crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 			if (slabdb_put((m->v.claim.flags & SLAB_ITBL) ? 1 : 0,
 			    m->v.claim.ino, m->v.claim.offset, hdr.v.f.revision,
-			    crc, instance_id, e) == -1) {
+			    crc, instance_id, &hdr.v.f.last_claimed_at,
+			    e) == -1) {
 				exlog_errf(e, EXLOG_OS, errno,
 				    "%s: slabdb_put", __func__);
 				goto fail_close_dst;
@@ -1114,7 +1121,8 @@ get_again:
 			goto get_again;
 		}
 		goto fail_close_dst;
-	}
+	} else
+		counter_add(COUNTER_BACKEND_IN_BYTES, in_bytes);
 
 	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 	    revision, e) == -1) {
@@ -1166,8 +1174,8 @@ df(int c, struct mgr_msg *m, struct exlog_err *e)
 	return 0;
 }
 
-static int
-bg_df(struct exlog_err *e)
+static void
+bg_df()
 {
 	int               wstatus;
 	char              stdout[1024], stderr[1024];
@@ -1177,47 +1185,40 @@ bg_df(struct exlog_err *e)
 	off_t             bytes_total, bytes_used;
 	struct fs_info    fs_info;
 	struct timespec   now;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 
-	if (fs_info_read(&fs_info, e) == -1) {
-		exlog_lerr(LOG_ERR, e, "%s", __func__);
-		return -1;
+	if (fs_info_read(&fs_info, &e) == -1) {
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		return;
 	}
 
 	if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return -1;
+		return;
 	}
 
-	/*
-	 * Because any worker could update the current fs usage,
-	 * avoid poking at the backend too many times by checking if
-	 * 60s or more elapsed since our last check.
-	 */
-	if (now.tv_sec - fs_info.stats_last_update.tv_sec < 60)
-		return 0;
-
 	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
-	    stderr, sizeof(stderr), e) == -1) {
-		exlog(LOG_ERR, "%s", __func__);
-		return -1;
+	    stderr, sizeof(stderr), &e) == -1) {
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		return;
 	}
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
 		exlog(LOG_ERR, "%s: %s", __func__, jerr.text);
-		return -1;
+		return;
 	}
 
 	if ((o = json_object_get(j, "total_bytes")) == NULL) {
 		exlog(LOG_ERR, "%s: \"total_bytes\" missing from JSON",
 		    __func__);
-		return -1;
+		return;
 	}
 	bytes_total = json_integer_value(o);
 
 	if ((o = json_object_get(j, "used_bytes")) == NULL) {
 		exlog(LOG_ERR, "%s: \"used_bytes\" missing from JSON",
 		    __func__);
-		return -1;
+		return;
 	}
 	bytes_used = json_integer_value(o);
 
@@ -1227,130 +1228,352 @@ bg_df(struct exlog_err *e)
 	fs_info.stats.f_bavail = fs_info.stats.f_bfree;
 	if (clock_gettime(CLOCK_REALTIME, &fs_info.stats_last_update) == -1) {
 		exlog_lerrno(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return -1;
+		return;
 	}
 
-	if (fs_info_write(&fs_info, e) == -1)
-		return -1;
-
-	return 0;
-}
-
-static int
-bglock()
-{
-	int fd;
-
-	if ((fd = open_wflock(bglock_path, O_RDONLY, 0,
-	    LOCK_EX|LOCK_NB)) == -1) {
-		if (errno != EWOULDBLOCK)
-			exlog_lerrno(LOG_ERR, errno, "%s: open_wflock", __func__);
-		return -1;
-	}
-
-	return fd;
+	if (fs_info_write(&fs_info, &e) == -1)
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
 }
 
 static void
-bgworker()
+bgworker(const char *name, void(*fn)(), int interval_secs)
 {
-	char              path[PATH_MAX], outgoing_dir[PATH_MAX];
-	DIR              *dir;
-	struct dirent    *de;
-	size_t            out_bytes;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	int               bglock_fd;
+	char            title[32];
+	struct timespec tp = {interval_secs, 0};
 
 	if (exlog_init(MGR_PROGNAME "-bgworker", dbg_spec, 0) == -1) {
 		exlog(LOG_ERR, "failed to initialize logging in bgworker");
 		exit(1);
 	}
 
-	// TODO: I think we need a "df" worker, a "scan" worker for the
-	// outgoing dir, and another one for the normal slab dirs.
-	setproctitle("bgworker");
+	bzero(title, sizeof(title));
+	snprintf(title, sizeof(title), "bgworker: %s", name);
+	setproctitle(title);
 	exlog(LOG_INFO, "%s: ready", __func__);
 
 	for (;;) {
-		if ((bglock_fd = bglock()) != -1) {
-			/*
-			 * Exclusive tasks here ...
-			 */
-			if (bg_df(&e) == -1)
-				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-			close(bglock_fd);
-		}
-
-		if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
-		    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path)) {
-			exlog(LOG_ERR, "%s: outq name too long", __func__);
-			goto fail_sleep;
-		}
-
-		if ((dir = opendir(outgoing_dir)) == NULL) {
-			exlog_lerrno(LOG_ERR, errno, "%s: opendir", __func__);
-			goto fail_sleep;
-		}
-
-		while ((de = readdir(dir))) {
-			if (snprintf(path, sizeof(path), "%s/%s",
-			    outgoing_dir, de->d_name) >= sizeof(path)) {
-				exlog(LOG_ERR, "%s: name too long", __func__);
-				goto fail_sleep;
-			}
-
-			// for each slab in outgoing dir:
-				// open, LOCK_EX|LOCK_NB
-				// Compute checksum
-				// upload, unlink
-				// close fd
-
-			if (backend_put(path, path + strlen(fs_config.data_dir),
-			    &out_bytes, &e) == -1) {
-				exlog_lerr(LOG_ERR, &e, "%s", __func__);
-				goto fail;
-			}
-
-			exlog(LOG_INFO, "%s: backend_put: %s (%lu bytes)",
-			    __func__, path, out_bytes);
-		}
-fail:
-		closedir(dir);
-
-		/*
-		// TODO: scan ITBL_DIR
-		// TODO: scan all SLAB_DIRS
-		slab_loop_files();
-
-		// for each slab in main data dir:
-		while ((de = readdir(some_dir))) {
-			// open, LOCK_EX|LOCK_NB
-			open_wflock();
-			read hdr;
-
-			// copy to out queue if old enough and dirty
-			// check LOCK_EX|LOCK_NB on out queue target
-
-			// unlink if free space is below watermark (need_purge)
-			if (statvfs(fs_config.data_dir, &stv) == -1) {
-				exlog_lerrno(LOG_ERR, errno, "statvfs");
-				goto fail_outq;
-			}
-			if (stv.f_bavail * stv.f_frsize < cache_size * 30 / 100) {
-				purge = 1;
-				uuid_clear();
-			} else
-				purge = 0;
-			if (purge)
-				unlink();
-
-
-			// close
-		}
-		*/
-fail_sleep:
-		sleep(60);
+		fn();
+		nanosleep(&tp, NULL);
 	}
+}
+
+static void
+bg_flush()
+{
+	char              path[PATH_MAX], outgoing_dir[PATH_MAX];
+	DIR              *dir;
+	struct dirent    *de;
+	size_t            out_bytes;
+	int               fd;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+
+	if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path)) {
+		exlog(LOG_ERR, "%s: outq name too long", __func__);
+		return;
+	}
+
+	if ((dir = opendir(outgoing_dir)) == NULL) {
+		exlog_lerrno(LOG_ERR, errno, "%s: opendir", __func__);
+		return;
+	}
+
+	while ((de = readdir(dir))) {
+		if (snprintf(path, sizeof(path), "%s/%s",
+		    outgoing_dir, de->d_name) >= sizeof(path)) {
+			exlog(LOG_ERR, "%s: name too long", __func__);
+			goto fail;
+		}
+
+		if ((fd = open_wflock(path, O_RDONLY, 0,
+		    LOCK_EX|LOCK_NB)) == -1) {
+			if (errno != EWOULDBLOCK)
+				exlog_lerrno(LOG_ERR, errno, "%s: failed "
+				    "to open_wflock(): %s", __func__, path);
+			continue;
+		}
+
+		if (backend_put(path, path + strlen(fs_config.data_dir),
+		    &out_bytes, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			close(fd);
+			continue;
+		}
+
+		exlog(LOG_INFO, "%s: backend_put: %s (%lu bytes)",
+		    __func__, path, out_bytes);
+		counter_add(COUNTER_BACKEND_OUT_BYTES, out_bytes);
+
+		if (unlink(path) == -1)
+			exlog_lerrno(LOG_ERR, errno, "%s: unlink %s",
+			    __func__, path);
+
+		if (close(fd) == -1)
+			exlog_lerrno(LOG_ERR, errno, "%s: close %s",
+			    __func__, path);
+	}
+fail:
+	closedir(dir);
+}
+
+static void
+scrub(const char *path)
+{
+	struct slab_hdr  hdr;
+	int              fd;
+	uint64_t         revision;
+	uint32_t         header_crc, crc;
+	uuid_t           owner;
+	ino_t            ino;
+	off_t            offset;
+	uint32_t         flags;
+	struct timespec  last_claimed;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+
+	if (slab_parse_path(path, &flags, &ino, &offset, &e) == -1) {
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		return;
+	}
+
+	if (slabdb_get((flags & SLAB_ITBL) ? 1 : 0,
+	    ino, offset, &revision, &header_crc, &owner,
+	    &last_claimed, &e) == -1) {
+		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+			exlog(LOG_ERR, "%s: slab %s not found in db; unlinking",
+			    __func__, path);
+			unlink(path);
+			return;
+		}
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		return;
+	}
+
+	if (uuid_compare(owner, instance_id) != 0) {
+		exlog(LOG_ERR, "%s: slab %s is now locally-owned; unlinking",
+		    __func__, path);
+		unlink(path);
+		return;
+	}
+
+	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB)) == -1) {
+		if (errno != EWOULDBLOCK)
+			exlog_lerrno(LOG_ERR, errno, "%s: failed "
+			    "to open_wflock(): %s", __func__, path);
+		else
+			exlog(LOG_INFO, "%s: slab %s is already "
+			    "flock()'d; skipping", __func__, path);
+		return;
+	}
+
+	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+		exlog_lerrno(LOG_ERR, errno,
+		    "%s: short read on slab header", __func__);
+		set_fs_error();
+		goto end;
+	}
+
+	if (hdr.v.f.revision < revision) {
+		exlog(LOG_CRIT, "%s: slab %s has a revision older than what "
+		    "is in the database", __func__, path);
+		set_fs_error();
+		goto end;
+	}
+
+	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc) {
+		exlog(LOG_CRIT, "%s: slab %s has a header CRC that differs "
+		    "from the database", __func__, path);
+		set_fs_error();
+		goto end;
+	}
+
+	if (hdr.v.f.flags & SLAB_DIRTY) {
+		if (copy_outgoing_slab(fd, ino, offset, &hdr, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			goto end;
+		}
+		hdr.v.f.flags &= ~SLAB_DIRTY;
+		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
+			exlog_lerrno(LOG_ERR, errno,
+			    "%s: short write on slab header", __func__);
+			goto end;
+		}
+	}
+end:
+	close(fd);
+}
+
+static void
+bg_scrubber()
+{
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+
+	if (slab_loop_files(&scrub, &e) == -1)
+		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+}
+
+static int
+purge_cmp(const void *a, const void *b)
+{
+	/* Flipped t1/t2 for reverse sort. */
+	const struct timespec *t2 = &((struct slab_val *)a)->last_claimed;
+	const struct timespec *t1 = &((struct slab_val *)b)->last_claimed;
+
+	if (t1->tv_sec < t2->tv_sec) {
+		return -1;
+	} else if (t1->tv_sec > t2->tv_sec) {
+		return 1;
+	} else {
+		if (t1->tv_nsec < t2->tv_nsec)
+			return -1;
+		else if (t1->tv_nsec > t2->tv_nsec)
+			return 1;
+	}
+	return 0;
+}
+
+static void
+bg_purge()
+{
+	int              r, purge_n, fd;
+	MDB_txn         *txn;
+	MDB_dbi          dbi;
+	MDB_cursor      *cursor;
+	MDB_val          mk, mv;
+	struct statvfs   stv;
+	char             path[PATH_MAX];
+	struct slab_hdr  hdr;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	size_t           purge_entries_sz;
+
+	struct purge_entry {
+		struct slab_val v;
+		struct slab_key k;
+	} *purge_entries, *p;
+
+	if (statvfs(fs_config.data_dir, &stv) == -1) {
+		exlog_lerrno(LOG_ERR, errno, "statvfs");
+		return;
+	} else if (stv.f_bavail * stv.f_frsize >= cache_size * 40 / 100) {
+		// TODO: don't hardcode 60%
+		/*
+		 * Nothing to do.
+		 */
+		return;
+	}
+	purge_n = ((cache_size * 40 / 100) - (stv.f_bavail * stv.f_frsize))
+	    / (fs_config.slab_size + sizeof(struct slab_hdr));
+	if (purge_n < 1)
+		purge_n = 1;
+
+	purge_entries_sz = fs_config.max_open_slabs;
+	purge_entries = calloc(purge_entries_sz, sizeof(struct purge_entry));
+	if (purge_entries == NULL) {
+		exlog_lerrno(LOG_ERR, errno, "%s", __func__);
+		return;
+	}
+
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_txn_begin: %s",
+		    __func__, mdb_strerror(r));
+		goto fail;
+	}
+
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_dbi_open: %s",
+		    __func__, mdb_strerror(r));
+		mdb_txn_abort(txn);
+		goto fail;
+	}
+
+	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_cursor_open: %s",
+		    __func__, mdb_strerror(r));
+		mdb_txn_abort(txn);
+		goto fail;
+	}
+
+	for (p = purge_entries, r = mdb_cursor_get(cursor, &mk, &mv, MDB_FIRST);
+	    r != MDB_NOTFOUND;
+	    r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) {
+		if (r != 0) {
+			exlog(LOG_ERR, "%s: mdb_cursor_get: %s",
+			    __func__, mdb_strerror(r));
+			mdb_cursor_close(cursor);
+			mdb_txn_abort(txn);
+			goto fail;
+		}
+
+		if (p - purge_entries >= purge_entries_sz)
+			/* Sanity; should never happen. */
+			break;
+
+		if (uuid_compare(((struct slab_val *)mv.mv_data)->owner,
+		    instance_id) != 0)
+			continue;
+
+		memcpy(&p->k, mk.mv_data, sizeof(struct slab_key));
+		memcpy(&p->v, mv.mv_data, sizeof(struct slab_val));
+
+		p++;
+	}
+
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
+
+	qsort(purge_entries, p - purge_entries,
+	    sizeof(struct purge_entry), &purge_cmp);
+
+	for (p = purge_entries; purge_n > 0; p++) {
+		if (slab_path(path, sizeof(path), p->k.ino, p->k.offset,
+		    p->k.itbl, 0, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			goto fail;
+		}
+
+		if ((fd = open_wflock(path, O_RDWR, 0,
+		    LOCK_EX|LOCK_NB)) == -1) {
+			if (errno != EWOULDBLOCK)
+				exlog_lerrno(LOG_ERR, errno, "%s: failed "
+				    "to open_wflock(): %s", __func__, path);
+			continue;
+		}
+
+		if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+			exlog_lerrno(LOG_ERR, errno,
+			    "%s: short read on slab header", __func__);
+			set_fs_error();
+			goto fail;
+		}
+
+		if (hdr.v.f.last_claimed_at.tv_sec !=
+		    p->v.last_claimed.tv_sec ||
+		    hdr.v.f.last_claimed_at.tv_nsec !=
+		    p->v.last_claimed.tv_nsec) {
+			/*
+			 * This slab was claimed while we were sorting;
+			 * skip it.
+			 */
+			close(fd);
+			continue;
+		}
+
+		if (slabdb_put(p->k.itbl, p->k.ino, p->k.offset,
+		    p->v.revision, p->v.header_crc, p->v.owner,
+		    &p->v.last_claimed, &e) == -1) {
+			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			close(fd);
+			continue;
+		}
+
+		if (unlink(path) == -1)
+			exlog_lerrno(LOG_ERR, errno, "%s", __func__);
+
+		close(fd);
+	}
+
+fail:
+	free(purge_entries);
+	return;
 }
 
 static void
@@ -1470,7 +1693,7 @@ main(int argc, char **argv)
 	int                 lsock;
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
-	int                 bgworkers = 4;
+	int                 bgworkers = 1;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
 	off_t               cache_size_limit;
@@ -1609,16 +1832,6 @@ main(int argc, char **argv)
 
 	exlog(LOG_INFO, "%s: cache size is %llu", __func__, cache_size);
 
-	if (snprintf(bglock_path, sizeof(bglock_path), "%s/%s",
-	    fs_config.data_dir, DEFAULT_BGLOCK_NAME) >= sizeof(bglock_path)) {
-                exlog(LOG_ERR, "%s: bglock name too long", __func__);
-		exit(1);
-        }
-	if (mknod(bglock_path, S_IFREG|0600, 0) == -1) {
-		exlog_lerrno(LOG_ERR, errno, "mknod: %s", bglock_path);
-		exit(1);
-	}
-
 	if (snprintf(mdb_path, sizeof(mdb_path), "%s/%s", fs_config.data_dir,
             DEFAULT_MDB_NAME) >= sizeof(mdb_path)) {
                 exlog(LOG_ERR, "%s: mdb name too long", __func__);
@@ -1674,16 +1887,13 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	for (n = 0; n < workers + bgworkers; n++) {
+	for (n = 0; n < workers; n++) {
 		switch (fork()) {
 		case -1:
 			killpg(0, 15);
 			err(1, "fork");
 		case 0:
-			if (n >= workers)
-				bgworker();
-			else
-				worker(lsock);
+			worker(lsock);
 			/* Never reached */
 			exit(1);
 		default:
@@ -1692,7 +1902,21 @@ main(int argc, char **argv)
 		}
 	}
 
-	for (n = 0; n < workers + bgworkers; n++)
+	bgworker("df", &bg_df, 60);
+	workers++;
+
+	bgworker("scrubber", &bg_scrubber, 60);
+	workers++;
+
+	bgworker("purge", &bg_purge, 60);
+	workers++;
+
+	for (n = 0; n < bgworkers; n++) {
+		bgworker("flush", &bg_flush, 60);
+		workers++;
+	}
+
+	for (n = 0; n < workers; n++)
 		wait(NULL);
 
 	mdb_env_close(mdb);

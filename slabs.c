@@ -22,6 +22,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
+#include <libgen.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -272,13 +273,6 @@ slab_set_dirty(struct oslab *b)
 int
 slab_write_hdr_nolock(struct oslab *b, struct exlog_err *e)
 {
-	if (!(b->hdr.v.f.flags & SLAB_DIRTY)) {
-		if (clock_gettime(CLOCK_MONOTONIC,
-		    &b->hdr.v.f.dirty_since) == -1)
-			return exlog_errf(e, EXLOG_OS, errno,
-			    "%s: failed to set 'dirty_since' on slab");
-	}
-
 	b->hdr.v.f.flags |= SLAB_DIRTY;
 	if (pwrite_x(b->fd, &b->hdr, sizeof(b->hdr), 0)
 	    < sizeof(b->hdr))
@@ -594,6 +588,29 @@ slab_path(char *path, size_t len, ino_t ino, off_t offset,
 		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: bad inode table name %lu; too long",
 		    __func__, base);
+	return 0;
+}
+
+int
+slab_parse_path(const char *path, uint32_t *flags, ino_t *ino, off_t *off,
+    struct exlog_err *e)
+{
+	char p[PATH_MAX];
+
+	strlcpy(p, path, sizeof(p));
+	if (strcmp(basename(p), ITBL_PREFIX) == 0) {
+		*flags = SLAB_ITBL;
+		*off = 0;
+		if (sscanf(basename(p), ITBL_PREFIX "%020lu", ino) < 1)
+			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+			    "%s: unparseable slab name %s", __func__, path);
+	} else {
+		*flags = 0;
+		if (sscanf(basename(p), SLAB_PREFIX "%020lu-%020lu",
+		    ino, off) < 2)
+			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+			    "%s: unparseable slab name %s", __func__, path);
+	}
 	return 0;
 }
 
