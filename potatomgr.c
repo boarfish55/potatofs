@@ -570,7 +570,7 @@ fail:
 }
 
 static int
-disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
+unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 {
 	struct         slab_hdr hdr;
 	struct         timespec now;
@@ -603,7 +603,7 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		purge = 1;
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
-		if (copy_outgoing_slab(fd, m->v.disown.ino, m->v.disown.offset,
+		if (copy_outgoing_slab(fd, m->v.unclaim.ino, m->v.unclaim.offset,
 		    &hdr, e) == -1)
 			goto fail;
 
@@ -618,7 +618,7 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 
 	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 	if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
-	    m->v.disown.ino, m->v.disown.offset, hdr.v.f.revision,
+	    m->v.unclaim.ino, m->v.unclaim.offset, hdr.v.f.revision,
 	    crc, (purge) ? uuid_zero : instance_id,
 	    &hdr.v.f.last_claimed_at, e) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
@@ -628,8 +628,8 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	}
 
 	if (purge) {
-		if (slab_path(src, sizeof(src), m->v.disown.ino,
-		    m->v.disown.offset, hdr.v.f.flags, 0, e) == -1)
+		if (slab_path(src, sizeof(src), m->v.unclaim.ino,
+		    m->v.unclaim.offset, hdr.v.f.flags, 0, e) == -1)
 			goto fail;
 
 		if (unlink(src) == -1) {
@@ -641,10 +641,10 @@ disown(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 
 	close(fd);
 
-	m->m = MGR_MSG_DISOWN_OK;
+	m->m = MGR_MSG_UNCLAIM_OK;
 	return mgr_send(c, -1, m, e);
 fail:
-	m->m = MGR_MSG_DISOWN_ERR;
+	m->m = MGR_MSG_UNCLAIM_ERR;
 	return mgr_send(c, -1, m, e);
 }
 
@@ -954,7 +954,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	/*
 	 * We compute the absolute path for the destination path. We use
 	 * the destination file as a lock with flock() to handle concurrent
-	 * claim() or disown() with other potatomgr processes.
+	 * claim() or unclaim() with other potatomgr processes.
 	 *
 	 * The slab is first downloaded at dst during which the CRC
 	 * is validated, then copied to dst_fd. dst is unlinked after
@@ -972,11 +972,11 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 
 	/*
 	 * We loop on open instead of simply doing a blocking flock()
-	 * because the lock could be held by a disown which will
+	 * because the lock could be held by a unclaim which will
 	 * unlink() the file at the end. Therefore we would want to
 	 * reopen a new filehandle to ensure it is present in the dir
 	 * entry.
-	 * Note: On disown(), unlink() happens before close()
+	 * Note: On unclaim(), unlink() happens before close()
 	 */
 	for (;;) {
 		if ((dst_fd = open_wflock(dst, fd_flags, 0600,
@@ -1633,8 +1633,8 @@ worker(int lsock)
 			case MGR_MSG_CLAIM:
 				claim(c, &m, &e);
 				break;
-			case MGR_MSG_DISOWN:
-				disown(c, &m, fd, &e);
+			case MGR_MSG_UNCLAIM:
+				unclaim(c, &m, fd, &e);
 				break;
 			case MGR_MSG_FS_INFO:
 				df(c, &m, &e);

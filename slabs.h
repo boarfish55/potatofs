@@ -113,7 +113,7 @@ struct oslab {
 	uint64_t           refcnt;
 	int                fd;
 
-	/* Only meaningful when disowning slabs */
+	/* Only meaningful when unclaiming slabs */
 	struct timespec    open_since;
 
 	/*

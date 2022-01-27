@@ -32,9 +32,9 @@ struct mgr_msg {
 		MGR_MSG_CLAIM_NOENT,
 		MGR_MSG_CLAIM_ERR,
 
-		MGR_MSG_DISOWN,
-		MGR_MSG_DISOWN_OK,
-		MGR_MSG_DISOWN_ERR,
+		MGR_MSG_UNCLAIM,
+		MGR_MSG_UNCLAIM_OK,
+		MGR_MSG_UNCLAIM_ERR,
 
 		// TODO:
 		MGR_MSG_SET_FS_ERROR,
@@ -63,7 +63,7 @@ struct mgr_msg {
 		struct {
 			ino_t    ino;
 			off_t    offset;
-		} disown;
+		} unclaim;
 
 		struct fs_info fs_info;
 

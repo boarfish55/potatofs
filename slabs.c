@@ -149,7 +149,7 @@ slab_realloc(struct oslab *b, struct exlog_err *e)
  * or when destroying the slab tree.
  */
 static void
-slab_disown(struct oslab *b)
+slab_unclaim(struct oslab *b)
 {
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	int              mgr = -1;
@@ -168,9 +168,9 @@ slab_disown(struct oslab *b)
 			goto fail;
 		}
 
-		m.m = MGR_MSG_DISOWN;
-		m.v.disown.ino = b->ino;
-		m.v.disown.offset = b->base;
+		m.m = MGR_MSG_UNCLAIM;
+		m.v.unclaim.ino = b->ino;
+		m.v.unclaim.offset = b->base;
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
 			exlog_lerr(LOG_ERR, &e, "%s", __func__);
@@ -182,19 +182,19 @@ slab_disown(struct oslab *b)
 			goto fail;
 		}
 
-		if (m.m != MGR_MSG_DISOWN_OK) {
+		if (m.m != MGR_MSG_UNCLAIM_OK) {
 			exlog(LOG_ERR, "%s: bad manager response: %d",
 			    __func__, m.m);
 			goto fail;
-		} else if (m.v.disown.ino != b->ino ||
-		    m.v.disown.offset != b->base) {
+		} else if (m.v.unclaim.ino != b->ino ||
+		    m.v.unclaim.offset != b->base) {
 			/* We close the fd here to avoid deadlocks. */
 			close(b->fd);
 			exlog(LOG_ERR, "%s: bad manager response; "
 			    "offset expected=%lu, received=%lu",
 			    "ino expected=%lu, received=%lu",
-			    __func__, b->base, m.v.disown.offset, b->ino,
-			    m.v.disown.ino);
+			    __func__, b->base, m.v.unclaim.offset, b->ino,
+			    m.v.unclaim.ino);
 			goto fail;
 		}
 
@@ -250,7 +250,7 @@ slab_purge(void *unused)
 			if (b->hdr.v.f.flags & SLAB_ITBL)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,
 				    itbl_entry);
-			slab_disown(b);
+			slab_unclaim(b);
 			counter_decr(COUNTER_N_OPEN_SLABS);
 			b = b2;
 		}
@@ -541,7 +541,7 @@ slab_shutdown(struct exlog_err *e)
 		SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 		if (b->hdr.v.f.flags & SLAB_ITBL)
 			TAILQ_REMOVE(&owned_slabs.itbl_head, b, itbl_entry);
-		slab_disown(b);
+		slab_unclaim(b);
 		counter_decr(COUNTER_N_OPEN_SLABS);
 	}
 	owned_slabs.do_shutdown = 1;
@@ -725,7 +725,7 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	LK_WRLOCK(&b->lock);
 	if (slab_read_hdr(b, e) == -1) {
 		LK_UNLOCK(&b->lock);
-		goto fail_disown;
+		goto fail_unclaim;
 	}
 	if (b->hdr.v.f.flags & SLAB_REMOVED) {
 		if (oflags & OSLAB_NOCREATE) {
@@ -734,11 +734,11 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 			    "%s: slab was removed and "
 			    "OSLAB_NOCREATE is set",
 			    __func__);
-			goto fail_disown;
+			goto fail_unclaim;
 		}
 		if (slab_realloc(b, e) == -1) {
 			LK_UNLOCK(&b->lock);
-			goto fail_disown;
+			goto fail_unclaim;
 		}
 	}
 	LK_UNLOCK(&b->lock);
@@ -749,9 +749,9 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	b->base = (flags & SLAB_ITBL) ? base :
 	    offset / slab_get_max_size();
 	if (SPLAY_INSERT(slab_tree, &owned_slabs.head, b) != NULL) {
-		/* We're in a pretty bad situation here, let's disown. */
+		/* We're in a pretty bad situation here, let's unclaim. */
 		exlog_errf(e, EXLOG_OS, errno, __func__);
-		goto fail_disown;
+		goto fail_unclaim;
 	}
 	if (flags & SLAB_ITBL)
 		TAILQ_INSERT_TAIL(&owned_slabs.itbl_head, b, itbl_entry);
@@ -775,15 +775,15 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 				TAILQ_REMOVE(&owned_slabs.itbl_head, purged,
 				    itbl_entry);
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, purged);
-			slab_disown(purged);
+			slab_unclaim(purged);
 			counter_decr(COUNTER_N_OPEN_SLABS);
 			goto end;
 		}
 	}
 
 	goto end;
-fail_disown:
-	slab_disown(b);
+fail_unclaim:
+	slab_unclaim(b);
 	b = NULL;
 	goto end;
 fail_destroy_locks:
@@ -829,7 +829,7 @@ slab_forget(struct oslab *b, struct exlog_err *e)
 			if (b->hdr.v.f.flags & SLAB_ITBL)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,
 				    itbl_entry);
-			slab_disown(b);
+			slab_unclaim(b);
 			counter_decr(COUNTER_N_OPEN_SLABS);
 		} else
 			TAILQ_INSERT_TAIL(&owned_slabs.lru_head, b, lru_entry);
