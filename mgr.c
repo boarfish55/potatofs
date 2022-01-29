@@ -26,12 +26,12 @@
 #include "config.h"
 #include "mgr.h"
 
-static char mgr_path[PATH_MAX];
+static char mgr_sock_path[PATH_MAX];
 
 void
 mgr_init(const char *path)
 {
-	strlcpy(mgr_path, path, sizeof(mgr_path));
+	strlcpy(mgr_sock_path, path, sizeof(mgr_sock_path));
 }
 
 int
@@ -49,9 +49,11 @@ mgr_connect(struct exlog_err *e)
 
 		bzero(&mgr_addr, sizeof(mgr_addr));
 		mgr_addr.sun_family = AF_LOCAL;
-		strlcpy(mgr_addr.sun_path, mgr_path, sizeof(mgr_addr.sun_path));
+		strlcpy(mgr_addr.sun_path, mgr_sock_path,
+		    sizeof(mgr_addr.sun_path));
 
-		if (connect(mgr, (struct sockaddr *)&mgr_addr, sizeof(mgr_addr)) == -1) {
+		if (connect(mgr, (struct sockaddr *)&mgr_addr,
+		    sizeof(mgr_addr)) == -1) {
 			exlog_lerrno(LOG_ERR, errno, "%s: connect", __func__);
 			goto fail;
 		}

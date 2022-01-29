@@ -31,12 +31,14 @@
 #include <stdio.h>
 #include <jansson.h>
 #include <unistd.h>
+#include <zlib.h>
 #include "counters.h"
 #include "slabs.h"
 #include "fs_info.h"
 #include "inodes.h"
 #include "dirinodes.h"
 #include "exlog.h"
+#include "mgr.h"
 
 static int  show_slab(int, char **);
 static int  show_dir(int, char **);
@@ -194,6 +196,38 @@ fsck_inode(ino_t ino, int unallocated, struct inode *inode,
 }
 
 int
+verify_checksum(int fd, struct slab_hdr *hdr, struct exlog_err *e)
+{
+	uint32_t crc;
+	char     buf[BUFSIZ];
+	ssize_t  r;
+
+	// TODO: we should also check that the header CRC and rev
+	// match what we have in slabdb.
+
+	if (lseek(fd, 0, SEEK_SET) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: lseek", __func__);
+
+	crc = crc32_z(0L, Z_NULL, 0);
+	while ((r = read(fd, buf, sizeof(buf)))) {
+		if (r == -1) {
+			if (errno == EINTR)
+				continue;
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: read", __func__);
+		}
+		crc = crc32_z(crc, (unsigned char *)buf, r);
+	}
+
+	if (hdr->v.f.checksum != crc)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: mismatching content CRC: expected=%lu, actual=%u",
+		    hdr->v.f.checksum, crc, __func__);
+
+	return 0;
+}
+
+int
 fsck(int argc, char **argv)
 {
 	ino_t                 ino;
@@ -209,6 +243,8 @@ fsck(int argc, char **argv)
 	struct exlog_err      e = EXLOG_ERR_INITIALIZER;
 	struct fsck_stats     stats = {0, 0, 0, 0};
 	size_t                n_free;
+
+	mgr_init(fs_config.mgr_sock_path);
 
 	if (snprintf(itbl_path, sizeof(itbl_path), "%s/%s", fs_config.data_dir,
 	    ITBL_DIR) >= sizeof(itbl_path)) {
@@ -245,6 +281,7 @@ fsck(int argc, char **argv)
 
 		if ((b = slab_inspect(ino, 0, SLAB_ITBL, &e)) == NULL) {
 			exlog_prt(&e);
+			exlog_zerr(&e);
 			stats.errors++;
 			continue;
 		}
@@ -264,8 +301,12 @@ fsck(int argc, char **argv)
 			continue;
 		}
 
-		// TODO: verify checksum
-		//if (hdr.v.f.checksum ...)
+		if (verify_checksum(b->fd, &b->hdr, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
+			stats.errors++;
+			continue;
+		}
 
 		itbl_hdr = (struct slab_itbl_hdr *)b->hdr.v.f.data;
 
@@ -438,8 +479,11 @@ load_dir(char **data, struct inode *inode)
 			goto fail;
 		}
 
-		// TODO: verify checksum
-		//if (hdr.v.f.checksum ...)
+		if (verify_checksum(fd, &hdr, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
+			goto fail;
+		}
 
 		if ((hdr.v.f.flags & SLAB_REMOVED) &&
 		    st.st_size > sizeof(struct slab_hdr)) {

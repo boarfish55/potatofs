@@ -149,7 +149,8 @@ counter_flush(void *unused)
 	FILE            *f;
 
 	// TODO: this should all happen through a control socket, not
-	// a tempfile.
+	// a tempfile. If we want to avoid more procs/threads, just
+	// use a poll() loop on a stream socket.
 	while (!counters_shutdown) {
 		if ((fd = open_wflock(counters_path,
 		    O_CREAT|O_WRONLY|O_TRUNC, 0644, LOCK_EX)) == -1) {

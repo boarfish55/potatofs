@@ -25,7 +25,6 @@ EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
-# TODO: add workers/pid to config
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
 ./potatomgr -c "$conf" -w 1 -W 1 -p "$basepath/potatomgr.pid"
 ./potatofs -o cfg_path="$conf" "$mountpoint" &

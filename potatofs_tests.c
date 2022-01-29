@@ -1791,7 +1791,6 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	// TODO: need config path
 	if (fs_info_inspect(&fs_info, &e) == -1) {
 		exlog_prt(&e);
 		exit(1);
