@@ -1157,6 +1157,80 @@ fail:
 	return -1;
 }
 
+/*
+ * Claims an inode table slab after the one for the base inode contained
+ * in the message. Useful for looping over all existing inode tables.
+ */
+static int
+claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
+{
+	int              r;
+	MDB_txn         *txn;
+	MDB_dbi          dbi;
+	MDB_cursor      *cursor;
+	MDB_val          mk, mv;
+	struct slab_key  k;
+	struct mgr_msg   claim_msg;
+
+	bzero(&k, sizeof(k));
+	k.itbl = 1;
+	k.ino = m->v.claim_next_itbl.ino;
+	k.offset = 0;
+
+	mk.mv_size = sizeof(k);
+	mk.mv_data = &k;
+
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_txn_begin: %s",
+		    __func__, mdb_strerror(r));
+		goto fail;
+	}
+
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_dbi_open: %s",
+		    __func__, mdb_strerror(r));
+		mdb_txn_abort(txn);
+		goto fail;
+	}
+
+	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+		exlog(LOG_ERR, "%s: mdb_cursor_open: %s",
+		    __func__, mdb_strerror(r));
+		mdb_txn_abort(txn);
+		goto fail;
+	}
+
+	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) != 0) {
+		mdb_txn_abort(txn);
+		if (r == MDB_NOTFOUND) {
+			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
+			if (mgr_send(c, -1, m, e) == -1)
+				return -1;
+			return 0;
+		}
+		goto fail;
+	}
+
+	k.itbl = ((struct slab_key *)mk.mv_data)->itbl;
+	k.ino = ((struct slab_key *)mk.mv_data)->ino;
+	k.offset = ((struct slab_key *)mk.mv_data)->offset;
+
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
+
+	claim_msg.m = MGR_MSG_CLAIM;
+	claim_msg.v.claim.flags = k.itbl;
+	claim_msg.v.claim.oflags = m->v.claim_next_itbl.oflags;
+	claim_msg.v.claim.ino = k.ino;
+	claim_msg.v.claim.offset = k.offset;
+
+	return claim(c, &claim_msg, e);
+fail:
+	m->m = MGR_MSG_CLAIM_NEXT_ITBL_ERR;
+	mgr_send(c, -1, m, e);
+	return -1;
+}
+
 static int
 df(int c, struct mgr_msg *m, struct exlog_err *e)
 {
@@ -1613,11 +1687,11 @@ worker(int lsock)
 		if (setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout,
 		    sizeof(socket_timeout)) == -1) {
 			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			exlog_zerr(&e);
 			continue;
 		}
 
 		for (;;) {
-			exlog_zerr(&e);
 			if ((r = mgr_recv(c, &fd, &m, &e)) == -1) {
 				if (exlog_err_is(&e, EXLOG_OS, EAGAIN))
 					exlog(LOG_NOTICE,
@@ -1625,6 +1699,7 @@ worker(int lsock)
 				else if (!exlog_err_is(&e, EXLOG_APP,
 				    EXLOG_EOF))
 					exlog_lerr(LOG_ERR, &e, "%s", __func__);
+				exlog_zerr(&e);
 				close(c);
 				break;
 			}
@@ -1644,8 +1719,10 @@ worker(int lsock)
 					m.m = MGR_MSG_SET_FS_ERROR_ERR;
 				else
 					m.m = MGR_MSG_SET_FS_ERROR_OK;
-				if (mgr_send(c, -1, &m, &e) == -1)
-					exlog_lerr(LOG_ERR, &e, "%s", __func__);
+				mgr_send(c, -1, &m, &e);
+				break;
+			case MGR_MSG_CLAIM_NEXT_ITBL:
+				claim_next_itbls(c, &m, &e);
 				break;
 			default:
 				exlog(LOG_ERR, "%s: wrong message %d",
@@ -1656,10 +1733,12 @@ worker(int lsock)
 			if (exlog_fail(&e)) {
 				exlog_lerr(LOG_ERR, &e, "%s", __func__);
 				if (e.layer == EXLOG_OS) {
+					exlog_zerr(&e);
 					close(c);
 					break;
 				}
 			}
+			exlog_zerr(&e);
 		}
 	}
 }

@@ -101,7 +101,7 @@ slab_cmp(struct oslab *b1, struct oslab *b2)
 SPLAY_PROTOTYPE(slab_tree, oslab, entry, slab_cmp);
 SPLAY_GENERATE(slab_tree, oslab, entry, slab_cmp);
 
-static int
+int
 slab_read_hdr(struct oslab *b, struct exlog_err *e)
 {
 	if (pread_x(b->fd, &b->hdr, sizeof(b->hdr), 0) < sizeof(b->hdr))
@@ -688,8 +688,8 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		goto fail_destroy_locks;
 
 	m.m = MGR_MSG_CLAIM;
-	m.v.claim.ino = ino;
-	m.v.claim.offset = offset;
+	m.v.claim.ino = (flags & SLAB_ITBL) ? base : ino;
+	m.v.claim.offset = (flags & SLAB_ITBL) ? 0 : offset;
 	m.v.claim.flags = flags;
 	m.v.claim.oflags = oflags;
 

@@ -42,7 +42,12 @@ struct mgr_msg {
 
 		MGR_MSG_FS_INFO,
 		MGR_MSG_FS_INFO_OK,
-		MGR_MSG_FS_INFO_ERR
+		MGR_MSG_FS_INFO_ERR,
+
+		MGR_MSG_CLAIM_NEXT_ITBL,
+		MGR_MSG_CLAIM_NEXT_ITBL_OK,
+		MGR_MSG_CLAIM_NEXT_ITBL_END,
+		MGR_MSG_CLAIM_NEXT_ITBL_ERR
 	} m;
 
 	union {
@@ -67,6 +72,12 @@ struct mgr_msg {
 		struct fs_info fs_info;
 
 		uint8_t        fs_error;
+
+		struct {
+			ino_t    ino;
+			off_t    offset;
+			uint32_t oflags;
+		} claim_next_itbl;
 	} v;
 };
 

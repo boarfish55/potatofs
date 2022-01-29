@@ -231,85 +231,91 @@ int
 fsck(int argc, char **argv)
 {
 	ino_t                 ino;
-	char                  itbl_path[PATH_MAX], itbl[PATH_MAX];
-	DIR                  *itbl_dir;
-	struct dirent        *d;
 	int                   slab_end = 0, is_free;
 	ssize_t               r;
 	struct oslab         *b;
 	struct inode          inode;
 	struct slab_itbl_hdr *itbl_hdr;
-	char                 *end;
 	struct exlog_err      e = EXLOG_ERR_INITIALIZER;
 	struct fsck_stats     stats = {0, 0, 0, 0};
 	size_t                n_free;
+	struct mgr_msg        m;
+	int                   fd, mgr;
 
 	mgr_init(fs_config.mgr_sock_path);
 
-	if (snprintf(itbl_path, sizeof(itbl_path), "%s/%s", fs_config.data_dir,
-	    ITBL_DIR) >= sizeof(itbl_path)) {
-		stats.errors++;
-		warnx("%s: potatofs base path too long", __func__);
-		goto end;
-	}
 
-	if ((itbl_dir = opendir(itbl_path)) == NULL) {
-		warn("opendir");
-		goto end;
-	}
-
-	for (d = readdir(itbl_dir); d != NULL; d = readdir(itbl_dir)) {
-		if (strcmp(d->d_name, ".") == 0 ||
-		    strcmp(d->d_name, "..") == 0)
-			continue;
-		if (d->d_name[0] != 'i')
-			continue;
-
-		ino = strtoull(d->d_name + 1, &end, 10);
-		if (*end != '\0') {
-			stats.errors++;
-			warnx("%s: bad inode table name: %s",
-			    __func__, d->d_name);
-			continue;
-		}
-		if (ino == ULLONG_MAX) {
-			stats.errors++;
-			warn("%s: bad inode table name: %s",
-			    __func__, d->d_name);
-			continue;
-		}
-
-		if ((b = slab_inspect(ino, 0, SLAB_ITBL, &e)) == NULL) {
+	for (m.v.claim_next_itbl.ino = 0;;) {
+		m.m = MGR_MSG_CLAIM_NEXT_ITBL;
+		if ((mgr = mgr_connect(&e)) == -1) {
 			exlog_prt(&e);
 			exlog_zerr(&e);
 			stats.errors++;
-			continue;
+			goto end;
 		}
-		if (!(b->hdr.v.f.flags & SLAB_ITBL)) {
-			warnx("file is not an ITBL: %s", itbl);
+
+		if (mgr_send(mgr, -1, &m, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
 			stats.errors++;
-			close(b->fd);
-			free(b);
-			continue;
+			goto end;
+		}
+
+		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
+			stats.errors++;
+			goto end;
+		}
+
+		close(mgr);
+
+		if (m.m != MGR_MSG_CLAIM_OK)
+			break;
+
+		if (!(m.v.claim.flags & SLAB_ITBL)) {
+			warnx("got a non-SLAB_ITBL slab during a "
+			    "MGR_MSG_CLAIM_NEXT_ITBL call");
+			stats.errors++;
+			goto end;
+		}
+
+		if ((b = calloc(1, sizeof(struct oslab))) == NULL)
+			err(1, "calloc");
+
+		b->fd = fd;
+		b->ino = 0;
+		b->base = ((m.v.claim.ino - 1) / slab_inode_max()) *
+		    slab_inode_max() + 1;
+
+		if (slab_read_hdr(b, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
+			stats.errors++;
+			goto next;
+		}
+
+		if (!(b->hdr.v.f.flags & SLAB_ITBL)) {
+			warnx("slab header should indicate SLAB_ITBL, "
+			    "but does not; base=%lu", b->base);
+			stats.errors++;
+			goto next;
 		}
 		if (b->hdr.v.f.slab_version != SLAB_VERSION) {
-			warnx("unrecognized data format version: %s: %u",
-			    itbl, b->hdr.v.f.slab_version);
+			warnx("unrecognized data format version: base=%lu, "
+			    "version=%u", b->base, b->hdr.v.f.slab_version);
 			stats.errors++;
-			close(b->fd);
-			free(b);
-			continue;
+			goto next;
 		}
 
 		if (verify_checksum(b->fd, &b->hdr, &e) == -1) {
 			exlog_prt(&e);
 			exlog_zerr(&e);
 			stats.errors++;
-			continue;
+			goto next;
 		}
 
 		itbl_hdr = (struct slab_itbl_hdr *)b->hdr.v.f.data;
-
 		for (ino = itbl_hdr->base, slab_end = 0, n_free = 0;
 		    ino < itbl_hdr->base + slab_inode_max(); ino++) {
 			if (!slab_end) {
@@ -343,8 +349,15 @@ fsck(int argc, char **argv)
 			    n_free);
 			stats.errors++;
 		}
+next:
 		close(b->fd);
 		free(b);
+	}
+
+	if (m.m != MGR_MSG_CLAIM_NEXT_ITBL_END) {
+		exlog(LOG_ERR, "%s: bad manager response: %d",
+		    __func__, m.m);
+		stats.errors++;
 	}
 end:
 	printf("Filesystem statistics:\n");
@@ -440,6 +453,7 @@ load_dir(char **data, struct inode *inode)
 	memcpy(d, inode->v.data + sizeof(struct inode_fields), i);
 
 	for (; i < inode->v.f.size; i += r) {
+		// TODO: will need to claim here, go through potatomgr.
 		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
 			exlog_prt(&e);
 			goto fail;

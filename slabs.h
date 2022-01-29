@@ -206,6 +206,7 @@ int     slab_write_hdr(struct oslab *, struct exlog_err *);
 int     slab_write_hdr_nolock(struct oslab *, struct exlog_err *);
 ssize_t slab_write(struct oslab *, const void *, off_t,
             size_t, struct exlog_err *);
+int     slab_read_hdr(struct oslab *, struct exlog_err *);
 ssize_t slab_read(struct oslab *, void *, off_t,
             size_t, struct exlog_err *);
 int     slab_unlink(struct oslab *, struct exlog_err *);
