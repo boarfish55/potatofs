@@ -955,8 +955,10 @@ off_t
 slab_size(struct oslab *b, struct exlog_err *e)
 {
 	struct stat st;
-	if (fstat(b->fd, &st) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
+	if (fstat(b->fd, &st) == -1) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
+		return ULONG_MAX;
+	}
 	return st.st_size - sizeof(struct slab_hdr);
 }
 

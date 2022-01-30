@@ -75,7 +75,6 @@ struct mgr_msg {
 
 		struct {
 			ino_t    ino;
-			off_t    offset;
 			uint32_t oflags;
 		} claim_next_itbl;
 	} v;

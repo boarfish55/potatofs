@@ -603,8 +603,8 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		purge = 1;
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
-		if (copy_outgoing_slab(fd, m->v.unclaim.ino, m->v.unclaim.offset,
-		    &hdr, e) == -1)
+		if (copy_outgoing_slab(fd, m->v.unclaim.ino,
+		    m->v.unclaim.offset, &hdr, e) == -1)
 			goto fail;
 
 		hdr.v.f.flags &= ~SLAB_DIRTY;
@@ -613,7 +613,6 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 			    "%s: short read on slab header", __func__);
 			goto fail;
 		}
-
 	}
 
 	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));

@@ -1264,6 +1264,7 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 
 	bzero(inode, sizeof(struct inode));
 
+	// TODO: claim with potatomgr
 	if ((b = slab_inspect(ino, 0, SLAB_ITBL, e)) == NULL)
 		return -1;
 
