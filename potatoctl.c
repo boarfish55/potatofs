@@ -630,15 +630,14 @@ fail:
 int
 show_inode(int argc, char **argv)
 {
-	ino_t            ino;
-	struct inode     inode;
-	char             path[PATH_MAX];
-	off_t            i;
-	ssize_t          r;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	int              fd;
-	struct slab_hdr  hdr;
-	struct stat      st;
+	ino_t             ino;
+	struct inode      inode;
+	off_t             i;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct slab_hdr   hdr;
+	void             *data;
+	ssize_t           slab_sz;
+	char              path[PATH_MAX];
 
 	if (argc < 1) {
 		usage();
@@ -660,27 +659,17 @@ show_inode(int argc, char **argv)
 
 	for (i = inode_max_inline_b(); i < inode.v.f.size;
 	    i += slab_get_max_size()) {
-		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
+		if (slab_path(path, sizeof(path), ino, i, 0, 1, &e) == -1) {
 			exlog_prt(&e);
 			exit(1);
 		}
 
-		// TODO: slab inspect ?
-		if ((fd = open(path, O_RDONLY)) == -1) {
-			if (errno == ENOENT)
-				errx(1, "%s: missing slabs for an inode this "
-				    "size: %s", __func__, path);
-			err(1, "open");
+		if ((data = slab_inspect(ino, i, 0, 0, &hdr,
+		    &slab_sz, &e)) == NULL) {
+			exlog_prt(&e);
+			exit(1);
 		}
-
-		if ((r = read(fd, &hdr, sizeof(hdr))) == -1)
-			err(1, "read");
-		if (r < sizeof(hdr))
-			errx(1, "%s: short read on slab header",
-			    __func__);
-		if ((r = fstat(fd, &st)) == -1)
-			err(1, "fstat");
-		close(fd);
+		free(data);
 
 		printf("  slab: %s\n", path);
 		printf("    hdr:\n");
@@ -696,10 +685,9 @@ show_inode(int argc, char **argv)
 		if (hdr.v.f.flags & SLAB_REMOVED)
 			printf(" removed");
 		printf("\n");
-		printf("      data size:    %lu\n",
-		    st.st_size - sizeof(struct slab_hdr));
+		printf("      data size:    %lu\n", slab_sz);
 		printf("      sparse:       %s\n",
-		    (st.st_size < (inode.v.f.size % slab_get_max_size()))
+		    (slab_sz < (inode.v.f.size % slab_get_max_size()))
 		    ? "yes" : "no");
 		printf("\n");
 	}
@@ -713,13 +701,14 @@ int
 show_dir(int argc, char **argv)
 {
 	struct slab_hdr   hdr;
-	int               fd, n;
+	int               n;
 	off_t             i;
 	ssize_t           r;
 	ino_t             ino;
 	struct inode      inode;
 	char              path[PATH_MAX];
 	char             *data;
+	void             *slab_data;
 	struct dir_entry *de;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 
@@ -756,30 +745,28 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 
 	for (; i < inode.v.f.size; i += r) {
-		// TODO: slab_inspect ?
-		// TODO: also create a new command to inspect a slab at a
-		// specific path, using slab_disk_inspect ?
-		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
+		if (slab_path(path, sizeof(path), ino, i, 0, 1, &e) == -1) {
+			exlog_prt(&e);
+			exlog_zerr(&e);
+			exit(1);
+		}
+
+		if ((slab_data = slab_inspect(ino, i, 0, 0, &hdr,
+		    &r, &e)) == NULL) {
+			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+				exlog_zerr(&e);
+				break;
+			}
 			exlog_prt(&e);
 			exit(1);
 		}
 
-		if ((fd = open(path, O_RDONLY)) == -1) {
-			if (errno == ENOENT)
-				errx(1, "%s: missing slabs for an inode this "
-				    "size: %s", __func__, path);
-			err(1, "open");
-		}
+		if (r == 0)
+			break;
 
-		if ((r = read(fd, &hdr, sizeof(hdr))) == -1)
-			err(1, "read");
-		if (r < sizeof(hdr))
-			errx(1, "%s: short read on slab header",
-			    __func__);
 		printf("  slab: %s\n", path);
 		printf("    hdr:\n");
-		printf("      version:    %u\n",
-		    hdr.v.f.slab_version);
+		printf("      version:    %u\n", hdr.v.f.slab_version);
 		printf("      checksum:   %u\n", hdr.v.f.checksum);
 		printf("      revision:   %lu\n", hdr.v.f.revision);
 		printf("      flags:     ");
@@ -791,14 +778,8 @@ show_dir(int argc, char **argv)
 			printf(" removed");
 		printf("\n\n");
 
-		if (i / slab_get_max_size() == 0)
-			if (lseek(fd, i, SEEK_CUR) == -1)
-				err(1, "lseek");
-		if ((r = read(fd, data + i, slab_get_max_size())) == -1)
-			err(1, "read");
-		close(fd);
-		if (r == 0)
-			break;
+		memcpy(data + i, slab_data, r);
+		free(slab_data);
 	}
 
 	if (i < inode.v.f.size)
