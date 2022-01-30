@@ -322,6 +322,8 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 	if ((dir = opendir(path)) == NULL)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: opendir", __func__);
 	while ((de = readdir(dir))) {
+		if (de->d_name[0] == '.')
+			continue;
 		if (snprintf(f, sizeof(f), "%s/%s", path,
 		    de->d_name) >= sizeof(f)) {
 			exlog(LOG_ERR, NULL, "%s: name too long", __func__);
@@ -339,6 +341,8 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 		if ((dir = opendir(path)) == NULL)
 			return exlog_errf(e, EXLOG_OS, errno, "%s: opendir", __func__);
 		while ((de = readdir(dir))) {
+			if (de->d_name[0] == '.')
+				continue;
 			if (snprintf(f, sizeof(f), "%s/%s", path,
 			    de->d_name) >= sizeof(f)) {
 				exlog(LOG_ERR, NULL, "%s: name too long", __func__);
@@ -364,7 +368,20 @@ slab_make_dirs(struct exlog_err *e)
 	    >= sizeof(path))
 		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: bad inode table dir; too long", __func__);
+	if (mkdir_x(path, 0700) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, __func__);
 
+	if (snprintf(path, sizeof(path), "%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path))
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: bad inode table dir; too long", __func__);
+	if (mkdir_x(path, 0700) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, __func__);
+
+	if (snprintf(path, sizeof(path), "%s/%s",
+	    fs_config.data_dir, INCOMING_DIR) >= sizeof(path))
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: bad inode table dir; too long", __func__);
 	if (mkdir_x(path, 0700) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, __func__);
 

@@ -82,7 +82,9 @@ usage()
 	    "\t-f\t\tRun in the foreground, do not fork\n"
 	    "\t-c <path>\tPath to configuration\n"
 	    "\t-p <path>\tPID file path\n"
-	    "\t-T <timeout>\tUnix socket timeout\n");
+	    "\t-T <timeout>\tUnix socket timeout\n"
+	    "\t-S\t\tDo not run a scrubber subprocess\n"
+	    "\t-P\t\tDo not run a purger subprocess\n");
 }
 
 static void
@@ -353,6 +355,20 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 	ssize_t       r;
 	int           poll_r;
 	size_t        stdout_r, stderr_r;
+	char *const  *a;
+	char        **argv2, **a2;
+
+	for (a = argv; *a != NULL; a++)
+		/* Counting args */;
+
+	if ((argv2 = calloc((a - argv) + 2, sizeof(char *))) == NULL)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: calloc", __func__);
+
+	if ((argv2[0] = strdup(fs_config.mgr_exec)) == NULL)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: strdup", __func__);
+
+	for (a = argv, a2 = argv2 + 1; *a != NULL; a++, a2++)
+		*a2 = *a;
 
 	if (pipe(p_out) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: pipe", __func__);
@@ -379,13 +395,16 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 
 		chdir(fs_config.data_dir);
 
-		if (execv(fs_config.mgr_exec, argv) == -1) {
+		if (execv(fs_config.mgr_exec, argv2) == -1) {
 			close(p_out[1]);
 			close(p_err[1]);
 			return exlog_errf(e, EXLOG_OS, errno, "%s: execv",
 			    __func__);
 		}
 	}
+
+	free(argv2[0]);
+	free(argv2);
 
 	close(p_out[1]);
 	close(p_err[1]);
@@ -423,7 +442,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 
 		while (nfds-- > 0) {
 			if (fds[nfds].revents & POLLERR) {
-				if (fds[nfds].fd == p_out[1])
+				if (fds[nfds].fd == p_out[0])
 					stdout_closed = 1;
 				else
 					stderr_closed = 1;
@@ -433,23 +452,27 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 				continue;
 			}
 
-			if (!(fds[nfds].revents & POLLIN))
+			if (!(fds[nfds].revents & (POLLIN|POLLHUP)))
 				continue;
 
-			if (fds[nfds].fd == p_out[1]) {
-				r = read(p_out[1], stdout + stdout_r,
+			if (fds[nfds].fd == p_out[0]) {
+				r = read(p_out[0], stdout + stdout_r,
 				    stdout_len - stdout_r);
 				if (r > 0) {
 					stdout_r += r;
-				} else
+				} else {
 					stdout_closed = 1;
+					close(p_out[0]);
+				}
 			} else {
-				r = read(p_err[1], stderr + stderr_r,
+				r = read(p_err[0], stderr + stderr_r,
 				    stderr_len - stderr_r);
-				if (r > 0)
+				if (r > 0) {
 					stderr_r += r;
-				else
+				} else {
 					stderr_closed = 1;
+					close(p_err[0]);
+				}
 			}
 			if (r == -1)
 				exlog_strerror(LOG_ERR, errno,
@@ -1257,16 +1280,10 @@ bg_df()
 	char             *args[] = {"df", NULL};
 	off_t             bytes_total, bytes_used;
 	struct fs_info    fs_info;
-	struct timespec   now;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 
 	if (fs_info_read(&fs_info, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
-		return;
-	}
-
-	if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
-		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return;
 	}
 
@@ -1313,6 +1330,13 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 {
 	char            title[32];
 	struct timespec tp = {interval_secs, 0};
+	pid_t           pid;
+
+	if ((pid = fork()) == -1){
+		killpg(0, 15);
+		err(1, "fork");
+	} else if (pid > 0)
+		return;
 
 	if (exlog_init(MGR_PROGNAME "-bgworker", dbg_spec, 0) == -1) {
 		exlog(LOG_ERR, NULL,
@@ -1323,7 +1347,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 	bzero(title, sizeof(title));
 	snprintf(title, sizeof(title), "bgworker: %s", name);
 	setproctitle(title);
-	exlog(LOG_INFO, NULL, "%s: ready", __func__);
+	exlog(LOG_INFO, NULL, "%s: %s ready", __func__, title);
 
 	for (;;) {
 		fn();
@@ -1347,12 +1371,18 @@ bg_flush()
 		return;
 	}
 
+	exlog(LOG_DEBUG, NULL, "%s: scanning %s", __func__, outgoing_dir);
+
 	if ((dir = opendir(outgoing_dir)) == NULL) {
-		exlog_strerror(LOG_ERR, errno, "%s: opendir", __func__);
+		exlog_strerror(LOG_ERR, errno, "%s: opendir %s",
+		    __func__, outgoing_dir);
 		return;
 	}
 
 	while ((de = readdir(dir))) {
+		if (de->d_name[0] == '.')
+			continue;
+
 		if (snprintf(path, sizeof(path), "%s/%s",
 		    outgoing_dir, de->d_name) >= sizeof(path)) {
 			exlog(LOG_ERR, NULL, "%s: name too long", __func__);
@@ -1774,6 +1804,8 @@ main(int argc, char **argv)
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
 	int                 bgworkers = 1;
+	int                 no_purger = 0;
+	int                 no_scrubber = 0;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
 	off_t               cache_size_limit;
@@ -1782,7 +1814,7 @@ main(int argc, char **argv)
 	struct fs_info      info;
 
 
-	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:SP")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
@@ -1814,6 +1846,12 @@ main(int argc, char **argv)
 				break;
 			case 'T':
 				socket_timeout.tv_sec = atoi(optarg);
+				break;
+			case 'S':
+				no_scrubber = 1;
+				break;
+			case 'P':
+				no_purger = 1;
 				break;
 			default:
 				usage();
@@ -1985,11 +2023,14 @@ main(int argc, char **argv)
 	bgworker("df", &bg_df, 60);
 	workers++;
 
-	bgworker("scrubber", &bg_scrubber, 60);
-	workers++;
-
-	bgworker("purge", &bg_purge, 60);
-	workers++;
+	if (!no_scrubber) {
+		bgworker("scrubber", &bg_scrubber, 60);
+		workers++;
+	}
+	if (!no_purger) {
+		bgworker("purge", &bg_purge, 60);
+		workers++;
+	}
 
 	for (n = 0; n < bgworkers; n++) {
 		bgworker("flush", &bg_flush, 60);

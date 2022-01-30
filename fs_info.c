@@ -91,7 +91,7 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		fs_info.stats.f_namemax = FS_NAME_MAX;
 	} else if (r < sizeof(fs_info)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: potatofs_fs_info structure size mismatch; "
+		    "%s: structure size mismatch; "
 		    "incompatible version?", __func__);
 		goto end;
 	}
@@ -180,7 +180,8 @@ fs_info_write(const struct fs_info *fs_info, struct exlog_err *e)
 		goto end;
 	}
 
-	if ((r = write_x(fd, &fs_info, sizeof(fs_info))) < sizeof(fs_info)) {
+	if ((r = write_x(fd, fs_info, sizeof(struct fs_info))) <
+	    sizeof(struct fs_info)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: failed to write potatofs_fs_info structure; "
 		    "write() returned %d instead of %d:",

@@ -45,6 +45,7 @@ static int  show_dir(int, char **);
 static int  show_inode(int, char **);
 static int  fsck(int, char **);
 static int  top(int, char **);
+static int  df(int, char **);
 static void usage();
 static int  load_dir(char **, struct inode *);
 static void print_inode(struct inode *, int);
@@ -57,6 +58,7 @@ struct subc {
 	{ "dir", &show_dir },
 	{ "inode", &show_inode },
 	{ "top", &top },
+	{ "df", &df },
 	{ "fsck", &fsck },
 	{ "", NULL }
 };
@@ -76,6 +78,7 @@ usage()
 	    "           slab  <slab file>\n"
 	    "           dir   <dir inode#>\n"
 	    "           top   <delay>\n"
+	    "           df\n"
 	    "           fsck\n"
 	    "\n"
 	    "\t-h\t\t\tPrints this help\n"
@@ -429,6 +432,66 @@ print_metric_header()
 	printf("%10s %10s %10s %10s %10s %10s %10s\n",
 	    "read/s", "read MB/s", "write/s", "write MB/s",
 	    "fsync/s", "fsyncdir/s", "errors");
+}
+
+int
+df(int argc, char **argv)
+{
+	int              mgr;
+	char             u[37];
+	struct mgr_msg   m;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+
+	mgr_init(fs_config.mgr_sock_path);
+
+	if ((mgr = mgr_connect(&e)) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	m.m = MGR_MSG_FS_INFO;
+
+	if (mgr_send(mgr, -1, &m, &e) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	if (m.m != MGR_MSG_FS_INFO_OK) {
+		warnx("%s: bad manager response: %d",
+		    __func__, m.m);
+		return 1;
+	}
+
+	uuid_unparse(m.v.fs_info.instance_id, u);
+
+	printf("fs_info:\n");
+
+	printf("  version:     %u\n", m.v.fs_info.fs_info_version);
+	printf("  instaned_id: %s\n", u);
+	printf("  slab_size:   %lu\n", m.v.fs_info.slab_size);
+	printf("  clean:       %u\n", m.v.fs_info.clean);
+	printf("  error:       %u\n", m.v.fs_info.error);
+	printf("  last_update: %lu.%lu\n",
+	    m.v.fs_info.stats_last_update.tv_sec,
+	    m.v.fs_info.stats_last_update.tv_nsec);
+	printf("  statvfs:\n");
+	printf("    f_bsize:   %lu\n", m.v.fs_info.stats.f_bsize);
+	printf("    f_frsize:  %lu\n", m.v.fs_info.stats.f_frsize);
+	printf("    f_blocks:  %lu\n", m.v.fs_info.stats.f_blocks);
+	printf("    f_bfree:   %lu\n", m.v.fs_info.stats.f_bfree);
+	printf("    f_bavail:  %lu\n", m.v.fs_info.stats.f_bavail);
+	printf("    f_files:   %lu\n", m.v.fs_info.stats.f_files);
+	printf("    f_ffree:   %lu\n", m.v.fs_info.stats.f_ffree);
+	printf("    f_favail:  %lu\n", m.v.fs_info.stats.f_favail);
+	printf("    f_fsid:    %lu\n", m.v.fs_info.stats.f_fsid);
+	printf("    f_namemax: %lu\n", m.v.fs_info.stats.f_namemax);
+
+	return 0;
 }
 
 int
@@ -940,7 +1003,8 @@ main(int argc, char **argv)
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");
 
-	if (strcmp(argv[optind], "top") != 0) {
+	if (strcmp(argv[optind], "top") != 0 &&
+	    strcmp(argv[optind], "df") != 0) {
 		if (fs_info_inspect(&fs_info, &e) == -1) {
 			exlog_prt(&e);
 			exit(1);
