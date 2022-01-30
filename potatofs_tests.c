@@ -662,7 +662,7 @@ test_file_size_and_mtime()
 	if (close(fd) == -1)
 		return ERR("", errno);
 
-	if ((b = slab_inspect(st.st_ino, sz, 0, &e)) == NULL) {
+	if ((b = slab_disk_inspect(st.st_ino, sz, 0, &e)) == NULL) {
 		exlog_prt(&e);
 		return ERR("failed to inspect slab", 0);
 	}

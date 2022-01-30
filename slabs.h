@@ -234,6 +234,8 @@ size_t  slab_inode_max();
 int     slab_loop_files(void (*)(const char *), struct exlog_err *);
 
 /* To be used for testing only, acquires no lock */
-struct oslab *slab_inspect(ino_t, off_t, uint32_t, struct exlog_err *);
+struct oslab *slab_disk_inspect(ino_t, off_t, uint32_t, struct exlog_err *);
+void         *slab_inspect(ino_t, off_t, uint32_t, uint32_t,
+                  struct slab_hdr *, ssize_t *, struct exlog_err *);
 
 #endif

@@ -1258,48 +1258,42 @@ fail:
 int
 inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 {
-	int                   r;
-	struct slab_itbl_hdr *hdr;
-	struct oslab         *b = NULL;
+	struct slab_itbl_hdr *itbl_hdr;
+	struct slab_hdr       hdr;
+	char                 *data;
+	ssize_t               data_sz;
 
 	bzero(inode, sizeof(struct inode));
 
-	// TODO: claim with potatomgr
-	if ((b = slab_inspect(ino, 0, SLAB_ITBL, e)) == NULL)
+	if ((data = slab_inspect(ino, 0, SLAB_ITBL, 0, &hdr,
+	    &data_sz, e)) == NULL)
 		return -1;
 
-	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
-	if (hdr->base == 0) {
-		bzero(hdr->bitmap, sizeof(hdr->bitmap));
-		hdr->n_free = slab_inode_max();
-		hdr->base = ((ino - 1) / slab_inode_max()) *
+	itbl_hdr = (struct slab_itbl_hdr *)&hdr;
+	if (itbl_hdr->base == 0) {
+		bzero(itbl_hdr->bitmap, sizeof(itbl_hdr->bitmap));
+		itbl_hdr->n_free = slab_inode_max();
+		itbl_hdr->base = ((ino - 1) / slab_inode_max()) *
 		    slab_inode_max() + 1;
 	}
 
-	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
-
-	if (slab_inode_free(hdr, ino)) {
+	if (slab_inode_free(itbl_hdr, ino)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no such inode allocated: %lu", __func__, ino);
 		goto fail;
 	}
 
-	r = slab_read(b, inode,
-	    (ino - hdr->base) * sizeof(struct inode),
-	    sizeof(struct inode), e);
-	if (r == -1) {
-		goto fail;
-	} else if (r < sizeof(struct inode)) {
+	if ((data + (ino - itbl_hdr->base) + sizeof(struct inode) >
+	    data + data_sz)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short read while reading inode %lu", __func__, ino);
 		goto fail;
 	}
-
-	close(b->fd);
-	free(b);
+	memcpy(inode, data + (ino - itbl_hdr->base) * sizeof(struct inode),
+	    sizeof(struct inode));
+	free(data);
 	return 0;
 fail:
-	if (b)
-		free(b);
+	free(data);
 	return -1;
 }

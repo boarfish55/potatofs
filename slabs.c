@@ -1001,7 +1001,7 @@ slab_splice_fd(struct oslab *b, off_t offset, size_t count,
 }
 
 struct oslab *
-slab_inspect(ino_t ino, off_t offset, uint32_t flags, struct exlog_err *e)
+slab_disk_inspect(ino_t ino, off_t offset, uint32_t flags, struct exlog_err *e)
 {
 	char          path[PATH_MAX];
 	struct oslab *b = NULL;
@@ -1053,5 +1053,132 @@ fail:
 		close(fd);
 	if (b != NULL)
 		free(b);
+	return NULL;
+}
+
+void *
+slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
+    struct slab_hdr *hdr, ssize_t *slab_sz, struct exlog_err *e)
+{
+	int             mgr, fd;
+	struct mgr_msg  m;
+	struct oslab   *b;
+	ino_t           base;
+	void           *data = NULL;
+	ssize_t         r;
+
+	if (flags != 0 && flags != SLAB_ITBL) {
+		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: flags must be either none of SLAB_ITBL", __func__);
+		return NULL;
+	}
+
+	if (flags & SLAB_ITBL) {
+		base = ((ino - 1) / slab_inode_max()) *
+		    slab_inode_max() + 1;
+	} else {
+		base = offset / slab_get_max_size();
+	}
+
+	if ((mgr = mgr_connect(e)) == -1)
+		return NULL;
+
+	m.m = MGR_MSG_CLAIM;
+	m.v.claim.ino = (flags & SLAB_ITBL) ? base : ino;
+	m.v.claim.offset = (flags & SLAB_ITBL) ? 0 : offset;
+	m.v.claim.flags = flags;
+	m.v.claim.oflags = oflags;
+
+	if (mgr_send(mgr, -1, &m, e) == -1)
+		goto fail_close_mgr;
+
+	if (mgr_recv(mgr, &fd, &m, e) == -1)
+		goto fail_close_mgr;
+
+	if (m.m == MGR_MSG_CLAIM_NOENT) {
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
+		    "%s: no such slab", __func__);
+		goto fail_close_mgr;
+	} else if (m.m != MGR_MSG_CLAIM_OK) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response", __func__);
+		goto fail_close_mgr;
+	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response; "
+		    "base expected=%lu, received=%lu",
+		    "ino expected=%lu, received=%lu",
+		    offset, m.v.claim.offset, ino, m.v.claim.ino, __func__);
+		goto fail_close_mgr;
+	} else if (fd == -1) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response; mgr returned fd -1", __func__);
+		goto fail_close_mgr;
+	}
+
+	if ((b = calloc(1, sizeof(struct oslab))) == NULL) {
+		exlog_errf(e, EXLOG_OS, errno, __func__);
+		goto fail_close_mgr;
+	}
+
+	b->fd = fd;
+	b->ino = (flags & SLAB_ITBL) ? 0 : ino;
+	b->base = (flags & SLAB_ITBL) ? base : offset / slab_get_max_size();
+
+	if (slab_read_hdr(b, e) == -1)
+		goto fail_free_slab;
+	memcpy(hdr, &b->hdr, sizeof(struct slab_hdr));
+
+	if ((*slab_sz = slab_size(b, e)) == ULONG_MAX)
+		goto fail_free_slab;
+
+	if ((data = malloc(*slab_sz)) == NULL) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: malloc", __func__);
+		goto fail_free_slab;
+	}
+
+	if ((r = slab_read(b, data, 0, slab_get_max_size(), e)) < *slab_sz) {
+		if (r != -1)
+			exlog_errf(e, EXLOG_APP, EXLOG_SHORTIO,
+			    "%s: short read on slab; expected size from "
+			    "fstat() is %lu, slab_read() returned %lu",
+			    __func__, *slab_sz, r);
+		goto fail_free_data;
+	}
+
+	m.m = MGR_MSG_UNCLAIM;
+	m.v.unclaim.ino = b->ino;
+	m.v.unclaim.offset = b->base;
+	if (mgr_send(mgr, b->fd, &m, e) == -1)
+		goto fail_free_data;
+
+	if (mgr_recv(mgr, NULL, &m, e) == -1)
+		goto fail_free_data;
+
+	if (m.m != MGR_MSG_UNCLAIM_OK) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response: %d", __func__, m.m);
+		goto fail_free_data;
+	} else if (m.v.unclaim.ino != b->ino || m.v.unclaim.offset != b->base) {
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		    "%s: bad manager response; "
+		    "offset expected=%lu, received=%lu",
+		    "ino expected=%lu, received=%lu",
+		    __func__, b->base, m.v.unclaim.offset, b->ino,
+		    m.v.unclaim.ino);
+		goto fail_free_data;
+	}
+
+	close(b->fd);
+	free(b);
+	close(mgr);
+	return data;
+fail_free_data:
+	free(data);
+fail_free_slab:
+	close(fd);
+	free(b);
+fail_close_mgr:
+	close(mgr);
 	return NULL;
 }

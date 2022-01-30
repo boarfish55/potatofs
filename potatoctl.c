@@ -259,7 +259,7 @@ fsck_load_next_itbl(int mgr, struct slab_itbl_hdr *itbl_hdr,
 		    __func__, itbl_hdr->base);
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response: %d", __func__, m.m);
 		return NULL;
 	}
@@ -332,7 +332,7 @@ end:
 	if (mgr_send(mgr, -1, &m, e) != -1 &&
 	    mgr_recv(mgr, NULL, &m, e) != -1 &&
 	    m.m != MGR_MSG_UNCLAIM_OK) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response: %d", __func__, m.m);
 	}
 	close(b->fd);
@@ -665,6 +665,7 @@ show_inode(int argc, char **argv)
 			exit(1);
 		}
 
+		// TODO: slab inspect ?
 		if ((fd = open(path, O_RDONLY)) == -1) {
 			if (errno == ENOENT)
 				errx(1, "%s: missing slabs for an inode this "
@@ -755,6 +756,9 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 
 	for (; i < inode.v.f.size; i += r) {
+		// TODO: slab_inspect ?
+		// TODO: also create a new command to inspect a slab at a
+		// specific path, using slab_disk_inspect ?
 		if (slab_path(path, sizeof(path), ino, i, 0, 0, &e) == -1) {
 			exlog_prt(&e);
 			exit(1);
