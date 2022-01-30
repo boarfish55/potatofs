@@ -154,14 +154,14 @@ counter_flush(void *unused)
 	while (!counters_shutdown) {
 		if ((fd = open_wflock(counters_path,
 		    O_CREAT|O_WRONLY|O_TRUNC, 0644, LOCK_EX)) == -1) {
-			exlog_lerrno(LOG_ERR, errno,
+			exlog_strerror(LOG_ERR, errno,
 			    "%s: failed to open_wflock() counters file: %s",
 			    __func__, counters_path);
 			goto sleep;
 		}
 
 		if ((f = fdopen(fd, "w")) == NULL) {
-			exlog_lerrno(LOG_ERR, errno,
+			exlog_strerror(LOG_ERR, errno,
 			    "%s: failed to fdopen counters file: %s", __func__,
 			    counters_path);
 			close(fd);
@@ -196,7 +196,7 @@ counter_init(const char *path, struct exlog_err *e)
 	int            r;
 	pthread_attr_t attr;
 
-	exlog(LOG_NOTICE, "opening counters file at %s", path);
+	exlog(LOG_NOTICE, NULL, "opening counters file at %s", path);
 
 	if (snprintf(counters_path, sizeof(counters_path), "%s/%s",
 	    path, COUNTERS_FILE_NAME) >= sizeof(counters_path))
@@ -236,7 +236,7 @@ void
 counter_add(int c, uint64_t v)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, "failed to acquire counter lock");
+		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count += v;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -245,7 +245,7 @@ void
 counter_decr(int c)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, "failed to acquire counter lock");
+		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count--;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -254,7 +254,7 @@ void
 counter_reset(int c)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, "failed to acquire counter lock");
+		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count = 0;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -265,7 +265,7 @@ counter_get(int c)
 	uint64_t v;
 
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, "failed to acquire counter lock");
+		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	v = counters[c].count;
 	pthread_mutex_unlock(&counters[c].mtx);
 	return v;

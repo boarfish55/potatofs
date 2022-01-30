@@ -157,14 +157,14 @@ slab_unclaim(struct oslab *b)
 	struct timespec  tp = {1, 0};
 
 	if (b->fd == -1) {
-		exlog(LOG_ERR, "%s: fd is -1", __func__);
+		exlog(LOG_ERR, NULL, "%s: fd is -1", __func__);
 		fs_error_set();
 		return;
 	}
 
 	for (;;) {
 		if ((mgr = mgr_connect(&e)) == -1) {
-			exlog_lerr(LOG_ERR, &e, __func__);
+			exlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
 
@@ -173,24 +173,24 @@ slab_unclaim(struct oslab *b)
 		m.v.unclaim.offset = b->base;
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
-			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			exlog(LOG_ERR, &e, "%s", __func__);
 			goto fail;
 		}
 
 		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-			exlog_lerr(LOG_ERR, &e, "%s", __func__);
+			exlog(LOG_ERR, &e, "%s", __func__);
 			goto fail;
 		}
 
 		if (m.m != MGR_MSG_UNCLAIM_OK) {
-			exlog(LOG_ERR, "%s: bad manager response: %d",
+			exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 			    __func__, m.m);
 			goto fail;
 		} else if (m.v.unclaim.ino != b->ino ||
 		    m.v.unclaim.offset != b->base) {
 			/* We close the fd here to avoid deadlocks. */
 			close(b->fd);
-			exlog(LOG_ERR, "%s: bad manager response; "
+			exlog(LOG_ERR, NULL, "%s: bad manager response; "
 			    "offset expected=%lu, received=%lu",
 			    "ino expected=%lu, received=%lu",
 			    __func__, b->base, m.v.unclaim.offset, b->ino,
@@ -231,7 +231,7 @@ slab_purge(void *unused)
 
 		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
 			fs_error_set();
-			exlog_lerrno(LOG_ERR, errno,
+			exlog_strerror(LOG_ERR, errno,
 			    "%s: failed to get current time", __func__);
 			continue;
 		}
@@ -324,7 +324,7 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 	while ((de = readdir(dir))) {
 		if (snprintf(f, sizeof(f), "%s/%s", path,
 		    de->d_name) >= sizeof(f)) {
-			exlog(LOG_ERR, "%s: name too long", __func__);
+			exlog(LOG_ERR, NULL, "%s: name too long", __func__);
 			goto fail_closedir;
 		}
 		fn(path);
@@ -341,7 +341,7 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 		while ((de = readdir(dir))) {
 			if (snprintf(f, sizeof(f), "%s/%s", path,
 			    de->d_name) >= sizeof(f)) {
-				exlog(LOG_ERR, "%s: name too long", __func__);
+				exlog(LOG_ERR, NULL, "%s: name too long", __func__);
 				goto fail_closedir;
 			}
 			fn(path);
@@ -423,10 +423,10 @@ slab_configure(uint64_t max_open, uint32_t max_age, struct exlog_err *e)
 
 	owned_slabs.max_age = (max_age == 0) ? owned_slabs.max_age : max_age;
 
-	exlog(LOG_NOTICE, "max open slabs is %lu (RLIMIT_NOFILE is %u, "
+	exlog(LOG_NOTICE, NULL, "max open slabs is %lu (RLIMIT_NOFILE is %u, "
 	    "RLIMIT_LOCKS is %u)", owned_slabs.max_open, nofile.rlim_cur,
 	    locks.rlim_cur);
-	exlog(LOG_NOTICE, "slab max age is %lu seconds", owned_slabs.max_age);
+	exlog(LOG_NOTICE, NULL, "slab max age is %lu seconds", owned_slabs.max_age);
 
 	if ((r = pthread_attr_init(&attr)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,
@@ -533,7 +533,7 @@ slab_shutdown(struct exlog_err *e)
 	for (b = SPLAY_MIN(slab_tree, &owned_slabs.head); b != NULL; b = next) {
 		next = SPLAY_NEXT(slab_tree, &owned_slabs.head, b);
 		if (b->refcnt != 0)
-			exlog(LOG_ERR, "%s: slab has non-zero refcnt: "
+			exlog(LOG_ERR, NULL, "%s: slab has non-zero refcnt: "
 			    "ino=%lu, base=%lu, refcnt %d",
 			    __func__, b->ino, b->base, b->refcnt);
 		else
@@ -762,7 +762,7 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		counter_incr(COUNTER_N_SLABS_PURGE);
 		for (;;) {
 			if (TAILQ_EMPTY(&owned_slabs.lru_head)) {
-				exlog(LOG_WARNING,
+				exlog(LOG_WARNING, NULL,
 				    "%s: cache full; failed to find "
 				    "unreferenced slab; sleeping %lu seconds",
 				    __func__, t.tv_sec);
@@ -996,7 +996,7 @@ slab_splice_fd(struct oslab *b, off_t offset, size_t count,
 	*rel_offset += sizeof(b->hdr);
 	if (write_fd && slab_set_dirty_hdr(b, &e) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 	}
 }
 

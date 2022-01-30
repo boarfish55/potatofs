@@ -175,7 +175,7 @@ inode_dealloc(ino_t ino, struct exlog_err *e)
 
 	if (slab_close_itbl(b, &e_close_tbl) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e_close_tbl, __func__);
+		exlog(LOG_ERR, &e_close_tbl, __func__);
 	}
 
 	return exlog_fail(e);
@@ -326,7 +326,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 fail:
 	if (b && slab_close_itbl(b, &e_close_tbl) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e_close_tbl, __func__);
+		exlog(LOG_ERR, &e_close_tbl, __func__);
 	}
 	return -1;
 }
@@ -453,7 +453,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct exlog_err *e)
 		if (b == NULL) {
 			if (!exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 				fs_error_set();
-				exlog_lerr(LOG_ERR, e, __func__);
+				exlog(LOG_ERR, e, __func__);
 			}
 			exlog_zerr(e);
 			continue;
@@ -468,20 +468,20 @@ inode_truncate(struct oinode *oi, off_t offset, struct exlog_err *e)
 		    || (c_off % slab_get_max_size() == 0)) {
 			if (slab_unlink(b, e) == -1) {
 				fs_error_set();
-				exlog_lerr(LOG_ERR, e, __func__);
+				exlog(LOG_ERR, e, __func__);
 				exlog_zerr(e);
 			}
 		} else {
 			if (slab_truncate(b,
 			    c_off % slab_get_max_size(), e) == -1) {
 				fs_error_set();
-				exlog_lerr(LOG_ERR, e, __func__);
+				exlog(LOG_ERR, e, __func__);
 				exlog_zerr(e);
 			}
 		}
 		if (slab_forget(b, e) == -1) {
 			fs_error_set();
-			exlog_lerr(LOG_ERR, e, __func__);
+			exlog(LOG_ERR, e, __func__);
 			exlog_zerr(e);
 		}
 	}
@@ -698,7 +698,7 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	goto end;
 fail:
 	if (slab_close_itbl(b, &e_close_itbl) == -1)
-		exlog_lerr(LOG_ERR, &e_close_itbl, __func__);
+		exlog(LOG_ERR, &e_close_itbl, __func__);
 fail_no_itbl:
 	LK_LOCK_DESTROY(&oi->lock);
 fail_lock:
@@ -745,13 +745,13 @@ inode_unload(struct oinode *oi, struct exlog_err *e)
 
 		if (oi->ino.v.f.nlink == 0) {
 			if (inode_dealloc(ino, e) == -1)
-				exlog_lerr(LOG_ERR, e, __func__);
+				exlog(LOG_ERR, e, __func__);
 			/*
 			 * Truncate all file data, and we keep the slab header
 			 * to update the slow backend in the background.
 			 */
 			if (inode_truncate(oi, 0, e) == -1)
-				exlog_lerr(LOG_ERR, e, __func__);
+				exlog(LOG_ERR, e, __func__);
 		}
 
 		if (oi->refcnt == 0) {
@@ -811,7 +811,7 @@ inode_sync(struct oinode *oi, struct exlog_err *e)
 
 		if (slab_sync(b, e) == -1) {
 			fs_error_set();
-			exlog_lerr(LOG_ERR, e, "%s: ino=%lu (%p)", __func__,
+			exlog(LOG_ERR, e, "%s: ino=%lu (%p)", __func__,
 			    oi->ino, oi);
 		}
 
@@ -910,7 +910,7 @@ inode_shutdown()
 		}
 
 		if (oi->refcnt > 0)
-			exlog(LOG_ERR, "forcibly freeing inode %lu "
+			exlog(LOG_ERR, NULL, "forcibly freeing inode %lu "
 			    "(nlookup=%lu, refcnt=%lu); lazy umount?",
 			    oi->ino.v.f.inode, oi->nlookup, oi->refcnt);
 
@@ -919,17 +919,17 @@ inode_shutdown()
 		/* As per FUSE, nlookup becomes zero implicitly at unmount. */
 		if (oi->ino.v.f.nlink == 0) {
 			if (inode_dealloc(inode_ino(oi), &e) == -1)
-				exlog_lerr(LOG_ERR, &e, __func__);
+				exlog(LOG_ERR, &e, __func__);
 			/*
 			 * Truncate all file data, and we keep the slab header
 			 * to update the slow backend in the background.
 			 */
 			if (inode_truncate(oi, 0, &e) == -1)
-				exlog_lerr(LOG_ERR, &e, __func__);
+				exlog(LOG_ERR, &e, __func__);
 		}
 
 		if (inode_flush(oi, 0, &e) == -1)
-			exlog_lerr(LOG_ERR, &e, __func__);
+			exlog(LOG_ERR, &e, __func__);
 
 		LK_LOCK_DESTROY(&oi->bytes_lock);
 		LK_LOCK_DESTROY(&oi->lock);

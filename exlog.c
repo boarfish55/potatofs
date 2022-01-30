@@ -146,19 +146,6 @@ exlog_init(const char *progname, const char *dbg_spec, int perror)
 }
 
 void
-exlog(int priority, const char *fmt, ...)
-{
-	va_list ap;
-
-	if (fmt == NULL)
-		return;
-
-	va_start(ap, fmt);
-	vsyslog(priority, fmt, ap);
-	va_end(ap);
-}
-
-void
 exlog_dbg(exlog_mask_t module, const char *fmt, ...)
 {
 	va_list ap;
@@ -172,13 +159,15 @@ exlog_dbg(exlog_mask_t module, const char *fmt, ...)
 }
 
 void
-exlog_lerr(int priority, const struct exlog_err *e, const char *fmt, ...)
+exlog(int priority, const struct exlog_err *e, const char *fmt, ...)
 {
 	va_list ap;
 	char    msg[LINE_MAX];
 	size_t  written;
 
 	if (e == NULL) {
+		if (fmt == NULL)
+			return;
 		va_start(ap, fmt);
 		vsyslog(priority, fmt, ap);
 		va_end(ap);
@@ -204,21 +193,7 @@ exlog_lerr(int priority, const struct exlog_err *e, const char *fmt, ...)
 }
 
 void
-exlog_prt(const struct exlog_err *e)
-{
-	if (e == NULL)
-		return;
-
-	if (e->layer == EXLOG_OS && e->err != 0)
-		warnx("[err=%d, c_err=%d]: %s: %s",
-		    e->layer, e->err, e->msg,
-		    strerror_l(e->err, log_locale));
-	else
-		warnx("[err=%d, c_err=%d]: %s", e->layer, e->err, e->msg);
-}
-
-void
-exlog_lerrno(int priority, int err, const char *fmt, ...)
+exlog_strerror(int priority, int err, const char *fmt, ...)
 {
 	va_list ap;
 	char    msg[LINE_MAX];
@@ -231,4 +206,18 @@ exlog_lerrno(int priority, int err, const char *fmt, ...)
 	va_end(ap);
 
 	syslog(priority, "%s: %s", msg, strerror_l(err, log_locale));
+}
+
+void
+exlog_prt(const struct exlog_err *e)
+{
+	if (e == NULL)
+		return;
+
+	if (e->layer == EXLOG_OS && e->err != 0)
+		warnx("[err=%d, c_err=%d]: %s: %s",
+		    e->layer, e->err, e->msg,
+		    strerror_l(e->err, log_locale));
+	else
+		warnx("[err=%d, c_err=%d]: %s", e->layer, e->err, e->msg);
 }

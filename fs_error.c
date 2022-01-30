@@ -23,20 +23,20 @@ fs_error_set()
 
 again:
 	if ((mgr = mgr_connect(&e)) == -1) {
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 		return;
 	}
 
 	m.m = MGR_MSG_SET_FS_ERROR;
 	if (mgr_send(mgr, -1, &m, &e) == -1) {
-		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		exlog(LOG_ERR, &e, "%s", __func__);
 		close(mgr);
 		nanosleep(&tp, NULL);
 		goto again;
 	}
 
 	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		exlog(LOG_ERR, &e, "%s", __func__);
 		close(mgr);
 		nanosleep(&tp, NULL);
 		goto again;
@@ -45,7 +45,7 @@ again:
 	close(mgr);
 
 	if (m.m != MGR_MSG_SET_FS_ERROR_OK)
-		exlog(LOG_ERR, "%s: bad manager response: %d",
+		exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 		    __func__, m.m);
 }
 

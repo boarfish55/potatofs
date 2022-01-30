@@ -43,7 +43,7 @@ mgr_connect(struct exlog_err *e)
 
 	for (;;) {
 		if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
-			exlog_lerrno(LOG_ERR, errno, "%s: socket", __func__);
+			exlog_strerror(LOG_ERR, errno, "%s: socket", __func__);
 			goto fail;
 		}
 
@@ -54,7 +54,7 @@ mgr_connect(struct exlog_err *e)
 
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,
 		    sizeof(mgr_addr)) == -1) {
-			exlog_lerrno(LOG_ERR, errno, "%s: connect", __func__);
+			exlog_strerror(LOG_ERR, errno, "%s: connect", __func__);
 			goto fail;
 		}
 		return mgr;

@@ -105,10 +105,9 @@ int  exlog_err_is(const struct exlog_err *, int, int);
 
 int  exlog_init(const char *, const char *, int);
 
-void exlog(int, const char *, ...);
 void exlog_dbg(exlog_mask_t, const char *, ...);
-void exlog_lerr(int, const struct exlog_err *, const char *, ...);
-void exlog_lerrno(int, int, const char *, ...);
+void exlog(int, const struct exlog_err *, const char *, ...);
+void exlog_strerror(int, int, const char *, ...);
 void exlog_prt(const struct exlog_err *);
 
 #endif

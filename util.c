@@ -60,7 +60,7 @@ lk_lock(rwlk *lock, rwlk_flags flags, const char *lockname,
 	}
 	return;
 fail:
-	exlog_lerr(LOG_ERR, &e, __func__);
+	exlog(LOG_ERR, &e, __func__);
 	abort();
 }
 
@@ -83,7 +83,7 @@ lk_unlock(rwlk *lock, const char *lockname, const char *file, int line)
 	exlog_dbg(EXLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
 	    lockname, file, line);
 	if ((r = pthread_rwlock_unlock(lock)) != 0) {
-		exlog_lerrno(LOG_CRIT, r,
+		exlog_strerror(LOG_CRIT, r,
 		    "failed to release lock: %s:%d", file, line);
 		abort();
 	}
@@ -107,7 +107,7 @@ mtx_lock(pthread_mutex_t *lock, const char *lockname, const char *file,
 		 */
 		exlog_errf(&e, EXLOG_OS, r,
 		    "failed to acquire mutex: %s:%d", file, line);
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 		abort();
 	}
 }
@@ -121,7 +121,7 @@ mtx_unlock(pthread_mutex_t *lock, const char *lockname, const char *file,
 	exlog_dbg(EXLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
 	    lockname, file, line);
 	if ((r = pthread_mutex_unlock(lock)) != 0) {
-		exlog_lerrno(LOG_CRIT, r,
+		exlog_strerror(LOG_CRIT, r,
 		    "failed to release lock: %s:%d", file, line);
 		abort();
 	}
@@ -162,7 +162,7 @@ lk_destroy(rwlk *lock, const char *lockname, const char *file, int line)
 	exlog_dbg(EXLOG_LOCK, "destroying lock %p (%s) at %s:%d",
 	    lock, lockname, file, line);
 	if ((r = pthread_rwlock_destroy(lock)) != 0) {
-		exlog_lerrno(LOG_ERR, r,
+		exlog_strerror(LOG_ERR, r,
 		    "failed to destroy lock: %s:%d", file, line);
 		abort();
 	}

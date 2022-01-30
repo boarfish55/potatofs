@@ -231,10 +231,11 @@ check_fuse_reply(int err, const char *fn, const char *invocation)
 
 	if (err != 0) {
 		if ((lc = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
-			exlog(LOG_ERR, "%s: fuse reply failed: %s (%d)",
+			exlog(LOG_ERR, NULL, "%s: fuse reply failed: %s (%d)",
 			    fn, invocation, err);
 		else
-			exlog(LOG_ERR, "%s: fuse reply failed: %s: %s (%d)",
+			exlog(LOG_ERR, NULL,
+			    "%s: fuse reply failed: %s: %s (%d)",
 			    fn, invocation, strerror_l(-err, lc), err);
 	}
 }
@@ -255,7 +256,7 @@ static void
 fs_err(int *reply_sent, fuse_req_t req, const struct exlog_err *e, const char *fn)
 {
 	fs_error_set();
-	exlog_lerr(LOG_ERR, e, fn);
+	exlog(LOG_ERR, e, fn);
 	if (!*reply_sent) {
 		check_fuse_reply(fuse_reply_err(req, EIO), fn, __func__);
 		*reply_sent = 1;
@@ -277,7 +278,7 @@ fs_set_time(struct oinode *oi, uint32_t what)
 	what &= (INODE_ATTR_ATIME|INODE_ATTR_CTIME|INODE_ATTR_MTIME);
 
 	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		exlog_lerrno(LOG_ERR, errno, "clock_gettime");
+		exlog_strerror(LOG_ERR, errno, "clock_gettime");
 		return;
 	}
 
@@ -352,7 +353,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 		mask |= INODE_ATTR_MTIME;
 
 	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		exlog_lerrno(LOG_ERR, errno,
+		exlog_strerror(LOG_ERR, errno,
 		    "failed to get time for inode creation");
 		return;
 	}
@@ -408,20 +409,20 @@ fs_destroy(void *unused)
 {
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 
-	exlog(LOG_NOTICE, "cleaning up and exiting");
+	exlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
 	LK_WRLOCK(&fs_tree_lock);
 
 	inode_shutdown();
 
 	if (slab_shutdown(&e) == -1) {
-		exlog_lerr(LOG_CRIT, &e, __func__);
+		exlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
 	exlog_zerr(&e);
 
 	if (counter_shutdown(&e) == -1) {
-		exlog_lerr(LOG_CRIT, &e, __func__);
+		exlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
 	exlog_zerr(&e);
@@ -440,7 +441,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 		{ "..", FS_ROOT_INODE, 0 }
 	};
 
-	exlog(LOG_NOTICE, "entry timeouts: %u", c->entry_timeouts);
+	exlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
 
 	if (counter_init(fs_config.data_dir, &e) == -1)
 		goto fail;
@@ -453,7 +454,8 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if (inode_startup(&e) == -1)
 		goto fail;
 
-	exlog(LOG_NOTICE, "atime is %s", (c->noatime) ? "disabled" : "enabled");
+	exlog(LOG_NOTICE, NULL, "atime is %s",
+	    (c->noatime) ? "disabled" : "enabled");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL) {
 		if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
@@ -477,7 +479,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 		goto fail;
 	return;
 fail:
-	exlog_lerr(LOG_CRIT, &e, __func__);
+	exlog(LOG_CRIT, &e, __func__);
 	exit(1);
 }
 
@@ -508,7 +510,7 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	if (!is_dir) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
 		if (openfile_free(of, &e) == -1) {
-			exlog_lerr(LOG_ERR, &e, __func__);
+			exlog(LOG_ERR, &e, __func__);
 			fs_error_set();
 		}
 	}
@@ -694,7 +696,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	}
 
 	if (inode_splice_end_read(&si, &e) == -1)
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 	free(bv);
 }
 
@@ -804,7 +806,7 @@ fs_forget(fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_FORGET);
 	if (inode_nlookup_ino(ino, -nlookup, &e) == -1)
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 	fuse_reply_none(req);
 	LK_UNLOCK(&fs_tree_lock);
 }
@@ -822,7 +824,7 @@ fs_forget_multi(fuse_req_t req, size_t count,
 	for (i = 0; i < count; i++) {
 		if (inode_nlookup_ino(forgets->ino,
 		    -forgets->nlookup, &e) == -1)
-			exlog_lerr(LOG_ERR, &e, __func__);
+			exlog(LOG_ERR, &e, __func__);
 	}
 	fuse_reply_none(req);
 	LK_UNLOCK(&fs_tree_lock);
@@ -1042,25 +1044,25 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 	counter_incr(COUNTER_FS_STATFS);
 
 	if ((mgr = mgr_connect(&e)) == -1) {
-		exlog_lerr(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, __func__);
 		goto fail;
 	}
 
 	m.m = MGR_MSG_FS_INFO;
 	if (mgr_send(mgr, -1, &m, &e) == -1) {
-		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		exlog(LOG_ERR, &e, "%s", __func__);
 		goto fail;
 	}
 
 	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-		exlog_lerr(LOG_ERR, &e, "%s", __func__);
+		exlog(LOG_ERR, &e, "%s", __func__);
 		goto fail;
 	}
 
 	close(mgr);
 
 	if (m.m != MGR_MSG_FS_INFO_OK) {
-		exlog(LOG_ERR, "%s: bad manager response: %d",
+		exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 		    __func__, m.m);
 		goto fail;
 	}
@@ -1102,7 +1104,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 	if ((oi = inode_load(inode->v.f.inode, 0, e)) == NULL) {
 		if (inode_dealloc(inode->v.f.inode, &e_dealloc) == -1) {
 			fs_error_set();
-			exlog_lerr(LOG_ERR, &e_dealloc, __func__);
+			exlog(LOG_ERR, &e_dealloc, __func__);
 		}
 		return -1;
 	}
@@ -1120,14 +1122,14 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		w = inode_write(oi, 0, data, data_len, e);
 	}
 	if ((flushed = inode_flush(oi, 0, e)) == -1) {
-		exlog_lerr(LOG_ERR, e, __func__);
+		exlog(LOG_ERR, e, __func__);
 		exlog_zerr(e);
 	}
 	memcpy(inode, &oi->ino, sizeof(struct inode));
 	inode_unlock(oi);
 
 	if (w == -1) {
-		exlog_lerr(LOG_ERR, e, __func__);
+		exlog(LOG_ERR, e, __func__);
 		exlog_zerr(e);
 	}
 
@@ -1154,7 +1156,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		inode_nlink(parent_oi, 1);
 	status = di_mkdirent(parent_oi, &de, NULL, e);
 	if ((flushed = inode_flush(parent_oi, 0, e)) == -1) {
-		exlog_lerr(LOG_ERR, e, __func__);
+		exlog(LOG_ERR, e, __func__);
 		exlog_zerr(e);
 	}
 	fs_set_time(parent_oi, INODE_ATTR_MTIME);
@@ -1162,7 +1164,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 
 	if (inode_unload(parent_oi, &e_unload) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e_unload, __func__);
+		exlog(LOG_ERR, &e_unload, __func__);
 		goto unlink;
 	}
 
@@ -1176,12 +1178,12 @@ unlink:
 	if (inode_nlink_ino(inode->v.f.inode,
 	    (is_dir) ? -2 : -1, &e_dealloc) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e_dealloc, __func__);
+		exlog(LOG_ERR, &e_dealloc, __func__);
 	}
 	exlog_zerr(&e_dealloc);
 	if (is_dir && inode_nlink_ino(parent, -1, &e_dealloc) == -1) {
 		fs_error_set();
-		exlog_lerr(LOG_ERR, &e_dealloc, __func__);
+		exlog(LOG_ERR, &e_dealloc, __func__);
 	}
 	return -1;
 }
