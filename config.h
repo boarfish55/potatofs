@@ -49,6 +49,24 @@
 #define BACKEND_TIMEOUT_SECONDS 30
 
 /*
+ * The cache size is how many slabs we're allowing to live in our local
+ * cache. The default size is computed from the size of the underlying
+ * partition.
+ */
+#define DEFAULT_FS_TO_CACHE_PCT   90
+/*
+ * When unclaiming a slab, if the local cache utilization is over this
+ * percentage, purge that slab after sending it to outgoing.
+ */
+#define DEFAULT_UNCLAIM_PURGE_PCT 90
+/*
+ * The background purge process will purge slabs, starting with the least
+ * recently claimed (see last_claimed_at header attribute), until local
+ * cache utilization falls under this percentage.
+ */
+#define DEFAULT_PURGE_PCT         60
+
+/*
  * The block size is used for block headers and inode table headers.
  * It's the file I/O size used when potatofs is dealing with its own metadata.
  */
@@ -69,14 +87,10 @@
 #define SLAB_SIZE_DEFAULT       (1048576 * 8)
 
 /*
- * After the max age is reached, slabs are closed even to provide a chance
- * to copy/sync them to the slow backend. The cache size is how many slabs
- * we're allowing to live in our local cache. This should match the size
- * of the filesystem where we store the slabs. This also sets a limit on
- * how many file descriptors we need to keep all local slabs open at once.
+ * After the max age is reached, slabs are closed to give a chance
+ * to copy/sync them to the slow backend.
  */
 #define SLAB_MAX_AGE_DEFAULT    60
-#define SLAB_CACHE_SIZE_DEFAULT 10737418240
 
 /* This should fit in most default ulimits and leave extra room. */
 #define SLAB_MAX_OPEN_DEFAULT   768
@@ -99,6 +113,9 @@ struct fs_config {
 	const char *mgr_sock_path;
 	const char *mgr_exec;
 	const char *cfg_path;
+	uint8_t     unclaim_purge_threshold_pct;
+	uint8_t     purge_threshold_pct;
+	uint8_t     fs_to_cache_pct;
 };
 
 extern struct fs_config fs_config;

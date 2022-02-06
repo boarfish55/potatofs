@@ -598,9 +598,9 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
-	} else if (stv.f_bavail * stv.f_frsize < cache_size * 10 / 100)
-		// TODO: don't hardcode 90%
-		// TODO: the bgworker should have a smaller threshold
+		goto fail;
+	} else if (stv.f_bavail * stv.f_frsize < cache_size *
+	    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
 		/*
 		 * This should rarely happen, since the bgworker should
 		 * handle most purges based on LRU.
@@ -1600,14 +1600,15 @@ bg_purge()
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		return;
-	} else if (stv.f_bavail * stv.f_frsize >= cache_size * 40 / 100) {
-		// TODO: don't hardcode 60%
+	} else if (stv.f_bavail * stv.f_frsize >= cache_size *
+	    (100 - fs_config.purge_threshold_pct) / 100) {
 		/*
 		 * Nothing to do.
 		 */
 		return;
 	}
-	purge_n = ((cache_size * 40 / 100) - (stv.f_bavail * stv.f_frsize))
+	purge_n = ((cache_size * (100 - fs_config.purge_threshold_pct) / 100)
+	    - (stv.f_bavail * stv.f_frsize))
 	    / (fs_config.slab_size + sizeof(struct slab_hdr));
 	if (purge_n < 1)
 		purge_n = 1;
@@ -1969,14 +1970,9 @@ main(int argc, char **argv)
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		exit(1);
 	}
-	cache_size_limit = stv.f_blocks * stv.f_frsize * 90 / 100;
+	cache_size_limit = stv.f_blocks * stv.f_frsize *
+	    fs_config.fs_to_cache_pct / 100;
 
-	/*
-	 * Default to 90% of the local partition size where data_dir
-	 * is hosted for the slab cache size.
-	 */
-	// TODO: Do something with this, we can't cache more slabs
-	// locally than what's computed here.
 	if (cache_size == 0 || cache_size > cache_size_limit)
 		cache_size = cache_size_limit;
 

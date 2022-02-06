@@ -37,7 +37,10 @@ struct fs_config fs_config = {
 	0,                           /* disable atime if 1 */
 	MGR_DEFAULT_SOCKET_PATH,     /* manager socket path */
 	MGR_DEFAULT_BACKEND_EXEC,    /* manager backend executable */
-	DEFAULT_CONFIG_PATH          /* config path */
+	DEFAULT_CONFIG_PATH,         /* config path */
+	DEFAULT_UNCLAIM_PURGE_PCT,   /* unclaim_purge_threshold_pct */
+	DEFAULT_PURGE_PCT,           /* purge_threshold_pct */
+	DEFAULT_FS_TO_CACHE_PCT      /* fs_to_cache_pct */
 };
 
 void
