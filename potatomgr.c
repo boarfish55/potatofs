@@ -1516,6 +1516,13 @@ scrub(const char *path)
 	}
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
+		/*
+		 * This slab was improperly unclaimed. Maybe we died
+		 * because being able to increment and save to the slabdb?
+		 */
+		exlog(LOG_WARNING, NULL, "%s: slab %s was dirty despite "
+		    "being unclaimed; incrementing revision and sending "
+		    "to outgoing now", __func__, path);
 		hdr.v.f.revision++;
 		if (copy_outgoing_slab(fd, ino, offset, &hdr, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
@@ -1525,6 +1532,7 @@ scrub(const char *path)
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 			exlog_strerror(LOG_ERR, errno,
 			    "%s: short write on slab header", __func__);
+			set_fs_error();
 			goto end;
 		}
 	}
