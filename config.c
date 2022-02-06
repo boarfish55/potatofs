@@ -28,7 +28,6 @@ struct fs_config fs_config = {
 	0,                           /* uid */
 	0,                           /* gid */
 	NULL,                        /* dbg */
-	0,                           /* cachesize */
 	SLAB_MAX_OPEN_DEFAULT,       /* max_open_slabs */
 	FS_DEFAULT_ENTRY_TIMEOUTS,   /* entry_timeouts */
 	SLAB_MAX_AGE_DEFAULT,        /* slab_max_age */
@@ -39,8 +38,7 @@ struct fs_config fs_config = {
 	MGR_DEFAULT_BACKEND_EXEC,    /* manager backend executable */
 	DEFAULT_CONFIG_PATH,         /* config path */
 	DEFAULT_UNCLAIM_PURGE_PCT,   /* unclaim_purge_threshold_pct */
-	DEFAULT_PURGE_PCT,           /* purge_threshold_pct */
-	DEFAULT_FS_TO_CACHE_PCT      /* fs_to_cache_pct */
+	DEFAULT_PURGE_PCT            /* purge_threshold_pct */
 };
 
 void
@@ -95,13 +93,9 @@ config_read()
 			if (fs_config.mgr_exec == NULL)
 				err(1, "backend");
 		} else if (strcmp(p, "slab_size") == 0) {
-			if ((fs_config.slab_size = strtoul(p, NULL, 10))
+			if ((fs_config.slab_size = strtoul(v, NULL, 10))
 			    == ULONG_MAX)
 				err(1, "slab_size");
-		} else if (strcmp(p, "cache_size") == 0) {
-			if ((fs_config.cache_size = strtoul(p, NULL, 10))
-			    == ULONG_MAX)
-				err(1, "cache_size");
 		} else if (strcmp(p, "dbg") == 0) {
 			fs_config.dbg = strdup(v);
 			if (fs_config.dbg == NULL)
@@ -113,6 +107,14 @@ config_read()
 				fs_config.noatime = 0;
 			else
 				warnx("noatime must be 'yes' or 'no'");
+		} else if (strcmp(p, "unclaim_purge_threshold_pct") == 0) {
+			if ((fs_config.unclaim_purge_threshold_pct =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "unclaim_purge_threshold_pct");
+		} else if (strcmp(p, "purge_threshold_pct") == 0) {
+			if ((fs_config.purge_threshold_pct =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "purge_threshold_pct");
 		} else {
 			warnx("unknown parameter: %s", p);
 			continue;

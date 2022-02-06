@@ -52,7 +52,6 @@ struct timeval   socket_timeout = {60, 0};
 extern char    **environ;
 MDB_env         *mdb;
 uuid_t           instance_id;
-off_t            cache_size = 0;
 uuid_t           uuid_zero;
 
 static void
@@ -70,8 +69,10 @@ usage()
 	    "\t-c <path>\tPath to configuration\n"
 	    "\t-p <path>\tPID file path\n"
 	    "\t-T <timeout>\tUnix socket timeout\n"
-	    "\t-S\t\tDo not run a scrubber subprocess\n"
-	    "\t-P\t\tDo not run a purger subprocess\n");
+	    "\t-S <seconds>\tHow often to trigger the scrub worker; "
+	    "0 disables\n"
+	    "\t-P <seconds>\tHow often to trigger the purge worker; "
+	    "0 disables\n");
 }
 
 static void
@@ -252,7 +253,8 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		mv.mv_size = sizeof(v);
 		mv.mv_data = &v;
 
-		// TODO: consensus resolution here; determine owner
+		// TODO: consensus resolution here; determine owner of
+		// new slab.
 
 		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
@@ -267,7 +269,34 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		}
 		goto end;
 	}
-	mdb_txn_abort(txn);
+
+	if (uuid_compare(((struct slab_val *)mv.mv_data)->owner,
+	    instance_id) != 0) {
+		// TODO: consensus resolution here; determine owner of
+		// existing slab
+		bzero(&v, sizeof(v));
+		v.revision = ((struct slab_val *)mv.mv_data)->revision;
+		v.header_crc = ((struct slab_val *)mv.mv_data)->header_crc;
+		memcpy(&v.last_claimed,
+		    &((struct slab_val *)mv.mv_data)->last_claimed,
+		    sizeof(struct timespec));
+		uuid_copy(v.owner, instance_id);
+
+		mv.mv_size = sizeof(v);
+		mv.mv_data = &v;
+
+		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
+			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
+			    __func__, mdb_strerror(r));
+			goto fail;
+		}
+		if ((r = mdb_txn_commit(txn)) != 0) {
+			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
+			    __func__, mdb_strerror(r));
+			goto fail;
+		}
+	} else
+		mdb_txn_abort(txn);
 end:
 	*revision = ((struct slab_val *)mv.mv_data)->revision;
 	*header_crc = ((struct slab_val *)mv.mv_data)->header_crc;
@@ -599,8 +628,9 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		goto fail;
-	} else if (stv.f_bavail * stv.f_frsize < cache_size *
-	    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
+	}
+	if (stv.f_bfree <
+	    stv.f_blocks * (100 - fs_config.unclaim_purge_threshold_pct) / 100)
 		/*
 		 * This should rarely happen, since the bgworker should
 		 * handle most purges based on LRU.
@@ -1561,9 +1591,8 @@ bg_scrubber()
 static int
 purge_cmp(const void *a, const void *b)
 {
-	/* Flipped t1/t2 for reverse sort. */
-	const struct timespec *t2 = &((struct slab_val *)a)->last_claimed;
-	const struct timespec *t1 = &((struct slab_val *)b)->last_claimed;
+	const struct timespec *t1 = &((struct slab_val *)a)->last_claimed;
+	const struct timespec *t2 = &((struct slab_val *)b)->last_claimed;
 
 	if (t1->tv_sec < t2->tv_sec) {
 		return -1;
@@ -1587,33 +1616,43 @@ bg_purge()
 	MDB_cursor      *cursor;
 	MDB_val          mk, mv;
 	struct statvfs   stv;
+	struct stat      st;
 	char             path[PATH_MAX];
 	struct slab_hdr  hdr;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	size_t           purge_entries_sz;
+	fsblkcnt_t       used_blocks;
 
 	struct purge_entry {
 		struct slab_val v;
 		struct slab_key k;
-	} *purge_entries, *p;
+	} *purge_entries, *p_resized, *p;
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		return;
-	} else if (stv.f_bavail * stv.f_frsize >= cache_size *
-	    (100 - fs_config.purge_threshold_pct) / 100) {
+	}
+
+	if (stv.f_bfree >
+	    stv.f_blocks * (100 - fs_config.purge_threshold_pct) / 100) {
 		/*
 		 * Nothing to do.
 		 */
 		return;
 	}
-	purge_n = ((cache_size * (100 - fs_config.purge_threshold_pct) / 100)
-	    - (stv.f_bavail * stv.f_frsize))
-	    / (fs_config.slab_size + sizeof(struct slab_hdr));
-	if (purge_n < 1)
-		purge_n = 1;
+	used_blocks = stv.f_blocks - stv.f_bfree;
 
-	purge_entries_sz = fs_config.max_open_slabs;
+	exlog(LOG_INFO, NULL, "%s: cache use is at %d%% of partition size; "
+	    "purging slabs", __func__,
+	    (stv.f_blocks - stv.f_bfree) * 100 / stv.f_blocks);
+
+	/*
+	 * Slabs can be smaller than their max size, but to put a limit
+	 * memory use in this function, let's just purge as many as if
+	 * they were full-sized.
+	 */
+	purge_entries_sz = stv.f_blocks * stv.f_frsize /
+	    (fs_config.slab_size + sizeof(struct slab_hdr));
 	purge_entries = calloc(purge_entries_sz, sizeof(struct purge_entry));
 	if (purge_entries == NULL) {
 		exlog_strerror(LOG_ERR, errno, "%s", __func__);
@@ -1651,9 +1690,18 @@ bg_purge()
 			goto fail;
 		}
 
-		if (p - purge_entries >= purge_entries_sz)
-			/* Sanity; should never happen. */
-			break;
+		if (p - purge_entries >= purge_entries_sz) {
+			p_resized = realloc(purge_entries,
+			    purge_entries_sz * 2);
+			/*
+			 * No more memory. Just purge what we have for now.
+			 */
+			if (p_resized == NULL)
+				break;
+			purge_entries_sz *= 2;
+			p = p_resized + (p - purge_entries);
+			purge_entries = p_resized;
+		}
 
 		if (uuid_compare(((struct slab_val *)mv.mv_data)->owner,
 		    instance_id) != 0)
@@ -1668,10 +1716,10 @@ bg_purge()
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
 
-	qsort(purge_entries, p - purge_entries,
-	    sizeof(struct purge_entry), &purge_cmp);
+	purge_n = p - purge_entries;
+	qsort(purge_entries, purge_n, sizeof(struct purge_entry), &purge_cmp);
 
-	for (p = purge_entries; purge_n > 0; p++) {
+	for (p = purge_entries; purge_n > 0; purge_n--, p++) {
 		if (slab_path(path, sizeof(path), p->k.ino, p->k.offset,
 		    p->k.itbl, 0, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
@@ -1705,8 +1753,15 @@ bg_purge()
 			continue;
 		}
 
+		if (fstat(fd, &st) == -1) {
+			close(fd);
+			exlog_strerror(LOG_ERR, errno, "%s: fstat", __func__);
+			set_fs_error();
+			goto fail;
+		}
+
 		if (slabdb_put(p->k.itbl, p->k.ino, p->k.offset,
-		    p->v.revision, p->v.header_crc, p->v.owner,
+		    p->v.revision, p->v.header_crc, uuid_zero,
 		    &p->v.last_claimed, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
 			close(fd);
@@ -1717,6 +1772,11 @@ bg_purge()
 			exlog_strerror(LOG_ERR, errno, "%s", __func__);
 
 		close(fd);
+
+		used_blocks -= st.st_blocks;
+		if (used_blocks <
+		    stv.f_blocks * fs_config.purge_threshold_pct / 100)
+			break;
 	}
 
 fail:
@@ -1848,17 +1908,16 @@ main(int argc, char **argv)
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
 	int                 bgworkers = 1;
-	int                 no_purger = 0;
-	int                 no_scrubber = 0;
+	int                 purger_interval = 60;
+	int                 scrubber_interval = 60;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
-	off_t               cache_size_limit;
 	char                mdb_path[PATH_MAX];
 	int                 r;
 	struct fs_info      info;
 
 
-	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:SP")) != -1) {
+	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:S:P:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
@@ -1892,10 +1951,10 @@ main(int argc, char **argv)
 				socket_timeout.tv_sec = atoi(optarg);
 				break;
 			case 'S':
-				no_scrubber = 1;
+				scrubber_interval = atoi(optarg);
 				break;
 			case 'P':
-				no_purger = 1;
+				purger_interval = atoi(optarg);
 				break;
 			default:
 				usage();
@@ -1970,15 +2029,13 @@ main(int argc, char **argv)
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		exit(1);
 	}
-	cache_size_limit = stv.f_blocks * stv.f_frsize *
-	    fs_config.fs_to_cache_pct / 100;
-
-	if (cache_size == 0 || cache_size > cache_size_limit)
-		cache_size = cache_size_limit;
 
 	uuid_clear(uuid_zero);
 
-	exlog(LOG_INFO, NULL, "%s: cache size is %llu", __func__, cache_size);
+	exlog(LOG_INFO, NULL, "%s: cache size is %llu bytes (%lu slabs)",
+	    __func__, stv.f_blocks * stv.f_frsize,
+	    stv.f_blocks * stv.f_frsize /
+	    (fs_config.slab_size + sizeof(struct slab_hdr)));
 
 	if (snprintf(mdb_path, sizeof(mdb_path), "%s/%s", fs_config.data_dir,
             DEFAULT_MDB_NAME) >= sizeof(mdb_path)) {
@@ -2002,12 +2059,6 @@ main(int argc, char **argv)
 		exit(1);
 	}
 	uuid_copy(instance_id, info.instance_id);
-
-	if (fs_config.max_open_slabs == 0 ||
-	    fs_config.max_open_slabs > (cache_size /
-	    (fs_config.slab_size + sizeof(struct slab_hdr))))
-		fs_config.max_open_slabs = cache_size /
-		    (fs_config.slab_size + sizeof(struct slab_hdr));
 
 	if (slab_make_dirs(&e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
@@ -2053,12 +2104,12 @@ main(int argc, char **argv)
 	bgworker("df", &bg_df, 60);
 	workers++;
 
-	if (!no_scrubber) {
-		bgworker("scrubber", &bg_scrubber, 60);
+	if (scrubber_interval) {
+		bgworker("scrubber", &bg_scrubber, scrubber_interval);
 		workers++;
 	}
-	if (!no_purger) {
-		bgworker("purge", &bg_purge, 60);
+	if (purger_interval) {
+		bgworker("purge", &bg_purge, purger_interval);
 		workers++;
 	}
 

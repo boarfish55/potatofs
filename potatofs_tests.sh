@@ -21,6 +21,8 @@ cat > "$conf" << EOF
 data_dir: $datapath
 mgr_socket_path: $datapath/potatomgr.sock
 backend: $basepath/mgr.pl
+unclaim_purge_threshold_pct: 90
+purge_threshold_pct: 0
 EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"

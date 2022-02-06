@@ -49,12 +49,6 @@
 #define BACKEND_TIMEOUT_SECONDS 30
 
 /*
- * The cache size is how many slabs we're allowing to live in our local
- * cache. The default size is computed from the size of the underlying
- * partition.
- */
-#define DEFAULT_FS_TO_CACHE_PCT   90
-/*
  * When unclaiming a slab, if the local cache utilization is over this
  * percentage, purge that slab after sending it to outgoing.
  */
@@ -103,7 +97,6 @@ struct fs_config {
 	uid_t       uid;
 	gid_t       gid;
 	char       *dbg;
-	uint64_t    cache_size;
 	rlim_t      max_open_slabs;
 	uint32_t    entry_timeouts;
 	uint32_t    slab_max_age;
@@ -113,9 +106,9 @@ struct fs_config {
 	const char *mgr_sock_path;
 	const char *mgr_exec;
 	const char *cfg_path;
-	uint8_t     unclaim_purge_threshold_pct;
-	uint8_t     purge_threshold_pct;
-	uint8_t     fs_to_cache_pct;
+	uint32_t    unclaim_purge_threshold_pct;
+	uint32_t    purge_threshold_pct;
+	uint32_t    fs_to_cache_pct;
 };
 
 extern struct fs_config fs_config;
