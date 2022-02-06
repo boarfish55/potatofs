@@ -455,6 +455,7 @@ df(int argc, char **argv)
 	char             u[37];
 	struct mgr_msg   m;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	double           used, total;
 
 	if ((mgr = mgr_connect(&e)) == -1) {
 		exlog_prt(&e);
@@ -484,7 +485,7 @@ df(int argc, char **argv)
 	printf("fs_info:\n");
 
 	printf("  version:     %u\n", m.v.fs_info.fs_info_version);
-	printf("  instaned_id: %s\n", u);
+	printf("  instance_id: %s\n", u);
 	printf("  slab_size:   %lu\n", m.v.fs_info.slab_size);
 	printf("  clean:       %u\n", m.v.fs_info.clean);
 	printf("  error:       %u\n", m.v.fs_info.error);
@@ -497,11 +498,24 @@ df(int argc, char **argv)
 	printf("    f_blocks:  %lu\n", m.v.fs_info.stats.f_blocks);
 	printf("    f_bfree:   %lu\n", m.v.fs_info.stats.f_bfree);
 	printf("    f_bavail:  %lu\n", m.v.fs_info.stats.f_bavail);
-	printf("    f_files:   %lu\n", m.v.fs_info.stats.f_files);
-	printf("    f_ffree:   %lu\n", m.v.fs_info.stats.f_ffree);
-	printf("    f_favail:  %lu\n", m.v.fs_info.stats.f_favail);
-	printf("    f_fsid:    %lu\n", m.v.fs_info.stats.f_fsid);
+	/*
+	 * We don't print files free & avail, since we do not track those.
+	 * Also, fsid is currently irrelevant.
+	 */
 	printf("    f_namemax: %lu\n", m.v.fs_info.stats.f_namemax);
+	printf("\n");
+
+	/*
+	 * Convert values to GiB
+	 */
+	used = (double) (m.v.fs_info.stats.f_blocks -
+	    m.v.fs_info.stats.f_bfree) *
+	    m.v.fs_info.stats.f_bsize / (2UL << 29UL);
+	total = (double) m.v.fs_info.stats.f_blocks *
+	    m.v.fs_info.stats.f_bsize / (2UL << 29UL);
+
+	printf("  Usage:       %.1f / %.1f GiB (%.1f%%)\n", used, total,
+	    used * 100.0 / total);
 
 	return 0;
 }
