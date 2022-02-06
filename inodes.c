@@ -1265,7 +1265,7 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 
 	bzero(inode, sizeof(struct inode));
 
-	if ((data = slab_inspect(ino, 0, SLAB_ITBL, 0, &hdr,
+	if ((data = slab_inspect(ino, 0, SLAB_ITBL, OSLAB_NOCREATE, &hdr,
 	    &data_sz, e)) == NULL)
 		return -1;
 

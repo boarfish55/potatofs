@@ -198,10 +198,7 @@ counter_init(const char *path, struct exlog_err *e)
 
 	exlog(LOG_NOTICE, NULL, "opening counters file at %s", path);
 
-	if (snprintf(counters_path, sizeof(counters_path), "%s/%s",
-	    path, COUNTERS_FILE_NAME) >= sizeof(counters_path))
-		 return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
-		     "counters file name too long: %s", path);
+	strlcpy(counters_path, path, sizeof(counters_path));
 
 	if ((r = pthread_attr_init(&attr)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,

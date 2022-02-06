@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <libgen.h>
 #include <pwd.h>
 #include <poll.h>
 #include <signal.h>
@@ -42,23 +43,9 @@
 #include <uuid/uuid.h>
 #include <zlib.h>
 #include "config.h"
-#include "counters.h"
 #include "fs_info.h"
 #include "mgr.h"
 #include "slabs.h"
-
-struct slab_key {
-	int   itbl;
-	ino_t ino;
-	off_t offset;
-};
-
-struct slab_val {
-	uint64_t        revision;
-	uint32_t        header_crc;
-	uuid_t          owner;
-	struct timespec last_claimed;
-};
 
 char            *dbg_spec = NULL;
 struct timeval   socket_timeout = {60, 0};
@@ -169,7 +156,8 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	bzero(&k, sizeof(k));
 	k.itbl = itbl;
 	k.ino = ino;
-	k.offset = offset;
+	k.offset = (itbl) ? 0 : ((offset / slab_get_max_size())
+	    * slab_get_max_size());
 
 	bzero(&v, sizeof(v));
 	v.revision = revision;
@@ -214,9 +202,9 @@ fail:
  * ownership of the slab.
  */
 static int
-slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint64_t *revision,
-    uint32_t *header_crc, uuid_t *owner, struct timespec *last_claimed,
-    struct exlog_err *e)
+slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
+    uint64_t *revision, uint32_t *header_crc, uuid_t *owner,
+    struct timespec *last_claimed, struct exlog_err *e)
 {
 	int              r;
 	MDB_txn         *txn;
@@ -243,13 +231,14 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint64_t *revision,
 	bzero(&k, sizeof(k));
 	k.itbl = itbl;
 	k.ino = ino;
-	k.offset = offset;
+	k.offset = (itbl) ? 0 : ((offset / slab_get_max_size())
+	    * slab_get_max_size());
 
 	mk.mv_size = sizeof(k);
 	mk.mv_data = &k;
 
 	if ((r = mdb_get(txn, dbi, &mk, &mv))) {
-		if (r != MDB_NOTFOUND) {
+		if (r != MDB_NOTFOUND || (oflags & OSLAB_NOCREATE)) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_get: %s",
 			    __func__, mdb_strerror(r));
 			goto fail;
@@ -596,17 +585,10 @@ static int
 unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 {
 	struct         slab_hdr hdr;
-	struct         timespec now;
 	char           src[PATH_MAX];
 	int            purge = 0;
 	struct statvfs stv;
 	uint32_t       crc;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: clock_gettime", __func__);
-		goto fail;
-	}
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
@@ -626,6 +608,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		purge = 1;
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
+		hdr.v.f.revision++;
 		if (copy_outgoing_slab(fd, m->v.unclaim.ino,
 		    m->v.unclaim.offset, &hdr, e) == -1)
 			goto fail;
@@ -691,8 +674,15 @@ backend_get(const char *local_path, const char *backend_path,
 
 	exlog_zerr(e);
 
+	if (WEXITSTATUS(wstatus) > 2) {
+		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+		    "%s: \"get\" resulted in an undefined error (exit %d)",
+		    __func__, WEXITSTATUS(wstatus));
+		goto fail;
+	}
+
 	/* Bad invocation error, there is no JSON to read here. */
-	if (wstatus == 2) {
+	if (WEXITSTATUS(wstatus) == 2) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"get\" reported bad invocation (exit 2)", __func__);
 		goto fail;
@@ -729,7 +719,7 @@ backend_get(const char *local_path, const char *backend_path,
 		goto fail;
 	}
 
-	if (wstatus == 1) {
+	if (WEXITSTATUS(wstatus) == 1) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"get\" exit 1; backend produced no error message",
 		    __func__);
@@ -779,9 +769,15 @@ backend_put(const char *local_path, const char *backend_path,
 
 	exlog_zerr(e);
 
-	if (wstatus == 2)
+	if (WEXITSTATUS(wstatus) > 2)
 		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
-		    "%s: \"put\" exit 2", __func__);
+		    "%s: \"put\" resulted in an undefined error (exit %d)",
+		    __func__, WEXITSTATUS(wstatus));
+
+	/* Bad invocation error, there is no JSON to read here. */
+	if (WEXITSTATUS(wstatus) == 2)
+		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+		    "%s: \"put\" reported bad invocation (exit 2)", __func__);
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
 		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
@@ -802,7 +798,7 @@ backend_put(const char *local_path, const char *backend_path,
 		    "%s: \"put\" failed: %s", __func__, json_string_value(o));
 	}
 
-	if (wstatus == 1)
+	if (WEXITSTATUS(wstatus) == 1)
 		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"put\" exit 1; no message available", __func__);
 
@@ -877,9 +873,14 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: lseek dst_fd", __func__);
 
-	if (read_x(src_fd, &hdr, sizeof(hdr)) < sizeof(hdr))
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: short read on slab header", __func__);
+	if ((r = read_x(src_fd, &hdr, sizeof(hdr))) < sizeof(hdr)) {
+		if (r == -1)
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: short read on slab header", __func__);
+		else
+			return exlog_errf(e, EXLOG_MGR, EXLOG_SHORTIO,
+			    "%s: short read on slab header", __func__);
+	}
 
 	if (hdr.v.f.revision != revision) {
 		/*
@@ -899,7 +900,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	}
 
 write_hdr_again:
-	if (clock_gettime(CLOCK_MONOTONIC, &hdr.v.f.last_claimed_at) == -1) {
+	if (clock_gettime(CLOCK_REALTIME, &hdr.v.f.last_claimed_at) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return -1;
 	}
@@ -951,7 +952,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	struct stat     st;
 
 	uint64_t        revision;
-	uint32_t        header_crc, crc;
+	uint32_t        header_crc;
 	uuid_t          owner;
 	struct timespec last_claimed;
 
@@ -960,8 +961,18 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * a new entry will be allocated and returned.
 	 */
 	if (slabdb_get((m->v.claim.flags & SLAB_ITBL) ? 1 : 0,
-	    m->v.claim.ino, m->v.claim.offset, &revision, &header_crc,
-	    &owner, &last_claimed, e) == -1) {
+	    m->v.claim.ino, m->v.claim.offset, m->v.claim.oflags,
+	    &revision, &header_crc, &owner, &last_claimed, e) == -1) {
+		if (m->v.claim.oflags & OSLAB_NOCREATE &&
+		    exlog_err_is(e, EXLOG_MDB, MDB_NOTFOUND)) {
+			exlog_zerr(e);
+			m->m = MGR_MSG_CLAIM_NOENT;
+			if (mgr_send(c, -1, m, e) == -1) {
+				exlog(LOG_ERR, e, "%s", __func__);
+				goto fail;
+			}
+			return 0;
+		}
 		goto fail;
 	}
 
@@ -1000,22 +1011,54 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * entry.
 	 * Note: On unclaim(), unlink() happens before close()
 	 */
-	for (;;) {
-		if ((dst_fd = open_wflock(dst, fd_flags, 0600,
-		    LOCK_EX|LOCK_NB)) == -1) {
-			if (errno == EWOULDBLOCK) {
-				nanosleep(&tp, NULL);
-				continue;
-			}
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: open_wflock() for slab %s", __func__, dst);
-			goto fail;
+open_again:
+	if ((dst_fd = open_wflock(dst, fd_flags,
+	    0600, LOCK_EX|LOCK_NB)) == -1) {
+		if (errno == EWOULDBLOCK) {
+			nanosleep(&tp, NULL);
+			goto open_again;
 		}
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: open_wflock() for slab %s", __func__, dst);
+		goto fail;
+	}
+
+	if (revision == 0) {
+		/*
+		 * If revision is zero, we're dealing with a brand new slab.
+		 * The entry is already in the slabdb, no need to slabdb_put()
+		 * here.
+		 */
+		bzero(&hdr, sizeof(hdr));
+		hdr.v.f.slab_version = SLAB_VERSION;
+		hdr.v.f.flags = m->v.claim.flags | SLAB_DIRTY;
+		hdr.v.f.revision = 0;
+		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
+		if (clock_gettime(CLOCK_REALTIME,
+		    &hdr.v.f.last_claimed_at) == -1) {
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: clock_gettime", __func__);
+			goto fail_close_dst;
+		}
+		if (write_x(dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: short write on slab header", __func__);
+			goto fail_close_dst;
+		}
+		/*
+		 * Make sure to fsync() if the file wasn't opened
+		 * with O_SYNC initially.
+		 */
+		if (!(m->v.claim.oflags & OSLAB_SYNC) && fsync(dst_fd) == -1) {
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: fsync", __func__);
+			goto fail_close_dst;
+		}
+		goto end;
 	}
 
 	if (fstat(dst_fd, &st) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: fstat", __func__);
+		exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
 		goto fail_close_dst;
 	}
 
@@ -1035,6 +1078,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		 */
 		} else if (!exlog_err_is(e, EXLOG_APP, EXLOG_INVAL))
 			goto fail_close_dst;
+		exlog_zerr(e);
 	}
 
 	/*
@@ -1064,8 +1108,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		    "%s: inq slab name too long", __func__);
 		goto fail_close_dst;
 	}
-	if ((incoming_fd = open_wflock(in_path, O_RDWR|O_CREAT,
-	    0600, LOCK_EX)) > 0) {
+	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) > 0) {
 		/*
 		 * Normally this shouldn't happen, but if for some reason
 		 * we failed to unlink from our incoming queue the open could
@@ -1074,9 +1117,13 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		 */
 		if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 		    revision, e) == 0) {
+			unlink(in_path);
 			close(incoming_fd);
 			goto end;
 		}
+		exlog_strerror(LOG_ERR, errno, "%s: open_wflock", __func__);
+		close(incoming_fd);
+		exlog_zerr(e);
 	} else if (errno != ENOENT) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: open_wflock() for incoming slab %s",
@@ -1090,7 +1137,6 @@ get_again:
 		    exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 			unlink(dst);
 			close(dst_fd);
-			close(incoming_fd);
 			exlog_zerr(e);
 			m->m = MGR_MSG_CLAIM_NOENT;
 			if (mgr_send(c, -1, m, e) == -1) {
@@ -1099,42 +1145,16 @@ get_again:
 			}
 			return 0;
 		} else if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
+			/*
+			 * Maybe the backend isn't up-to-date? Eventual
+			 * consistentcy?
+			 */
 			exlog_zerr(e);
-			close(incoming_fd);
-			bzero(&hdr, sizeof(hdr));
-			hdr.v.f.slab_version = SLAB_VERSION;
-			hdr.v.f.flags = m->v.claim.flags | SLAB_DIRTY;
-			hdr.v.f.revision = 0;
-			hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
-			if (write_x(dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
-				exlog_errf(e, EXLOG_OS, errno,
-				    "%s: short write on slab header", __func__);
-				goto fail_close_dst;
-			}
-			/*
-			 * Make sure to fsync() if the file wasn't opened
-			 * with O_SYNC initially.
-			 */
-			if (!(m->v.claim.oflags & OSLAB_SYNC) &&
-			    fsync(dst_fd) == -1) {
-				exlog_errf(e, EXLOG_OS, errno,
-				    "%s: fsync", __func__);
-				goto fail_close_dst;
-			}
-			/*
-			 * We initialize the CRC to zero for now, since
-			 * this wasn't sent to the backend yet.
-			 */
-			crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-			if (slabdb_put((m->v.claim.flags & SLAB_ITBL) ? 1 : 0,
-			    m->v.claim.ino, m->v.claim.offset, hdr.v.f.revision,
-			    crc, instance_id, &hdr.v.f.last_claimed_at,
-			    e) == -1) {
-				exlog_errf(e, EXLOG_OS, errno,
-				    "%s: slabdb_put", __func__);
-				goto fail_close_dst;
-			}
-			goto end;
+			exlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
+			    "but backend_get() claims is doesn't exist; "
+			    "retrying", __func__, name);
+			sleep(5);
+			goto get_again;
 		} else if (exlog_err_is(e, EXLOG_OS, ENOSPC)) {
 			exlog_zerr(e);
 			exlog(LOG_ERR, NULL, "%s: ran out of space during "
@@ -1143,9 +1163,14 @@ get_again:
 			goto get_again;
 		}
 		goto fail_close_dst;
-	} else
-		counter_add(COUNTER_BACKEND_IN_BYTES, in_bytes);
+	}
 
+	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s: failed to open_wflock "
+		    "after successful backend_get of %s", __func__, in_path);
+		unlink(dst);
+		goto fail_close_dst;
+	}
 	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 	    revision, e) == -1) {
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_INVAL)) {
@@ -1155,6 +1180,7 @@ get_again:
 			sleep(5);
 			goto get_again;
 		}
+		unlink(dst);
 		goto fail_close_dst;
 	}
 
@@ -1397,8 +1423,7 @@ bg_flush()
 			continue;
 		}
 
-		if (backend_put(path, path + strlen(fs_config.data_dir),
-		    &out_bytes, &e) == -1) {
+		if (backend_put(path, basename(path), &out_bytes, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
 			close(fd);
 			continue;
@@ -1406,7 +1431,6 @@ bg_flush()
 
 		exlog(LOG_INFO, NULL, "%s: backend_put: %s (%lu bytes)",
 		    __func__, path, out_bytes);
-		counter_add(COUNTER_BACKEND_OUT_BYTES, out_bytes);
 
 		if (unlink(path) == -1)
 			exlog_strerror(LOG_ERR, errno, "%s: unlink %s",
@@ -1440,9 +1464,9 @@ scrub(const char *path)
 	}
 
 	if (slabdb_get((flags & SLAB_ITBL) ? 1 : 0,
-	    ino, offset, &revision, &header_crc, &owner,
+	    ino, offset, OSLAB_NOCREATE, &revision, &header_crc, &owner,
 	    &last_claimed, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+		if (exlog_err_is(&e, EXLOG_MDB, MDB_NOTFOUND)) {
 			exlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
 			    "unlinking", __func__, path);
 			unlink(path);
@@ -1460,12 +1484,13 @@ scrub(const char *path)
 	}
 
 	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB)) == -1) {
-		if (errno != EWOULDBLOCK)
+		if (errno != EWOULDBLOCK) {
 			exlog_strerror(LOG_ERR, errno, "%s: failed "
 			    "to open_wflock(): %s", __func__, path);
-		else
+		} else {
 			exlog(LOG_INFO, NULL, "%s: slab %s is already "
 			    "flock()'d; skipping", __func__, path);
+		}
 		return;
 	}
 
@@ -1491,6 +1516,7 @@ scrub(const char *path)
 	}
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
+		hdr.v.f.revision++;
 		if (copy_outgoing_slab(fd, ino, offset, &hdr, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
 			goto end;
@@ -1501,6 +1527,15 @@ scrub(const char *path)
 			    "%s: short write on slab header", __func__);
 			goto end;
 		}
+	}
+
+	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+	if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
+	    ino, offset, hdr.v.f.revision, crc, instance_id,
+	    &hdr.v.f.last_claimed_at, &e) == -1) {
+		exlog(LOG_CRIT, &e, "%s: slabdb_put", __func__);
+		set_fs_error();
+		goto end;
 	}
 end:
 	close(fd);
@@ -1861,15 +1896,6 @@ main(int argc, char **argv)
 
 	setproctitle_init(argc, argv, environ);
 
-	act.sa_handler = &handle_sig;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = 0;
-	if (sigaction(SIGINT, &act, &oact) == -1
-			|| sigaction(SIGPIPE, &act, &oact) == -1
-			|| sigaction(SIGTERM, &act, &oact) == -1) {
-		err(1, "sigaction");
-	}
-
 	if (exlog_init(MGR_PROGNAME, dbg_spec, foreground) == -1)
 		err(1, "exlog_init");
 
@@ -2035,6 +2061,15 @@ main(int argc, char **argv)
 	for (n = 0; n < bgworkers; n++) {
 		bgworker("flush", &bg_flush, 60);
 		workers++;
+	}
+
+	act.sa_handler = &handle_sig;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = 0;
+	if (sigaction(SIGINT, &act, &oact) == -1
+			|| sigaction(SIGPIPE, &act, &oact) == -1
+			|| sigaction(SIGTERM, &act, &oact) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
 	for (n = 0; n < workers; n++)

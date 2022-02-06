@@ -268,9 +268,8 @@ open_wflock(const char *path, int flags, mode_t mode, int lk)
 	if (flags & O_CREAT) {
 		if ((fd = open(path, flags, mode)) == -1)
 			return -1;
-	} else
-		if ((fd = open(path, flags)) == -1)
-			return -1;
+	} else if ((fd = open(path, flags)) == -1)
+		return -1;
 
 	if (flock(fd, lk) == -1) {
 		close(fd);

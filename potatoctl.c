@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <lmdb.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,8 @@
 #include "exlog.h"
 #include "mgr.h"
 
+static int  slabdb(int, char **);
+static int  claim(int, char **);
 static int  show_slab(int, char **);
 static int  show_dir(int, char **);
 static int  show_inode(int, char **);
@@ -49,19 +52,28 @@ static int  df(int, char **);
 static void usage();
 static int  load_dir(char **, struct inode *);
 static void print_inode(struct inode *, int);
+static void print_slab_hdr(struct slab_hdr *);
 
 struct subc {
 	char *name;
 	int  (*fn)(int argc, char **argv);
+	int   clean_warning;
 } subcommands[] = {
-	{ "slab", &show_slab },
-	{ "dir", &show_dir },
-	{ "inode", &show_inode },
-	{ "top", &top },
-	{ "df", &df },
-	{ "fsck", &fsck },
+	{ "slabdb", &slabdb, 0 },
+	{ "claim", &claim, 0 },
+	{ "slab", &show_slab, 1 },
+	{ "dir", &show_dir, 1 },
+	{ "inode", &show_inode, 1 },
+	{ "top", &top, 0 },
+	{ "df", &df, 0 },
+	{ "fsck", &fsck, 0 },
 	{ "", NULL }
 };
+
+const char *clean_warning = (
+    "WARNING: filesystem not marked clean!!!\n"
+    "         Either it is currently mounted or errors are present.\n"
+    "         Run fsck.\n");
 
 struct fsck_stats {
 	uint64_t n_inodes;
@@ -80,6 +92,9 @@ usage()
 	    "           top   <delay>\n"
 	    "           df\n"
 	    "           fsck\n"
+	    "           claim slab <inode> <offset>\n"
+	    "           claim itbl <inode>\n"
+	    "           slabdb\n"
 	    "\n"
 	    "\t-h\t\t\tPrints this help\n"
 	    "\t-c <config path>\tPath to the configuration file\n"
@@ -210,7 +225,7 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct exlog_err *e)
 	char     buf[BUFSIZ];
 	ssize_t  r;
 
-	if (lseek(fd, 0, SEEK_SET) == -1)
+	if (lseek(fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: lseek", __func__);
 
 	crc = crc32_z(0L, Z_NULL, 0);
@@ -227,7 +242,7 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct exlog_err *e)
 	if (hdr->v.f.checksum != crc)
 		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: mismatching content CRC: expected=%lu, actual=%u",
-		    hdr->v.f.checksum, crc, __func__);
+		    __func__, hdr->v.f.checksum, crc);
 
 	return 0;
 }
@@ -250,6 +265,7 @@ fsck_load_next_itbl(int mgr, struct slab_itbl_hdr *itbl_hdr,
 
 	m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 	m.v.claim_next_itbl.ino = itbl_hdr->base;
+	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE | OSLAB_SYNC;
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		return NULL;
 
@@ -332,7 +348,7 @@ end:
 	m.m = MGR_MSG_UNCLAIM;
 	m.v.unclaim.ino = b->ino;
 	m.v.unclaim.offset = b->base;
-	if (mgr_send(mgr, -1, &m, e) != -1 &&
+	if (mgr_send(mgr, b->fd, &m, e) != -1 &&
 	    mgr_recv(mgr, NULL, &m, e) != -1 &&
 	    m.m != MGR_MSG_UNCLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
@@ -355,8 +371,6 @@ fsck(int argc, char **argv)
 	struct fsck_stats     stats = {0, 0, 0, 0};
 	size_t                n_free;
 	int                   mgr;
-
-	mgr_init(fs_config.mgr_sock_path);
 
 	if ((mgr = mgr_connect(&e)) == -1) {
 		exlog_prt(&e);
@@ -442,8 +456,6 @@ df(int argc, char **argv)
 	struct mgr_msg   m;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 
-	mgr_init(fs_config.mgr_sock_path);
-
 	if ((mgr = mgr_connect(&e)) == -1) {
 		exlog_prt(&e);
 		return 1;
@@ -503,24 +515,24 @@ top(int argc, char **argv)
 	double          counters_delta[COUNTER_LAST];
 	int             c, i;
 	struct timespec ts, te;
-	char            path[PATH_MAX];
+	char            fs_counters[PATH_MAX];
 
 	if (argc < 1) {
 		usage();
 		exit(1);
 	}
 
-	if (snprintf(path, sizeof(path), "%s/counters", fs_config.data_dir)
-	    >= sizeof(path))
+	if (snprintf(fs_counters, sizeof(fs_counters), "%s/%s",
+	    fs_config.data_dir, COUNTERS_FILE_NAME) >= sizeof(fs_counters))
 		errx(1, "%s: counters path too long", __func__);
 
 	seconds = strtol(argv[0], NULL, 10);
-	read_metrics(path, counters_prev);
+	read_metrics(fs_counters, counters_prev);
 	for (i = 0;; i++) {
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		sleep(seconds);
 
-		read_metrics(path, counters_now);
+		read_metrics(fs_counters, counters_now);
 		clock_gettime(CLOCK_MONOTONIC, &te);
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
@@ -546,6 +558,178 @@ top(int argc, char **argv)
 	}
 }
 
+int
+slabdb(int argc, char **argv)
+{
+	int              r;
+	MDB_env         *mdb;
+	MDB_txn         *txn;
+	MDB_dbi          dbi;
+	MDB_cursor      *cursor;
+	MDB_val          mk, mv;
+	struct slab_key *k;
+	struct slab_val *v;
+	char             mdb_path[PATH_MAX];
+	char             u[37];
+
+	if (snprintf(mdb_path, sizeof(mdb_path), "%s/%s", fs_config.data_dir,
+	    DEFAULT_MDB_NAME) >= sizeof(mdb_path)) {
+		errx(1, "%s: mdb name too long", __func__);
+	}
+
+	if ((r = mdb_env_create(&mdb)) != 0)
+		errx(1, "mdb_env_create: %s", mdb_strerror(r));
+
+	if ((r = mdb_env_open(mdb, mdb_path, MDB_NOSUBDIR, 0644)) != 0)
+		errx(1, "mdb_env_open: %s", mdb_strerror(r));
+
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0)
+		errx(1, "%s: mdb_txn_begin: %s", __func__, mdb_strerror(r));
+
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+		mdb_txn_abort(txn);
+		errx(1, "%s: mdb_dbi_open: %s", __func__, mdb_strerror(r));
+	}
+
+	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+		mdb_txn_abort(txn);
+		errx(1, "%s: mdb_cursor_open: %s", __func__, mdb_strerror(r));
+	}
+
+	for (r = mdb_cursor_get(cursor, &mk, &mv, MDB_FIRST);
+	    r != MDB_NOTFOUND;
+	    r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) {
+		if (r != 0) {
+			mdb_cursor_close(cursor);
+			mdb_txn_abort(txn);
+			errx(1, "%s: mdb_cursor_get: %s", __func__,
+			    mdb_strerror(r));
+		}
+		k = (struct slab_key *)mk.mv_data;
+		v = (struct slab_val *)mv.mv_data;
+
+		uuid_unparse(v->owner, u);
+		printf("%s: k=%u/%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
+		    " last_claimed=%lu.%lu\n", __func__,
+		    ((struct slab_key *)k)->itbl,
+		    ((struct slab_key *)k)->ino,
+		    ((struct slab_key *)k)->offset,
+		    ((struct slab_val *)v)->revision,
+		    ((struct slab_val *)v)->header_crc, u,
+		    ((struct slab_val *)v)->last_claimed.tv_sec,
+		    ((struct slab_val *)v)->last_claimed.tv_nsec);
+	}
+
+	mdb_cursor_close(cursor);
+	mdb_txn_abort(txn);
+	mdb_env_close(mdb);
+	return 0;
+}
+
+/*
+ * Claim and unclaim a slab; useful to attempt to get it locally.
+ */
+int
+claim(int argc, char **argv)
+{
+	ino_t             ino;
+	off_t             offset;
+	int               mgr, fd, next_arg = 0;
+	struct mgr_msg    m;
+	struct oslab     *b;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	uint32_t          oflags = OSLAB_NOCREATE;
+	uint32_t          flags = 0;
+
+	if (argc < 2) {
+		usage();
+		exit(1);
+	}
+
+	if ((ino = strtoull(argv[1], NULL, 10)) == ULLONG_MAX)
+		errx(1, "inode provided is invalid");
+
+	if (strcmp(argv[0], "itbl") == 0) {
+		flags |= SLAB_ITBL;
+		next_arg = 2;
+	} else if (strcmp(argv[0], "slab") == 0) {
+		if (argc < 3)
+			errx(1, "offset must be provided for inode slabs");
+		if ((offset = strtoull(argv[2], NULL, 10)) == ULLONG_MAX)
+			errx(1, "offset provided is invalid");
+		next_arg = 3;
+	} else {
+		usage();
+		exit(1);
+	}
+
+	if (next_arg < argc) {
+		if (strcmp(argv[next_arg], "create") == 0)
+			oflags &= ~OSLAB_NOCREATE;
+	}
+
+	if ((mgr = mgr_connect(&e)) == -1)
+		goto fail;
+
+	m.m = MGR_MSG_CLAIM;
+	m.v.claim.ino = ino;
+	m.v.claim.offset = offset;
+	m.v.claim.flags = flags;
+	m.v.claim.oflags = oflags;
+
+	if (mgr_send(mgr, -1, &m, &e) == -1)
+		goto fail;
+
+	if (mgr_recv(mgr, &fd, &m, &e) == -1)
+		goto fail;
+
+	if (m.m == MGR_MSG_CLAIM_NOENT)
+		errx(1, "failed to claim slab for inode %lu "
+		    "at offset %lu: no such slab", ino, offset);
+	else if (m.m != MGR_MSG_CLAIM_OK)
+		errx(1, "failed to claim slab for inode %lu "
+		    "at offset %lu: resp=%d", ino, offset, m.m);
+
+	if ((b = calloc(1, sizeof(struct oslab))) == NULL)
+		err(1, "calloc");
+
+	b->fd = fd;
+	b->ino = ino;
+	b->base = offset;
+
+	if (slab_read_hdr(b, &e) == -1)
+		goto fail;
+
+	if (b->hdr.v.f.slab_version != SLAB_VERSION)
+		errx(1, "unrecognized data format version: %u",
+		    b->hdr.v.f.slab_version);
+
+	if (verify_checksum(b->fd, &b->hdr, &e) == -1)
+		goto fail;
+
+	print_slab_hdr(&b->hdr);
+
+	m.m = MGR_MSG_UNCLAIM;
+	m.v.unclaim.ino = b->ino;
+	m.v.unclaim.offset = b->base;
+	if (mgr_send(mgr, b->fd, &m, &e) == -1)
+		goto fail;
+
+	if (mgr_recv(mgr, NULL, &m, &e) == -1)
+		goto fail;
+
+	if (m.m != MGR_MSG_UNCLAIM_OK)
+		errx(1, "%s: bad manager response: %d", __func__, m.m);
+
+	close(b->fd);
+	free(b);
+	close(mgr);
+	return 0;
+fail:
+	exlog_prt(&e);
+	exit(1);
+}
+
 /*
  * Load all of a directory inode's data from
  * all slabs tied to that inode.
@@ -560,7 +744,6 @@ load_dir(char **data, struct inode *inode)
 	struct mgr_msg    m;
 	struct oslab     *b;
 	char              path[PATH_MAX];
-	struct slab_hdr   hdr;
 	char             *d;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 
@@ -619,12 +802,12 @@ load_dir(char **data, struct inode *inode)
 		}
 
 		if (b->hdr.v.f.slab_version != SLAB_VERSION) {
-			warnx("unrecognized data format version: %s: %u",
-			    path, hdr.v.f.slab_version);
+			warnx("unrecognized data format version: %u",
+			    b->hdr.v.f.slab_version);
 			goto fail_free_slab;
 		}
 
-		if (verify_checksum(b->fd, &hdr, &e) == -1) {
+		if (verify_checksum(b->fd, &b->hdr, &e) == -1) {
 			exlog_prt(&e);
 			goto fail_free_slab;
 		}
@@ -649,12 +832,12 @@ load_dir(char **data, struct inode *inode)
 		m.m = MGR_MSG_UNCLAIM;
 		m.v.unclaim.ino = b->ino;
 		m.v.unclaim.offset = b->base;
-		if (mgr_send(mgr, -1, &m, &e) == -1) {
+		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
 			exlog_prt(&e);
 			goto fail_free_slab;
 		}
 
-		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
 			exlog_prt(&e);
 			goto fail_free_slab;
 		}
@@ -727,7 +910,7 @@ show_inode(int argc, char **argv)
 			exit(1);
 		}
 
-		if ((data = slab_inspect(ino, i, 0, 0, &hdr,
+		if ((data = slab_inspect(ino, i, 0, OSLAB_NOCREATE, &hdr,
 		    &slab_sz, &e)) == NULL) {
 			exlog_prt(&e);
 			exit(1);
@@ -814,7 +997,7 @@ show_dir(int argc, char **argv)
 			exit(1);
 		}
 
-		if ((slab_data = slab_inspect(ino, i, 0, 0, &hdr,
+		if ((slab_data = slab_inspect(ino, i, 0, OSLAB_NOCREATE, &hdr,
 		    &r, &e)) == NULL) {
 			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_zerr(&e);
@@ -863,7 +1046,24 @@ show_dir(int argc, char **argv)
 	return 0;
 }
 
-void
+static void
+print_slab_hdr(struct slab_hdr *hdr)
+{
+	printf("  hdr:\n");
+	printf("    slab_version:    %u\n", hdr->v.f.slab_version);
+	printf("    checksum:        %u\n", hdr->v.f.checksum);
+	printf("    revision:        %lu\n", hdr->v.f.revision);
+	printf("    flags:          ");
+	if (hdr->v.f.flags & SLAB_ITBL)
+		printf(" itbl");
+	if (hdr->v.f.flags & SLAB_DIRTY)
+		printf(" dirty");
+	if (hdr->v.f.flags & SLAB_REMOVED)
+		printf(" removed");
+	printf("\n\n");
+}
+
+static void
 print_inode(struct inode *inode, int is_free)
 {
 	printf("    inode:  %lu %s\n", inode->v.f.inode,
@@ -925,18 +1125,7 @@ show_slab(int argc, char **argv)
 		errx(1, "%s: short read on itbl header", __func__);
 
 	printf("slab: %s\n", argv[0]);
-	printf("  hdr:\n");
-	printf("    slab_version:    %u\n", hdr.v.f.slab_version);
-	printf("    checksum:        %u\n", hdr.v.f.checksum);
-	printf("    revision:        %lu\n", hdr.v.f.revision);
-	printf("    flags:          ");
-	if (hdr.v.f.flags & SLAB_ITBL)
-		printf(" itbl");
-	if (hdr.v.f.flags & SLAB_DIRTY)
-		printf(" dirty");
-	if (hdr.v.f.flags & SLAB_REMOVED)
-		printf(" removed");
-	printf("\n\n");
+	print_slab_hdr(&hdr);
 
 	if (hdr.v.f.flags & SLAB_ITBL) {
 		itbl_hdr = (struct slab_itbl_hdr *)hdr.v.f.data;
@@ -999,25 +1188,27 @@ main(int argc, char **argv)
 	}
 
 	config_read();
+	mgr_init(fs_config.mgr_sock_path);
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");
 
-	if (strcmp(argv[optind], "top") != 0 &&
-	    strcmp(argv[optind], "df") != 0) {
-		if (fs_info_inspect(&fs_info, &e) == -1) {
-			exlog_prt(&e);
-			exit(1);
-		}
-		if (!fs_info.clean) {
-			warnx("WARNING: filesystem not marked clean!!!");
-			warnx("         Run fsck.");
-		}
+	if (optind >= argc) {
+		usage();
+		return 1;
 	}
 
 	for (c = subcommands; c->fn; c++) {
 		if (strcmp(c->name, argv[optind]) == 0) {
 			optind++;
+			if (c->clean_warning) {
+				if (fs_info_inspect(&fs_info, &e) == -1) {
+					exlog_prt(&e);
+					exit(1);
+				}
+				if (!fs_info.clean)
+					fprintf(stderr, clean_warning);
+			}
 			return c->fn(argc - optind, argv + optind);
 		}
 	}

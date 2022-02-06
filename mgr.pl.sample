@@ -2,6 +2,7 @@
 
 use strict;
 use Getopt::Std;
+use JSON;
 use POSIX;
 
 use vars qw/ %opts /;
@@ -14,11 +15,12 @@ my $backend_prefix = "potatofs";
 
 use constant {
 	E_OK             => 0,
+	# On E_ERR, the JSON output on stderr should contain a "status"
+	# field with one of the predefined errors.
 	E_ERR            => 1,
+	# When exiting with BAD_INVOCATION, there should be no JSON
+	# output.
 	E_BAD_INVOCATION => 2,
-	E_GET_NOT_FOUND  => 3,
-	E_PUT_PARTIAL    => 4
-
 };
 
 sub usage
@@ -49,6 +51,9 @@ sub main
 		exit(E_BAD_INVOCATION);
 	}
 
+	my $JSON = JSON->new->utf8;
+	$JSON->convert_blessed(1);
+
 	my $op = shift @ARGV;
 
 	if ($op eq 'df') {
@@ -75,44 +80,86 @@ sub main
 			}
 		}
 		close(DF);
-		print("{ \"used_bytes\": " . ceil($capacity - $free) .
-			", \"total_bytes\": " . ceil($capacity) . " }\n");
+
+		if ($? != 0) {
+			print("{ \"status\": \"ERR\" }\n");
+			exit(E_ERR);
+		}
+
+		my $j = {
+			'status' => 'OK',
+			'used_bytes' => ceil($capacity - $free),
+			'total_bytes' => ceil($capacity)
+		};
+		print($JSON->encode($j) . "\n");
 	} elsif ($op eq "get") {
 		my $slab = shift @ARGV;
 		my $local_path = shift @ARGV;
 
 		$ENV{"SKICKA_PASSPHRASE"} = $passphrase;
 
+		my $err;
 		my $cmd = "$skicka download " .
 			"$backend_prefix/$slab.aes256 $local_path";
 		open(GET, "$cmd 2>&1 |") or do {
-			print(STDERR "failed to run $cmd: $!\n");
+			my $j = {
+				'status' => 'ERR',
+				'msg' => "failed to run $cmd: $!",
+			};
+			print($JSON->encode($j) . "\n");
 			exit(E_ERR);
 		};
-		my $err = <GET>;
+		$err = <GET>;
 		close(GET);
+
 		if ($? != 0) {
-			print(STDERR "error: $err");
+			$err =~ s/^\s+(.*)\s+$/\1/;
+			my $j = { 'status' => 'ERR', 'msg' => $err };
+			if ($err =~ / not found /) {
+				$j->{'status'} = 'ERR_NOENT';
+			}
+			print($JSON->encode($j) . "\n");
 			exit(E_ERR);
 		}
+
+		my @st = stat($local_path);
+		my $j = {
+			'status' => 'OK',
+			'in_bytes' => $st[7],
+		};
+		print($JSON->encode($j) . "\n");
 	} elsif ($op eq "put") {
 		my $local_path = shift @ARGV;
 		my $slab = shift @ARGV;
 
 		$ENV{"SKICKA_PASSPHRASE"} = $passphrase;
 
+		my @st = stat($local_path);
+
+		my $err;
 		my $cmd = "$skicka upload -encrypt $local_path " .
 			"$backend_prefix/$slab";
 		open(PUT, "$cmd 2>&1 |") or do {
-			print(STDERR "failed to run $cmd: $! => <PUT>\n");
+			my $j = {
+				'status' => 'ERR',
+				'msg' => "failed to run $cmd: $!",
+			};
+			print($JSON->encode($j) . "\n");
 			exit(E_ERR);
 		};
-		my $err = <PUT>;
+		$err = <PUT>;
 		close(PUT);
 		if ($? != 0) {
-			print(STDERR "error: $err");
+			$err =~ s/^\s+(.*)\s+$/\1/;
+			my $j = { 'status' => 'ERR', 'msg' => $err };
+			print($JSON->encode($j) . "\n");
 			exit(E_ERR);
 		}
+		my $j = {
+			'status' => 'OK',
+			'out_bytes' => $st[7],
+		};
+		print($JSON->encode($j) . "\n");
 	} else {
 		usage();
 		exit(E_BAD_INVOCATION);

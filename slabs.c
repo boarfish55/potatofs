@@ -137,7 +137,6 @@ slab_realloc(struct oslab *b, struct exlog_err *e)
 	if ((ftruncate(b->fd, sizeof(b->hdr))) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, __func__);
 	b->hdr.v.f.flags &= ~SLAB_REMOVED;
-	b->hdr.v.f.revision++;
 	if (slab_write_hdr_nolock(b, e) == -1)
 		return -1;
 	return 0;

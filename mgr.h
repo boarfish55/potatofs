@@ -25,6 +25,19 @@
 #include "fs_info.h"
 #include "exlog.h"
 
+struct slab_key {
+	int   itbl;
+	ino_t ino;
+	off_t offset;
+};
+
+struct slab_val {
+	uint64_t        revision;
+	uint32_t        header_crc;
+	uuid_t          owner;
+	struct timespec last_claimed;
+};
+
 struct mgr_msg {
 	enum {
 		MGR_MSG_CLAIM = 1,
