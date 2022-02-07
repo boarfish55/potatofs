@@ -1565,15 +1565,14 @@ scrub(const char *path)
 			set_fs_error();
 			goto end;
 		}
-	}
-
-	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-	if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
-	    ino, offset, hdr.v.f.revision, crc, instance_id,
-	    &hdr.v.f.last_claimed_at, &e) == -1) {
-		exlog(LOG_CRIT, &e, "%s: slabdb_put", __func__);
-		set_fs_error();
-		goto end;
+		crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+		if (slabdb_put((hdr.v.f.flags & SLAB_ITBL) ? 1 : 0,
+		    ino, offset, hdr.v.f.revision, crc, instance_id,
+		    &hdr.v.f.last_claimed_at, &e) == -1) {
+			exlog(LOG_CRIT, &e, "%s: slabdb_put", __func__);
+			set_fs_error();
+			goto end;
+		}
 	}
 end:
 	close(fd);
