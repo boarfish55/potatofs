@@ -21,6 +21,7 @@ cat > "$conf" << EOF
 data_dir: $datapath
 mgr_socket_path: $datapath/potatomgr.sock
 backend: $basepath/mgr.pl
+slab_max_age: 60
 unclaim_purge_threshold_pct: 90
 purge_threshold_pct: 0
 EOF

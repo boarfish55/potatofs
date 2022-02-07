@@ -84,7 +84,7 @@
  * After the max age is reached, slabs are closed to give a chance
  * to copy/sync them to the slow backend.
  */
-#define SLAB_MAX_AGE_DEFAULT    60
+#define SLAB_MAX_AGE_DEFAULT    300
 
 /* This should fit in most default ulimits and leave extra room. */
 #define SLAB_MAX_OPEN_DEFAULT   768

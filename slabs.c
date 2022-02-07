@@ -442,7 +442,8 @@ slab_configure(uint64_t max_open, uint32_t max_age, struct exlog_err *e)
 	exlog(LOG_NOTICE, NULL, "max open slabs is %lu (RLIMIT_NOFILE is %u, "
 	    "RLIMIT_LOCKS is %u)", owned_slabs.max_open, nofile.rlim_cur,
 	    locks.rlim_cur);
-	exlog(LOG_NOTICE, NULL, "slab max age is %lu seconds", owned_slabs.max_age);
+	exlog(LOG_NOTICE, NULL, "slab max age is %lu seconds",
+	    owned_slabs.max_age);
 
 	if ((r = pthread_attr_init(&attr)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,
