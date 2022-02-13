@@ -228,7 +228,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 {
 	struct timespec       tp;
 	struct inode          inode;
-	struct oslab         *b = NULL;
+	struct oslab         *b;
 	struct slab_itbl_hdr *hdr;
 	ssize_t               r, w;
 	struct exlog_err      e_close_tbl = EXLOG_ERR_INITIALIZER;
@@ -313,18 +313,15 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	if (slab_write_hdr(b, e) == -1)
 		goto fail;
 
-	if (slab_close_itbl(b, e) == -1) {
-		b = NULL;
-		goto fail;
-	}
-	b = NULL;
+	if (slab_close_itbl(b, e) == -1)
+		return -1;
 
 	if (dst != NULL)
 		memcpy(dst, &inode, sizeof(struct inode));
 
 	return 0;
 fail:
-	if (b && slab_close_itbl(b, &e_close_tbl) == -1) {
+	if (slab_close_itbl(b, &e_close_tbl) == -1) {
 		fs_error_set();
 		exlog(LOG_ERR, &e_close_tbl, __func__);
 	}
@@ -639,15 +636,25 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 		return oi;
 	}
 
+	if ((b = slab_load_itbl(ino, LK_LOCK_RD, e)) == NULL)
+		goto end;
+
+	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
+	if (slab_inode_free(hdr, ino)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
+		    "%s: no such inode allocated: %lu", __func__, ino);
+		goto fail_close_itbl;
+	}
+
 	if ((oi = malloc(sizeof(struct oinode))) == NULL) {
 		exlog_errf(e, EXLOG_OS, errno, __func__);
-		goto end;
+		goto fail_close_itbl;
 	}
 
 	if (LK_LOCK_INIT(&oi->bytes_lock, e) == -1)
-		goto fail_bytes_lock;
+		goto fail_free_oi;
 	if (LK_LOCK_INIT(&oi->lock, e) == -1)
-		goto fail_lock;
+		goto fail_destroy_bytes_lock;
 	oi->nlookup = 0;
 	oi->dirty = 0;
 	oi->bytes_dirty = 0;
@@ -656,57 +663,42 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	exlog_dbg(EXLOG_INODE, "inode %d refcnt %d nlookup %d",
 	    ino, oi->refcnt, oi->nlookup);
 
-	if ((b = slab_load_itbl(ino, LK_LOCK_RD, e)) == NULL)
-		goto fail_no_itbl;
-
-	hdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
-
-	if (slab_inode_free(hdr, ino)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
-		    "%s: no such inode allocated: %lu", __func__, ino);
-		goto fail;
-	}
-
 	r = slab_read(b, &oi->ino,
 	    (ino - hdr->base) * sizeof(struct inode),
 	    sizeof(struct inode), e);
 	if (r == -1) {
-		goto fail;
+		goto fail_destroy_lock;
 	} else if (r < sizeof(struct inode)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: short read while reading inode %lu", __func__, ino);
-		goto fail;
+		goto fail_destroy_lock;
 	}
 
 	if (oi->ino.v.f.mode & S_IFDIR)
 		oi->oflags |= INODE_OSYNC;
 
-	if (slab_close_itbl(b, e) == -1) {
-		b = NULL;
-		goto fail;
-	}
-	b = NULL;
+	if (slab_close_itbl(b, e) == -1)
+		goto fail_destroy_lock;
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
 		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
 		    "%s: inode already loaded %lu", __func__, ino);
-		goto fail_no_itbl;
+		goto fail_destroy_lock;
 	}
 
 	counter_incr(COUNTER_N_OPEN_INODES);
 
 	goto end;
-fail:
+fail_destroy_lock:
+	LK_LOCK_DESTROY(&oi->lock);
+fail_destroy_bytes_lock:
+	LK_LOCK_DESTROY(&oi->bytes_lock);
+fail_free_oi:
+	free(oi);
+	oi = NULL;
+fail_close_itbl:
 	if (slab_close_itbl(b, &e_close_itbl) == -1)
 		exlog(LOG_ERR, &e_close_itbl, __func__);
-fail_no_itbl:
-	LK_LOCK_DESTROY(&oi->lock);
-fail_lock:
-	LK_LOCK_DESTROY(&oi->bytes_lock);
-fail_bytes_lock:
-	if (oi)
-		free(oi);
-	oi = NULL;
 end:
 	MTX_UNLOCK(&open_inodes.lock);
 	exlog_dbg(EXLOG_INODE, "%s: ino=%lu (%p)", __func__, ino, oi);
@@ -1269,7 +1261,7 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 	    &data_sz, e)) == NULL)
 		return -1;
 
-	itbl_hdr = (struct slab_itbl_hdr *)&hdr;
+	itbl_hdr = (struct slab_itbl_hdr *)hdr.v.f.data;
 	if (itbl_hdr->base == 0) {
 		bzero(itbl_hdr->bitmap, sizeof(itbl_hdr->bitmap));
 		itbl_hdr->n_free = slab_inode_max();

@@ -1078,7 +1078,10 @@ show_dir(int argc, char **argv)
 static void
 print_slab_hdr(struct slab_hdr *hdr)
 {
-	printf("  hdr:\n");
+	uint32_t header_crc = crc32_z(0L, (Bytef *)hdr,
+	    sizeof(struct slab_hdr));
+
+	printf("  hdr (CRC %u):\n", header_crc);
 	printf("    slab_version:    %u\n", hdr->v.f.slab_version);
 	printf("    checksum:        %u\n", hdr->v.f.checksum);
 	printf("    revision:        %lu\n", hdr->v.f.revision);

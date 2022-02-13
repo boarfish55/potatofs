@@ -93,6 +93,8 @@ handle_sig(int sig)
 		exlog(LOG_CRIT, &e, "%s", __func__);
 		exit(1);
 	} else {
+		// TODO: we should probably set this clean when
+		//       the fs in unmounted...
 		if (!fs_info.error)
 			fs_info.clean = 1;
 
@@ -147,6 +149,7 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	MDB_val          mk, mv;
 	struct slab_key  k;
 	struct slab_val  v;
+	char             u[37];
 
 	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)) != 0)
 		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
@@ -157,6 +160,9 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 		    __func__, mdb_strerror(r));
 		goto fail;
 	}
+
+	// TODO: check current entry in DB to avoid writing
+	//       needlessly.
 
 	/*
 	 * Always bzero() the key structure to avoid unspecified bits
@@ -185,12 +191,13 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 		goto fail;
 	}
 
-	exlog(LOG_DEBUG, NULL, "%s: k=%u/%lu/%lu, v=%u/%lu", __func__,
+	uuid_unparse(v.owner, u);
+	exlog(LOG_DEBUG, NULL, "%s: k=%u/%lu/%lu, v=%lu/%u/%s", __func__,
 	    ((struct slab_key *)mk.mv_data)->itbl,
 	    ((struct slab_key *)mk.mv_data)->ino,
 	    ((struct slab_key *)mk.mv_data)->offset,
 	    ((struct slab_val *)mv.mv_data)->revision,
-	    ((struct slab_val *)mv.mv_data)->header_crc);
+	    ((struct slab_val *)mv.mv_data)->header_crc, u);
 
 	if ((r = mdb_txn_commit(txn)) != 0) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
@@ -264,6 +271,10 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		// TODO: consensus resolution here; determine owner of
 		// new slab.
 
+		uuid_unparse(v.owner, u);
+		exlog(LOG_DEBUG, NULL, "%s: writing new slab: mdb_put(): "
+		    "k=%u/%lu/%lu, v=%u/%lu/%s\n", __func__, itbl, ino,
+		    offset, *revision, *header_crc, u);
 		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
@@ -293,6 +304,10 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		mv.mv_size = sizeof(v);
 		mv.mv_data = &v;
 
+		uuid_unparse(v.owner, u);
+		exlog(LOG_DEBUG, NULL, "%s: changing ownership: mdb_put(): "
+		    "k=%u/%lu/%lu, v=%u/%lu/%s\n", __func__, itbl, ino,
+		    offset, *revision, *header_crc, u);
 		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
@@ -726,8 +741,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	    m->v.unclaim.ino, m->v.unclaim.offset, hdr.v.f.revision,
 	    crc, (purge) ? uuid_zero : instance_id,
 	    &hdr.v.f.last_claimed_at, e) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: slabdb_put", __func__);
+		exlog_errf(e, EXLOG_OS, errno, "%s: slabdb_put", __func__);
 		set_fs_error();
 		goto fail;
 	}

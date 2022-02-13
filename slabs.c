@@ -154,6 +154,8 @@ slab_unclaim(struct oslab *b)
 	int              mgr = -1;
 	struct mgr_msg   m;
 	struct timespec  tp = {1, 0};
+	ino_t            ino_save;
+	off_t            offset_save;
 
 	if (b->fd == -1) {
 		exlog(LOG_ERR, NULL, "%s: fd is -1", __func__);
@@ -168,8 +170,10 @@ slab_unclaim(struct oslab *b)
 		}
 
 		m.m = MGR_MSG_UNCLAIM;
-		m.v.unclaim.ino = b->ino;
-		m.v.unclaim.offset = b->base;
+		m.v.unclaim.ino = (b->hdr.v.f.flags & SLAB_ITBL) ? b->base : b->ino;
+		m.v.unclaim.offset = (b->hdr.v.f.flags & SLAB_ITBL) ? 0 : b->base;
+		ino_save = m.v.unclaim.ino;
+		offset_save = m.v.unclaim.offset;
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
@@ -185,15 +189,16 @@ slab_unclaim(struct oslab *b)
 			exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 			    __func__, m.m);
 			goto fail;
-		} else if (m.v.unclaim.ino != b->ino ||
-		    m.v.unclaim.offset != b->base) {
+		} else if (m.v.unclaim.ino != ino_save ||
+		    m.v.unclaim.offset != offset_save) {
 			/* We close the fd here to avoid deadlocks. */
 			close(b->fd);
-			exlog(LOG_ERR, NULL, "%s: bad manager response; "
-			    "offset expected=%lu, received=%lu",
-			    "ino expected=%lu, received=%lu",
-			    __func__, b->base, m.v.unclaim.offset, b->ino,
-			    m.v.unclaim.ino);
+			exlog(LOG_ERR, NULL,
+			    "%s: bad manager response for unclaim; "
+			    "ino: expected=%lu, received=%lu"
+			    "offset: expected=%lu, received=%lu", __func__,
+			    ino_save, m.v.unclaim.ino,
+			    offset_save, m.v.unclaim.offset);
 			goto fail;
 		}
 
@@ -615,12 +620,13 @@ slab_parse_path(const char *path, uint32_t *flags, ino_t *ino, off_t *off,
 	char p[PATH_MAX];
 
 	strlcpy(p, path, sizeof(p));
-	if (strcmp(basename(p), ITBL_PREFIX) == 0) {
+	if (strncmp(basename(p), ITBL_PREFIX, 1) == 0) {
 		*flags = SLAB_ITBL;
 		*off = 0;
 		if (sscanf(basename(p), ITBL_PREFIX "%020lu", ino) < 1)
 			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-			    "%s: unparseable slab name %s", __func__, path);
+			    "%s: unparseable itbl slab name %s",
+			    __func__, path);
 	} else {
 		*flags = 0;
 		if (sscanf(basename(p), SLAB_PREFIX "%020lu-%020lu",
@@ -727,9 +733,9 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response; "
-		    "base expected=%lu, received=%lu",
-		    "ino expected=%lu, received=%lu",
-		    offset, m.v.claim.offset, ino, m.v.claim.ino, __func__);
+		    "base: expected=%lu, received=%lu",
+		    "ino: expected=%lu, received=%lu",
+		    __func__, offset, m.v.claim.offset, ino, m.v.claim.ino);
 		goto fail_destroy_locks;
 	} else if (b->fd == -1) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
@@ -739,32 +745,24 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 
 	b->dirty = 0;
 
-	LK_WRLOCK(&b->lock);
-	if (slab_read_hdr(b, e) == -1) {
-		LK_UNLOCK(&b->lock);
+	if (slab_read_hdr(b, e) == -1)
 		goto fail_unclaim;
-	}
 	if (b->hdr.v.f.flags & SLAB_REMOVED) {
 		if (oflags & OSLAB_NOCREATE) {
-			LK_UNLOCK(&b->lock);
 			exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 			    "%s: slab was removed and "
 			    "OSLAB_NOCREATE is set",
 			    __func__);
 			goto fail_unclaim;
 		}
-		if (slab_realloc(b, e) == -1) {
-			LK_UNLOCK(&b->lock);
+		if (slab_realloc(b, e) == -1)
 			goto fail_unclaim;
-		}
 	}
-	LK_UNLOCK(&b->lock);
 
 	b->refcnt = 1;
 
 	b->ino = (flags & SLAB_ITBL) ? 0 : ino;
-	b->base = (flags & SLAB_ITBL) ? base :
-	    offset / slab_get_max_size();
+	b->base = (flags & SLAB_ITBL) ? base : offset / slab_get_max_size();
 	if (SPLAY_INSERT(slab_tree, &owned_slabs.head, b) != NULL) {
 		/* We're in a pretty bad situation here, let's unclaim. */
 		exlog_errf(e, EXLOG_OS, errno, __func__);
@@ -1080,7 +1078,8 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	int             mgr, fd;
 	struct mgr_msg  m;
 	struct oslab   *b;
-	ino_t           base;
+	ino_t           base, ino_save;
+	off_t           offset_save;
 	void           *data = NULL;
 	ssize_t         r;
 
@@ -1123,9 +1122,9 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response; "
-		    "base expected=%lu, received=%lu",
-		    "ino expected=%lu, received=%lu",
-		    offset, m.v.claim.offset, ino, m.v.claim.ino, __func__);
+		    "base expected=%lu, received=%lu"
+		    "ino expected=%lu, received=%lu", __func__,
+		    offset, m.v.claim.offset, ino, m.v.claim.ino);
 		goto fail_close_mgr;
 	} else if (fd == -1) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
@@ -1164,8 +1163,10 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 	}
 
 	m.m = MGR_MSG_UNCLAIM;
-	m.v.unclaim.ino = b->ino;
-	m.v.unclaim.offset = b->base;
+	m.v.unclaim.ino = (b->hdr.v.f.flags & SLAB_ITBL) ? b->base : b->ino;
+	m.v.unclaim.offset = (b->hdr.v.f.flags & SLAB_ITBL) ? 0 : b->base;
+	ino_save = m.v.unclaim.ino;
+	offset_save = m.v.unclaim.offset;
 	if (mgr_send(mgr, b->fd, &m, e) == -1)
 		goto fail_free_data;
 
@@ -1176,13 +1177,14 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response: %d", __func__, m.m);
 		goto fail_free_data;
-	} else if (m.v.unclaim.ino != b->ino || m.v.unclaim.offset != b->base) {
+	} else if (m.v.unclaim.ino != ino_save ||
+	    m.v.unclaim.offset != offset_save) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
-		    "%s: bad manager response; "
-		    "offset expected=%lu, received=%lu",
-		    "ino expected=%lu, received=%lu",
-		    __func__, b->base, m.v.unclaim.offset, b->ino,
-		    m.v.unclaim.ino);
+		    "%s: bad manager response for unclaim; "
+		    "ino expected=%lu, received=%lu"
+		    "offset expected=%lu, received=%lu", __func__,
+		    ino_save, m.v.unclaim.ino,
+		    offset_save, m.v.unclaim.offset);
 		goto fail_free_data;
 	}
 
