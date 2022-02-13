@@ -328,7 +328,7 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 			exlog(LOG_ERR, NULL, "%s: name too long", __func__);
 			goto fail_closedir;
 		}
-		fn(path);
+		fn(f);
 	}
 	closedir(dir);
 
@@ -347,7 +347,7 @@ slab_loop_files(void (*fn)(const char *), struct exlog_err *e)
 				exlog(LOG_ERR, NULL, "%s: name too long", __func__);
 				goto fail_closedir;
 			}
-			fn(path);
+			fn(f);
 		}
 		closedir(dir);
 	}
