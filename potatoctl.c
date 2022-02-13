@@ -30,10 +30,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <jansson.h>
 #include <unistd.h>
 #include <zlib.h>
-#include "counters.h"
+#include "counter_names.h"
 #include "slabs.h"
 #include "fs_info.h"
 #include "inodes.h"
@@ -48,6 +47,7 @@ static int  show_dir(int, char **);
 static int  show_inode(int, char **);
 static int  fsck(int, char **);
 static int  top(int, char **);
+static int  dump_counters(int, char **);
 static int  df(int, char **);
 static void usage();
 static int  load_dir(char **, struct inode *);
@@ -65,6 +65,7 @@ struct subc {
 	{ "dir", &show_dir, 1 },
 	{ "inode", &show_inode, 1 },
 	{ "top", &top, 0 },
+	{ "counters", &dump_counters, 0 },
 	{ "df", &df, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -89,10 +90,11 @@ usage()
 	    "Usage: potatoctl [options] <subcommand> <args...>\n"
 	    "           slab  <slab file>\n"
 	    "           dir   <dir inode#>\n"
-	    "           top   <delay>\n"
+	    "           top   [delay]\n"
+	    "           counters\n"
 	    "           df\n"
 	    "           fsck\n"
-	    "           claim slab <inode> <offset>\n"
+	    "           claim slab <inode> <offset> [create]\n"
 	    "           claim itbl <inode>\n"
 	    "           slabdb\n"
 	    "\n"
@@ -107,32 +109,36 @@ extern locale_t       log_locale;
 struct fs_info        fs_info;
 
 void
-read_metrics(const char *counters_file, uint64_t *counters_now)
+read_metrics(uint64_t *counters_now)
 {
-	FILE         *f;
-	json_error_t  error;
-	json_t       *stats, *s;
-	int           c, fd;
+	int              c, mgr;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct mgr_msg   m;
 
-	if ((fd = open(counters_file, O_RDONLY)) == -1)
-		err(1, "open");
-	if (flock(fd, LOCK_SH) == -1)
-		err(1, "flock");
-	if ((f = fdopen(fd, "r")) == NULL)
-		err(1, "fopen");
-	stats = json_loadf(f, JSON_REJECT_DUPLICATES, &error);
-	if (stats == NULL)
-		errx(1, "JSON error: %s, line %d", error.text, error.line);
-
-	for (c = 0; c < COUNTER_LAST; c++) {
-		if ((s = json_object_get(stats, counters[c].desc)))
-			counters_now[c] = json_integer_value(s);
-		else
-			counters_now[c] = 0;
+	if ((mgr = mgr_connect(&e)) == -1) {
+		exlog_prt(&e);
+		exit(1);
 	}
-	if (json_object_clear(stats) == -1)
-		errx(1, "failed to clear JSON");
-	fclose(f);
+
+	m.m = MGR_MSG_RCV_COUNTERS;
+	if (mgr_send(mgr, -1, &m, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	if (m.m != MGR_MSG_RCV_COUNTERS_OK)
+		errx(1, "%s: bad manager response: %d",
+		    __func__, m.m);
+
+	for (c = 0; c < MGR_COUNTER_LAST; c++)
+		counters_now[c] = m.v.rcv_counters.c[c];
+
+	close(mgr);
 }
 
 int
@@ -521,32 +527,40 @@ df(int argc, char **argv)
 }
 
 int
+dump_counters(int argc, char **argv)
+{
+	int      c;
+	uint64_t counters[MGR_COUNTER_LAST];
+
+	read_metrics(counters);
+	printf("{\n");
+	for (c = 0; c < MGR_COUNTER_LAST; c++)
+		printf("    \"%s\": %lu%s\n",
+		    counter_names[c], counters[c],
+		    (c == (MGR_COUNTER_LAST - 1)) ? "" : ",");
+	printf("}\n");
+	return 0;
+}
+
+int
 top(int argc, char **argv)
 {
-	unsigned int    seconds;
-	uint64_t        counters_now[COUNTER_LAST];
-	uint64_t        counters_prev[COUNTER_LAST];
-	double          counters_delta[COUNTER_LAST];
+	unsigned int    seconds = 2;
+	uint64_t        counters_now[MGR_COUNTER_LAST];
+	uint64_t        counters_prev[MGR_COUNTER_LAST];
+	double          counters_delta[MGR_COUNTER_LAST];
 	int             c, i;
 	struct timespec ts, te;
-	char            fs_counters[PATH_MAX];
 
-	if (argc < 1) {
-		usage();
-		exit(1);
-	}
+	if (argc > 0)
+		seconds = strtol(argv[0], NULL, 10);
 
-	if (snprintf(fs_counters, sizeof(fs_counters), "%s/%s",
-	    fs_config.data_dir, COUNTERS_FILE_NAME) >= sizeof(fs_counters))
-		errx(1, "%s: counters path too long", __func__);
-
-	seconds = strtol(argv[0], NULL, 10);
-	read_metrics(fs_counters, counters_prev);
+	read_metrics(counters_prev);
 	for (i = 0;; i++) {
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		sleep(seconds);
 
-		read_metrics(fs_counters, counters_now);
+		read_metrics(counters_now);
 		clock_gettime(CLOCK_MONOTONIC, &te);
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
@@ -570,6 +584,7 @@ top(int argc, char **argv)
 		    (te.tv_sec - ts.tv_sec),
 		    counters_now[COUNTER_FS_ERROR]);
 	}
+	return 0;
 }
 
 int
@@ -1201,16 +1216,16 @@ main(int argc, char **argv)
 		}
 	}
 
+	if (optind >= argc) {
+		usage();
+		return 1;
+	}
+
 	config_read();
 	mgr_init(fs_config.mgr_sock_path);
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");
-
-	if (optind >= argc) {
-		usage();
-		return 1;
-	}
 
 	for (c = subcommands; c->fn; c++) {
 		if (strcmp(c->name, argv[optind]) == 0) {

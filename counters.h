@@ -24,11 +24,6 @@
 #include <stdint.h>
 #include "exlog.h"
 
-/*
- * If we ever go over ~120 counters, make sure to review the resulting
- * file and that we're not going over 4K in size. If we do, then we'll
- * need to start locking the counters file.
- */
 enum {
 	COUNTER_FS_GETATTR = 0,
 	COUNTER_FS_SETATTR,
@@ -62,18 +57,21 @@ enum {
 	COUNTER_N_OPEN_INODES,
 	COUNTER_READ_BYTES,
 	COUNTER_WRITE_BYTES,
-	COUNTER_BACKEND_IN_BYTES,
-	COUNTER_BACKEND_OUT_BYTES,
 	COUNTER_LAST
+};
+
+enum {
+	MGR_COUNTER_BACKEND_IN_BYTES = COUNTER_LAST,
+	MGR_COUNTER_BACKEND_OUT_BYTES,
+	MGR_COUNTER_LAST
 };
 
 struct counter {
 	pthread_mutex_t  mtx;
 	uint64_t         count;
-	char            *desc;
 };
 
-int      counter_init(const char *, struct exlog_err *);
+int      counter_init(struct exlog_err *);
 void     counter_incr(int);
 void     counter_add(int, uint64_t);
 void     counter_decr(int);

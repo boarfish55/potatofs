@@ -29,7 +29,6 @@
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
-#define COUNTERS_FILE_NAME        "counters"
 #define MGR_DEFAULT_PIDFILE_PATH  "/var/potatofs/potatomgr.pid"
 #define MGR_DEFAULT_SOCKET_PATH   "/var/potatofs/potatomgr.sock"
 #define MGR_DEFAULT_UNPRIV_USER   "potatomgr"

@@ -18,6 +18,7 @@
  */
 
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -32,6 +33,7 @@
 #include <libgen.h>
 #include <pwd.h>
 #include <poll.h>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -47,12 +49,18 @@
 #include "mgr.h"
 #include "slabs.h"
 
-char            *dbg_spec = NULL;
-struct timeval   socket_timeout = {60, 0};
-extern char    **environ;
-MDB_env         *mdb;
-uuid_t           instance_id;
-uuid_t           uuid_zero;
+struct mgr_counters {
+	sem_t    sem;
+	uint64_t c[COUNTER_LAST + MGR_COUNTER_LAST];
+};
+
+char                *dbg_spec = NULL;
+struct timeval       socket_timeout = {60, 0};
+extern char        **environ;
+MDB_env             *mdb;
+uuid_t               instance_id;
+uuid_t               uuid_zero;
+struct mgr_counters *mgr_counters;
 
 static void
 usage()
@@ -357,6 +365,68 @@ slabdb_loop(void(*fn)(const struct slab_key *, const struct slab_val *),
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
 	return 0;
+}
+
+void
+mgr_counter_add(int c, uint64_t v)
+{
+	if (sem_wait(&mgr_counters->sem) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+		return;
+	}
+
+	mgr_counters->c[c] += v;
+
+	if (sem_post(&mgr_counters->sem) == -1)
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+}
+
+static int
+snd_counters(int c, struct mgr_msg *m, struct exlog_err *e)
+{
+	int i;
+	if (sem_wait(&mgr_counters->sem) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+		goto fail;
+	}
+
+	for (i = 0; i < COUNTER_LAST; i++)
+		mgr_counters->c[i] = m->v.snd_counters.c[i];
+
+	if (sem_post(&mgr_counters->sem) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+		goto fail;
+	}
+
+	m->m = MGR_MSG_SND_COUNTERS_OK;
+	return mgr_send(c, -1, m, e);
+fail:
+	m->m = MGR_MSG_SND_COUNTERS_ERR;
+	return mgr_send(c, -1, m, e);
+}
+
+static int
+rcv_counters(int c, struct mgr_msg *m, struct exlog_err *e)
+{
+	int i;
+	if (sem_wait(&mgr_counters->sem) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+		goto fail;
+	}
+
+	for (i = 0; i < MGR_COUNTER_LAST; i++)
+		m->v.rcv_counters.c[i] = mgr_counters->c[i];
+
+	if (sem_post(&mgr_counters->sem) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_wait");
+		goto fail;
+	}
+
+	m->m = MGR_MSG_RCV_COUNTERS_OK;
+	return mgr_send(c, -1, m, e);
+fail:
+	m->m = MGR_MSG_RCV_COUNTERS_ERR;
+	return mgr_send(c, -1, m, e);
 }
 
 static int
@@ -1194,6 +1264,7 @@ get_again:
 		}
 		goto fail_close_dst;
 	}
+	mgr_counter_add(MGR_COUNTER_BACKEND_IN_BYTES, in_bytes);
 
 	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: failed to open_wflock "
@@ -1458,6 +1529,7 @@ bg_flush()
 			close(fd);
 			continue;
 		}
+		mgr_counter_add(MGR_COUNTER_BACKEND_OUT_BYTES, out_bytes);
 
 		exlog(LOG_INFO, NULL, "%s: backend_put: %s (%lu bytes)",
 		    __func__, path, out_bytes);
@@ -1857,6 +1929,12 @@ worker(int lsock)
 			case MGR_MSG_CLAIM_NEXT_ITBL:
 				claim_next_itbls(c, &m, &e);
 				break;
+			case MGR_MSG_SND_COUNTERS:
+				snd_counters(c, &m, &e);
+				break;
+			case MGR_MSG_RCV_COUNTERS:
+				rcv_counters(c, &m, &e);
+				break;
 			default:
 				exlog(LOG_ERR, NULL, "%s: wrong message %d",
 				    __func__, m.m);
@@ -2082,6 +2160,20 @@ main(int argc, char **argv)
 
 	if (listen(lsock, 64) == -1) {
 		exlog_strerror(LOG_ERR, errno, "listen");
+		exit(1);
+	}
+
+	if ((mgr_counters = mmap(NULL, sizeof(struct mgr_counters),
+	    PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0)) == MAP_FAILED) {
+		exlog_strerror(LOG_ERR, errno, "mmap");
+		exit(1);
+	}
+
+	/* Not sure MAP_ANON initializes to zero on BSD */
+	bzero(mgr_counters, sizeof(struct mgr_counters));
+
+	if (sem_init(&mgr_counters->sem, 1, 1) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sem_init");
 		exit(1);
 	}
 

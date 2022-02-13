@@ -22,6 +22,7 @@
 
 #include <sys/statvfs.h>
 #include <stdint.h>
+#include "counters.h"
 #include "fs_info.h"
 #include "exlog.h"
 
@@ -57,6 +58,14 @@ struct mgr_msg {
 		MGR_MSG_FS_INFO_OK,
 		MGR_MSG_FS_INFO_ERR,
 
+		MGR_MSG_SND_COUNTERS,
+		MGR_MSG_SND_COUNTERS_OK,
+		MGR_MSG_SND_COUNTERS_ERR,
+
+		MGR_MSG_RCV_COUNTERS,
+		MGR_MSG_RCV_COUNTERS_OK,
+		MGR_MSG_RCV_COUNTERS_ERR,
+
 		MGR_MSG_CLAIM_NEXT_ITBL,
 		MGR_MSG_CLAIM_NEXT_ITBL_OK,
 		MGR_MSG_CLAIM_NEXT_ITBL_END,
@@ -90,6 +99,14 @@ struct mgr_msg {
 			ino_t    ino;
 			uint32_t oflags;
 		} claim_next_itbl;
+
+		struct {
+			uint64_t c[COUNTER_LAST];
+		} snd_counters;
+
+		struct {
+			uint64_t c[MGR_COUNTER_LAST];
+		} rcv_counters;
 	} v;
 };
 

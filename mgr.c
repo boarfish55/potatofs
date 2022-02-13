@@ -54,7 +54,12 @@ mgr_connect(struct exlog_err *e)
 
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,
 		    sizeof(mgr_addr)) == -1) {
-			exlog_strerror(LOG_ERR, errno, "%s: connect", __func__);
+			if (errno == ENOENT)
+				exlog(LOG_NOTICE, NULL, "%s: no socket; "
+				    "waiting for mgr to start", __func__);
+			else
+				exlog_strerror(LOG_ERR, errno,
+				    "%s: connect", __func__);
 			goto fail;
 		}
 		return mgr;

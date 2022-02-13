@@ -433,7 +433,6 @@ fs_destroy(void *unused)
 static void
 fs_init(void *userdata, struct fuse_conn_info *conn)
 {
-	char              counters_path[PATH_MAX];
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	struct fs_config *c = (struct fs_config *)userdata;
 	struct oinode    *oi;
@@ -444,11 +443,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 
 	exlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
 
-	if (snprintf(counters_path, sizeof(counters_path), "%s/%s",
-	    fs_config.data_dir, COUNTERS_FILE_NAME) >= sizeof(counters_path))
-		goto fail;
-
-	if (counter_init(counters_path, &e) == -1)
+	if (counter_init(&e) == -1)
 		goto fail;
 
 	mgr_init(c->mgr_sock_path);

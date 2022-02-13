@@ -31,157 +31,49 @@
 #include "config.h"
 #include "counters.h"
 #include "exlog.h"
+#include "mgr.h"
 #include "util.h"
 
-struct counter counters[] = {
-	/* COUNTER_FS_GETATTR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_getattr" },
-
-	/* COUNTER_FS_SETATTR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_setattr" },
-
-	/* COUNTER_FS_OPENDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_opendir" },
-
-	/* COUNTER_FS_READDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_readdir" },
-
-	/* COUNTER_FS_RELEASEDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_releasedir" },
-
-	/* COUNTER_FS_RELEASE */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_release" },
-
-	/* COUNTER_FS_OPEN */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_open" },
-
-	/* COUNTER_FS_READ */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_read" },
-
-	/* COUNTER_FS_WRITE */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_write" },
-
-	/* COUNTER_FS_FLUSH */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_flush" },
-
-	/* COUNTER_FS_FORGET */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_forget" },
-
-	/* COUNTER_FS_FORGET_MULTI */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_forget_multi" },
-
-	/* COUNTER_FS_LOOKUP */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_lookup" },
-
-	/* COUNTER_FS_MKDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_mkdir" },
-
-	/* COUNTER_FS_RMDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_rmdir" },
-
-	/* COUNTER_FS_UNLINK */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_unlink" },
-
-	/* COUNTER_FS_STATFS */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_statfs" },
-
-	/* COUNTER_FS_MKNOD */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_mknod" },
-
-	/* COUNTER_FS_CREATE */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_create" },
-
-	/* COUNTER_FS_FALLOCATE */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_fallocate" },
-
-	/* COUNTER_FS_FSYNC */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_fsync" },
-
-	/* COUNTER_FS_FSYNCDIR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_fsyncdir" },
-
-	/* COUNTER_FS_LINK */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_link" },
-
-	/* COUNTER_FS_SYMLINK */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_symlink" },
-
-	/* COUNTER_FS_READLINK */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_readlink" },
-
-	/* COUNTER_FS_RENAME */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_rename" },
-
-	/* COUNTER_FS_ERROR */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_error" },
-
-	/* COUNTER_N_OPEN_SLABS */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_n_open_slabs" },
-
-	/* COUNTER_N_SLABS_PURGE */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_n_slabs_purge" },
-
-	/* COUNTER_N_OPEN_INODES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_n_open_inodes" },
-
-	/* COUNTER_READ_BYTES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_read_bytes" },
-
-	/* COUNTER_WRITE_BYTES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "fs_write_bytes" },
-
-	/* COUNTER_BACKEND_IN_BYTES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "backend_in_bytes" },
-
-	/* COUNTER_BACKEND_OUT_BYTES */
-	{ PTHREAD_MUTEX_INITIALIZER, 0, "backend_out_bytes" }
-};
-
-static char      counters_path[PATH_MAX];
+struct counter   counters[COUNTER_LAST];
 static pthread_t counters_flush;
 static int       counters_shutdown = 0;
 
 static void *
 counter_flush(void *unused)
 {
-	struct timespec  t = {1, 0};
-	int              c, fd;
-	FILE            *f;
+	struct timespec   t = {1, 0};
+	int               c, mgr;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct mgr_msg    m;
 
-	// TODO: this should all happen through a control socket, not
-	// a tempfile. If we want to avoid more procs/threads, just
-	// use a poll() loop on a stream socket.
 	while (!counters_shutdown) {
-		if ((fd = open_wflock(counters_path,
-		    O_CREAT|O_WRONLY|O_TRUNC, 0644, LOCK_EX)) == -1) {
-			exlog_strerror(LOG_ERR, errno,
-			    "%s: failed to open_wflock() counters file: %s",
-			    __func__, counters_path);
-			goto sleep;
-		}
-
-		if ((f = fdopen(fd, "w")) == NULL) {
-			exlog_strerror(LOG_ERR, errno,
-			    "%s: failed to fdopen counters file: %s", __func__,
-			    counters_path);
-			close(fd);
-			goto sleep;
-		}
-
-		if (fprintf(f, "{\n") == -1)
+		exlog_zerr(&e);
+		if ((mgr = mgr_connect(&e)) == -1) {
+			exlog(LOG_ERR, &e, __func__);
 			goto fail;
-
-		for (c = 0; c < COUNTER_LAST; c++) {
-			if (fprintf(f, "    \"%s\": %lu%s\n",
-			    counters[c].desc, counter_get(c),
-			    (c < COUNTER_LAST - 1) ? "," : "") == -1)
-				goto fail;
 		}
-		if (fprintf(f, "}\n") == -1)
+
+		m.m = MGR_MSG_SND_COUNTERS;
+		for (c = 0; c < COUNTER_LAST; c++)
+			m.v.snd_counters.c[c] = counter_get(c);
+
+		if (mgr_send(mgr, -1, &m, &e) == -1) {
+			exlog(LOG_ERR, &e, "%s", __func__);
 			goto fail;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+			exlog(LOG_ERR, &e, "%s", __func__);
+			goto fail;
+		}
+
+		if (m.m != MGR_MSG_SND_COUNTERS_OK) {
+			exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+			    __func__, m.m);
+			goto fail;
+		}
 fail:
-		fclose(f);
-sleep:
+		close(mgr);
 		for (;;) {
 			if (nanosleep(&t, NULL) == 0)
 				break;
@@ -191,14 +83,17 @@ sleep:
 }
 
 int
-counter_init(const char *path, struct exlog_err *e)
+counter_init(struct exlog_err *e)
 {
-	int            r;
+	int            r, c;
 	pthread_attr_t attr;
 
-	exlog(LOG_NOTICE, NULL, "opening counters file at %s", path);
-
-	strlcpy(counters_path, path, sizeof(counters_path));
+	for (c = 0; c < COUNTER_LAST; c++) {
+		counters[c].count = 0;
+		if ((r = pthread_mutex_init(&counters[c].mtx, NULL)) != 0)
+			return exlog_errf(e, EXLOG_OS, r,
+			    "%s: pthread_mutex_init", __func__);
+	}
 
 	if ((r = pthread_attr_init(&attr)) != 0)
 		return exlog_errf(e, EXLOG_OS, r,
