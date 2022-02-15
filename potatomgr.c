@@ -61,6 +61,7 @@ MDB_env             *mdb;
 uuid_t               instance_id;
 uuid_t               uuid_zero;
 struct mgr_counters *mgr_counters;
+int                  shutdown_requested = 0;
 
 static void
 usage()
@@ -86,33 +87,26 @@ usage()
 static void
 handle_sig(int sig)
 {
-	struct fs_info   fs_info;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-
-	if (fs_info_read(&fs_info, &e) == -1) {
-		exlog(LOG_CRIT, &e, "%s", __func__);
-		exit(1);
-	} else {
-		if (!fs_info.error)
-			fs_info.clean = 1;
-
-		if (fs_info_write(&fs_info, &e) == -1)
-			exlog(LOG_ERR, &e, "%s", __func__);
-	}
-
-	killpg(0, 15);
-
+	if (shutdown_requested)
+		return;
 	switch (sig) {
-	case SIGPIPE:
 	case SIGTERM:
 	case SIGINT:
-		syslog((sig == SIGPIPE) ? LOG_ERR : LOG_NOTICE,
-		    "signal %d received, exiting.", sig);
-		exit(sig);
+		shutdown_requested = 1;
+		killpg(0, 15);
+		syslog(LOG_NOTICE, "signal %d received, shutting down", sig);
+		break;
 	default:
 		syslog(LOG_ERR, "Unhandled signal received. Exiting.");
 		exit(sig);
 	}
+}
+
+static void
+worker_handle_sig(int sig)
+{
+	shutdown_requested = 1;
+	syslog(LOG_NOTICE, "signal %d received, shutting down", sig);
 }
 
 static int
@@ -656,9 +650,9 @@ copy_outgoing_slab(int fd, ino_t ino, off_t offset,
 			goto fail;
 		}
 		if (dst_hdr.v.f.revision >= hdr->v.f.revision) {
-			exlog(LOG_INFO, NULL, "slab in outgoing dir has a "
+			exlog(LOG_INFO, NULL, "%s: slab in outgoing dir has a "
 			    "revision greater or equal to this one: %s "
-			    "(revision %llu >= %llu)", dst,
+			    "(revision %llu >= %llu)", __func__, dst,
 			    dst_hdr.v.f.revision, hdr->v.f.revision);
 			goto end;
 		}
@@ -1176,6 +1170,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 			    "%s: open_wflock() for slab %s", __func__, dst);
 			goto fail;
 		}
+		break;
 	}
 	if (open_retries == 0) {
 		exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
@@ -1529,21 +1524,23 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 	} else if (pid > 0)
 		return;
 
-	if (exlog_init(MGR_PROGNAME "-bgworker", dbg_spec, 0) == -1) {
+	bzero(title, sizeof(title));
+	snprintf(title, sizeof(title), "%s-%s", MGR_PROGNAME, name);
+	if (exlog_init(title, dbg_spec, 0) == -1) {
 		exlog(LOG_ERR, NULL,
-		    "failed to initialize logging in bgworker");
+		    "%s: failed to initialize logging", __func__);
 		exit(1);
 	}
 
-	bzero(title, sizeof(title));
-	snprintf(title, sizeof(title), "bgworker: %s", name);
-	setproctitle(title);
-	exlog(LOG_INFO, NULL, "%s: %s ready", __func__, title);
+	setproctitle("bgworker: %s", name);
+	exlog(LOG_INFO, NULL, "ready");
 
-	for (;;) {
+	while (!shutdown_requested) {
 		fn();
 		nanosleep(&tp, NULL);
 	}
+	exlog(LOG_INFO, NULL, "exiting");
+	exit(0);
 }
 
 static void
@@ -1934,9 +1931,9 @@ worker(int lsock)
 	}
 
 	setproctitle("worker");
-	exlog(LOG_INFO, NULL, "%s: ready", __func__);
+	exlog(LOG_INFO, NULL, "ready", __func__);
 
-	for (;;) {
+	while (!shutdown_requested) {
 		if ((c = accept(lsock, NULL, 0)) == -1) {
 			switch (errno) {
 			case EINTR:
@@ -2016,6 +2013,9 @@ worker(int lsock)
 			exlog_zerr(&e);
 		}
 	}
+	close(lsock);
+	exlog(LOG_INFO, NULL, "exiting");
+	exit(0);
 }
 
 void
@@ -2055,7 +2055,7 @@ main(int argc, char **argv)
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
 	char                mdb_path[PATH_MAX];
 	int                 r;
-	struct fs_info      info;
+	struct fs_info      fs_info;
 
 
 	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:S:P:")) != -1) {
@@ -2113,7 +2113,7 @@ main(int argc, char **argv)
 	if (!foreground) {
 		if (daemon(0, 0) == -1)
 			err(1, "daemon");
-		setproctitle(MGR_PROGNAME " (parent)");
+		setproctitle("main");
 	}
 
         if ((pid_f = fopen(pidfile_path, "w")) == NULL) {
@@ -2204,11 +2204,11 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if (fs_info_open(&info, &e) == -1) {
+	if (fs_info_open(&fs_info, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
-	uuid_copy(instance_id, info.instance_id);
+	uuid_copy(instance_id, fs_info.instance_id);
 
 	if (slab_make_dirs(&e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
@@ -2262,6 +2262,12 @@ main(int argc, char **argv)
 	if (sigaction(SIGPIPE, &act, NULL) == -1)
 		exlog_strerror(LOG_ERR, errno, "sigaction");
 
+	act.sa_handler = &worker_handle_sig;
+	if (sigaction(SIGINT, &act, NULL) == -1 ||
+	    sigaction(SIGTERM, &act, NULL) == -1) {
+		exlog_strerror(LOG_ERR, errno, "sigaction");
+	}
+
 	for (n = 0; n < workers; n++) {
 		switch (fork()) {
 		case -1:
@@ -2295,16 +2301,35 @@ main(int argc, char **argv)
 	}
 
 	act.sa_handler = &handle_sig;
-	if (sigaction(SIGINT, &act, NULL) == -1
-			|| sigaction(SIGPIPE, &act, NULL) == -1
-			|| sigaction(SIGTERM, &act, NULL) == -1) {
+	if (sigaction(SIGINT, &act, NULL) == -1 ||
+	    sigaction(SIGTERM, &act, NULL) == -1) {
 		exlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
-	for (n = 0; n < workers; n++)
-		wait(NULL);
+	for (n = 0; n < workers; ) {
+		if (wait(NULL) == -1) {
+			if (errno == EINTR)
+				continue;
+			err(1, "wait");
+		}
+		n++;
+	}
 
 	mdb_env_close(mdb);
 
+	if (fs_info_read(&fs_info, &e) == -1) {
+		exlog(LOG_CRIT, &e, "%s", __func__);
+		exit(1);
+	} else {
+		if (!fs_info.error)
+			fs_info.clean = 1;
+
+		if (fs_info_write(&fs_info, &e) == -1) {
+			exlog(LOG_ERR, &e, "%s", __func__);
+			exit(1);
+		}
+	}
+
+	exlog(LOG_INFO, NULL, "exiting");
 	return 0;
 }
