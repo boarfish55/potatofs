@@ -189,10 +189,17 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	    memcmp(&k, mk.mv_data, sizeof(k)) == 0 &&
 	    memcmp(&v, mv.mv_data, sizeof(v)) == 0) {
 		/* Found the key, same value; do nothing. */
+		exlog(LOG_DEBUG, NULL, "%s: no change for k=%u/%lu/%lu, "
+		    "v=%lu/%u/%s; not writing", __func__,
+		    ((struct slab_key *)mk.mv_data)->itbl,
+		    ((struct slab_key *)mk.mv_data)->ino,
+		    ((struct slab_key *)mk.mv_data)->offset,
+		    ((struct slab_val *)mv.mv_data)->revision,
+		    ((struct slab_val *)mv.mv_data)->header_crc, u);
 		mdb_cursor_close(cursor);
 		mdb_txn_abort(txn);
 		return 0;
-	} else if (r != MDB_NOTFOUND) {
+	} else if (r != 0 && r != MDB_NOTFOUND) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_get: %s",
 		    __func__, mdb_strerror(r));
 		goto fail_close_cursor;
@@ -1084,13 +1091,17 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	int             dst_fd, incoming_fd, outgoing_fd;
 	size_t          in_bytes;
 	struct slab_hdr hdr;
-	struct timespec tp = {0, 10000000}; /* 10 ms */
 	struct stat     st;
-
 	uint64_t        revision;
 	uint32_t        header_crc;
 	uuid_t          owner;
 	struct timespec last_claimed;
+
+	/*
+	 * Retry open/flock() every 10ms, for 1000 times, thus 10s.
+	 */
+	struct timespec tp = {0, 10000000};
+	int             open_retries = 1000;
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -1149,15 +1160,30 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * entry.
 	 * Note: On unclaim(), unlink() happens before close()
 	 */
-open_again:
-	if ((dst_fd = open_wflock(dst, fd_flags,
-	    0600, LOCK_EX|LOCK_NB)) == -1) {
-		if (errno == EWOULDBLOCK) {
-			nanosleep(&tp, NULL);
-			goto open_again;
+
+	// TODO: deadlock here if using potatoctl to claim and all workers
+	// are busy, because we could have the fs try to unclaim, but
+	// no available worker to process it, while the ctl's claim request
+	// loops here forever.
+	for (; open_retries > 0; open_retries--) {
+		if ((dst_fd = open_wflock(dst, fd_flags,
+		    0600, LOCK_EX|LOCK_NB)) == -1) {
+			if (errno == EWOULDBLOCK) {
+				nanosleep(&tp, NULL);
+				continue;
+			}
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: open_wflock() for slab %s", __func__, dst);
+			goto fail;
 		}
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock() for slab %s", __func__, dst);
+	}
+	if (open_retries == 0) {
+		exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
+		    "%s: open_wflock() timed out after multiple retries "
+		    "for slab %s; this should not happen if the fs process"
+		    "is properly managing open slabs. Unless someone "
+		    "is attempting to claim this slab from another process?",
+		    __func__, dst);
 		goto fail;
 	}
 
@@ -2011,7 +2037,7 @@ int
 main(int argc, char **argv)
 {
 	char                opt;
-	struct              sigaction act, oact;
+	struct              sigaction act;
 	char               *pidfile_path = MGR_DEFAULT_PIDFILE_PATH;
 	int                 foreground = 0;
 	FILE               *pid_f;
@@ -2224,6 +2250,18 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
+	/*
+	 * Because we use socket timeouts, it's possible that we may
+	 * end up trying to read/write on a closed socket, which would
+	 * then cause a SIGPIPE. It's better to ignore this signal and
+	 * handle EPIPE where needed.
+	 */
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = 0;
+	act.sa_handler = SIG_IGN;
+	if (sigaction(SIGPIPE, &act, NULL) == -1)
+		exlog_strerror(LOG_ERR, errno, "sigaction");
+
 	for (n = 0; n < workers; n++) {
 		switch (fork()) {
 		case -1:
@@ -2257,11 +2295,9 @@ main(int argc, char **argv)
 	}
 
 	act.sa_handler = &handle_sig;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = 0;
-	if (sigaction(SIGINT, &act, &oact) == -1
-			|| sigaction(SIGPIPE, &act, &oact) == -1
-			|| sigaction(SIGTERM, &act, &oact) == -1) {
+	if (sigaction(SIGINT, &act, NULL) == -1
+			|| sigaction(SIGPIPE, &act, NULL) == -1
+			|| sigaction(SIGTERM, &act, NULL) == -1) {
 		exlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
