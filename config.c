@@ -37,6 +37,7 @@ struct fs_config fs_config = {
 	MGR_DEFAULT_SOCKET_PATH,     /* manager socket path */
 	MGR_DEFAULT_BACKEND_EXEC,    /* manager backend executable */
 	DEFAULT_CONFIG_PATH,         /* config path */
+	DEFAULT_MDB_MAPSIZE,         /* MDB map size */
 	DEFAULT_UNCLAIM_PURGE_PCT,   /* unclaim_purge_threshold_pct */
 	DEFAULT_PURGE_PCT            /* purge_threshold_pct */
 };
@@ -119,6 +120,10 @@ config_read()
 			if ((fs_config.purge_threshold_pct =
 			    strtol(v, NULL, 10)) == LONG_MAX)
 				err(1, "purge_threshold_pct");
+		} else if (strcmp(p, "mdb_map_size") == 0) {
+			if ((fs_config.mdb_map_size =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "mdb_map_size");
 		} else {
 			warnx("unknown parameter: %s", p);
 			continue;

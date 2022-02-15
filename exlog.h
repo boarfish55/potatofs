@@ -51,6 +51,7 @@ enum exlog_cerrcode {
 	EXLOG_EXEC,         /* Error while running backend executable */
 	EXLOG_JSON,         /* JSON error */
 	EXLOG_CRC_MISMATCH, /* CRC mismatch in slab */
+	EXLOG_NOSPC,        /* No space left on device */
 	EXLOG_MGR           /* Issue arised during communication with
 	                       slab manager */
 };

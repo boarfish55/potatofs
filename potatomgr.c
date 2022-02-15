@@ -93,8 +93,6 @@ handle_sig(int sig)
 		exlog(LOG_CRIT, &e, "%s", __func__);
 		exit(1);
 	} else {
-		// TODO: we should probably set this clean when
-		//       the fs in unmounted...
 		if (!fs_info.error)
 			fs_info.clean = 1;
 
@@ -147,22 +145,26 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	MDB_txn         *txn;
 	MDB_dbi          dbi;
 	MDB_val          mk, mv;
+	MDB_cursor      *cursor;
 	struct slab_key  k;
 	struct slab_val  v;
 	char             u[37];
 
-	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)) != 0)
+	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)))
 		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
 		    __func__, mdb_strerror(r));
 
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
 		    __func__, mdb_strerror(r));
 		goto fail;
 	}
 
-	// TODO: check current entry in DB to avoid writing
-	//       needlessly.
+	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
+		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_open: %s",
+		    __func__, mdb_strerror(r));
+		goto fail;
+	}
 
 	/*
 	 * Always bzero() the key structure to avoid unspecified bits
@@ -174,21 +176,36 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	k.offset = (itbl) ? 0 : ((offset / slab_get_max_size())
 	    * slab_get_max_size());
 
+	mk.mv_size = sizeof(k);
+	mk.mv_data = &k;
+
 	bzero(&v, sizeof(v));
 	v.revision = revision;
 	v.header_crc = header_crc;
 	uuid_copy(v.owner, owner);
 	memcpy(&v.last_claimed, last_claimed, sizeof(struct timespec));
 
-	mk.mv_size = sizeof(k);
-	mk.mv_data = &k;
+	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_SET_KEY)) == 0 &&
+	    memcmp(&k, mk.mv_data, sizeof(k)) == 0 &&
+	    memcmp(&v, mv.mv_data, sizeof(v)) == 0) {
+		/* Found the key, same value; do nothing. */
+		mdb_cursor_close(cursor);
+		mdb_txn_abort(txn);
+		return 0;
+	} else if (r != MDB_NOTFOUND) {
+		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_get: %s",
+		    __func__, mdb_strerror(r));
+		goto fail_close_cursor;
+	}
+
 	mv.mv_size = sizeof(v);
 	mv.mv_data = &v;
 
-	if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
+	if ((r = mdb_cursor_put(cursor, &mk, &mv,
+	    (r == MDB_NOTFOUND) ? 0 : MDB_CURRENT))) {
+		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_put: %s",
 		    __func__, mdb_strerror(r));
-		goto fail;
+		goto fail_close_cursor;
 	}
 
 	uuid_unparse(v.owner, u);
@@ -199,12 +216,14 @@ slabdb_put(uint32_t itbl, ino_t ino, off_t offset, uint64_t revision,
 	    ((struct slab_val *)mv.mv_data)->revision,
 	    ((struct slab_val *)mv.mv_data)->header_crc, u);
 
-	if ((r = mdb_txn_commit(txn)) != 0) {
+	if ((r = mdb_txn_commit(txn))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
 		    __func__, mdb_strerror(r));
-		goto fail;
+		goto fail_close_cursor;
 	}
 	return 0;
+fail_close_cursor:
+	mdb_cursor_close(cursor);
 fail:
 	mdb_txn_abort(txn);
 	return -1;
@@ -230,11 +249,11 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 	struct slab_val  v;
 	char             u[37];
 
-	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)) != 0)
+	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)))
 		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
 		    __func__, mdb_strerror(r));
 
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
 		    __func__, mdb_strerror(r));
 		goto fail;
@@ -275,13 +294,13 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		exlog(LOG_DEBUG, NULL, "%s: writing new slab: mdb_put(): "
 		    "k=%u/%lu/%lu, v=%u/%lu/%s\n", __func__, itbl, ino,
 		    offset, *revision, *header_crc, u);
-		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
+		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
 			goto fail;
 		}
 
-		if ((r = mdb_txn_commit(txn)) != 0) {
+		if ((r = mdb_txn_commit(txn))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
 			    __func__, mdb_strerror(r));
 			goto fail;
@@ -308,12 +327,12 @@ slabdb_get(uint32_t itbl, ino_t ino, off_t offset, uint32_t oflags,
 		exlog(LOG_DEBUG, NULL, "%s: changing ownership: mdb_put(): "
 		    "k=%u/%lu/%lu, v=%u/%lu/%s\n", __func__, itbl, ino,
 		    offset, *revision, *header_crc, u);
-		if ((r = mdb_put(txn, dbi, &mk, &mv, 0)) != 0) {
+		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
 			goto fail;
 		}
-		if ((r = mdb_txn_commit(txn)) != 0) {
+		if ((r = mdb_txn_commit(txn))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
 			    __func__, mdb_strerror(r));
 			goto fail;
@@ -345,18 +364,18 @@ slabdb_loop(void(*fn)(const struct slab_key *, const struct slab_val *),
 	MDB_cursor      *cursor;
 	MDB_val          mk, mv;
 
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0)
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)))
 		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
 		    __func__, mdb_strerror(r));
 
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
 		return -1;
 	}
 
-	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
@@ -698,11 +717,11 @@ fail:
 static int
 unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 {
-	struct         slab_hdr hdr;
-	char           src[PATH_MAX];
-	int            purge = 0;
-	struct statvfs stv;
-	uint32_t       crc;
+	struct           slab_hdr hdr;
+	char             src[PATH_MAX];
+	int              purge = 0;
+	struct statvfs   stv;
+	uint32_t         crc;
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
@@ -741,7 +760,8 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	    m->v.unclaim.ino, m->v.unclaim.offset, hdr.v.f.revision,
 	    crc, (purge) ? uuid_zero : instance_id,
 	    &hdr.v.f.last_claimed_at, e) == -1) {
-		exlog_errf(e, EXLOG_OS, errno, "%s: slabdb_put", __func__);
+		if (exlog_err_is(e, EXLOG_MDB, MDB_MAP_FULL))
+			m->err = EXLOG_NOSPC;
 		set_fs_error();
 		goto fail;
 	}
@@ -763,6 +783,8 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	m->m = MGR_MSG_UNCLAIM_OK;
 	return mgr_send(c, -1, m, e);
 fail:
+	exlog(LOG_ERR, e, "%s");
+	exlog_zerr(e);
 	m->m = MGR_MSG_UNCLAIM_ERR;
 	return mgr_send(c, -1, m, e);
 }
@@ -1077,7 +1099,9 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	if (slabdb_get((m->v.claim.flags & SLAB_ITBL) ? 1 : 0,
 	    m->v.claim.ino, m->v.claim.offset, m->v.claim.oflags,
 	    &revision, &header_crc, &owner, &last_claimed, e) == -1) {
-		if (m->v.claim.oflags & OSLAB_NOCREATE &&
+		if (exlog_err_is(e, EXLOG_MDB, MDB_MAP_FULL))
+			m->err = EXLOG_NOSPC;
+		else if (m->v.claim.oflags & OSLAB_NOCREATE &&
 		    exlog_err_is(e, EXLOG_MDB, MDB_NOTFOUND)) {
 			exlog_zerr(e);
 			m->m = MGR_MSG_CLAIM_NOENT;
@@ -1343,27 +1367,27 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 	mk.mv_size = sizeof(k);
 	mk.mv_data = &k;
 
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0) {
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_txn_begin: %s",
 		    __func__, mdb_strerror(r));
 		goto fail;
 	}
 
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_dbi_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
 		goto fail;
 	}
 
-	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_cursor_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
 		goto fail;
 	}
 
-	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) != 0) {
+	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT))) {
 		mdb_txn_abort(txn);
 		if (r == MDB_NOTFOUND) {
 			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
@@ -1744,20 +1768,20 @@ bg_purge()
 		return;
 	}
 
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0) {
+	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_txn_begin: %s",
 		    __func__, mdb_strerror(r));
 		goto fail;
 	}
 
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
+	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_dbi_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
 		goto fail;
 	}
 
-	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
+	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_cursor_open: %s",
 		    __func__, mdb_strerror(r));
 		mdb_txn_abort(txn);
@@ -2134,10 +2158,19 @@ main(int argc, char **argv)
 		exit(1);
         }
 
-	if ((r = mdb_env_create(&mdb)) != 0)
+	exlog(LOG_INFO, NULL, "%s: slabdb entries are %u bytes, "
+	    "maximum map size is %u; %u maximum slabs", __func__,
+	    sizeof(struct slab_key) + sizeof(struct slab_val),
+	    DEFAULT_MDB_MAPSIZE,
+	    DEFAULT_MDB_MAPSIZE /
+	    (sizeof(struct slab_key) + sizeof(struct slab_val)));
+	if ((r = mdb_env_create(&mdb)))
 		errx(1, "mdb_env_create: %s", mdb_strerror(r));
 
-	if ((r = mdb_env_open(mdb, mdb_path, MDB_NOSUBDIR, 0644)) != 0)
+	if ((r = mdb_env_set_mapsize(mdb, DEFAULT_MDB_MAPSIZE)))
+		errx(1, "mdb_env_set_mapsize: %s", mdb_strerror(r));
+
+	if ((r = mdb_env_open(mdb, mdb_path, MDB_NOSUBDIR, 0644)))
 		errx(1, "mdb_env_open: %s", mdb_strerror(r));
 
 	if (slabdb_loop(&slabdb_status, &e) == -1) {

@@ -108,6 +108,8 @@ struct mgr_msg {
 			uint64_t c[MGR_COUNTER_LAST];
 		} rcv_counters;
 	} v;
+
+	int err;
 };
 
 void mgr_init(const char *);

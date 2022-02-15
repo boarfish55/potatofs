@@ -37,6 +37,13 @@
 #define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
 #define DEFAULT_MDB_NAME          "slabs.mdb"
 
+/*
+ * This is the maximum size of the slabdb. This size divided by
+ * the size of the slab_key + slab_val structures limits the
+ * total number of slabs that can exist in the entire filesystem.
+ */
+#define DEFAULT_MDB_MAPSIZE 67108864
+
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"
 #define OUTGOING_DIR  "outgoing"
@@ -105,9 +112,9 @@ struct fs_config {
 	const char *mgr_sock_path;
 	const char *mgr_exec;
 	const char *cfg_path;
+	size_t      mdb_map_size;
 	uint32_t    unclaim_purge_threshold_pct;
 	uint32_t    purge_threshold_pct;
-	uint32_t    fs_to_cache_pct;
 };
 
 extern struct fs_config fs_config;

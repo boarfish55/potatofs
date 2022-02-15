@@ -727,7 +727,7 @@ slab_load(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		    "%s: no such slab", __func__);
 		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		exlog_errf(e, EXLOG_APP, ((m.err != 0) ? m.err : EXLOG_MGR),
 		    "%s: bad manager response", __func__);
 		goto fail_destroy_locks;
 	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
@@ -1116,7 +1116,7 @@ slab_inspect(ino_t ino, off_t offset, uint32_t flags, uint32_t oflags,
 		    "%s: no such slab", __func__);
 		goto fail_close_mgr;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
+		exlog_errf(e, EXLOG_APP, ((m.err != 0) ? m.err : EXLOG_MGR),
 		    "%s: bad manager response", __func__);
 		goto fail_close_mgr;
 	} else if (m.v.claim.offset != offset || m.v.claim.ino != ino) {
