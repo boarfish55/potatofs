@@ -874,7 +874,7 @@ show_inode(int argc, char **argv)
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	struct slab_hdr   hdr;
 	void             *data;
-	ssize_t           slab_sz;
+	size_t            slab_sz;
 	char              path[PATH_MAX];
 	struct slab_key   sk;
 
@@ -941,11 +941,11 @@ show_dir(int argc, char **argv)
 	struct slab_hdr   hdr;
 	int               n;
 	off_t             i;
-	ssize_t           r;
 	ino_t             ino;
 	struct inode      inode;
 	char             *data;
 	void             *slab_data;
+	size_t            slab_sz;
 	struct slab_key   sk;
 	struct dir_entry *de;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
@@ -985,9 +985,9 @@ show_dir(int argc, char **argv)
 
 	printf("inode: %lu\n", ino);
 
-	for (; i < inode.v.f.size; i += r) {
+	for (; i < inode.v.f.size; i += slab_sz) {
 		if ((slab_data = slab_inspect(&sk, OSLAB_NOCREATE, &hdr,
-		    &r, &e)) == NULL) {
+		    &slab_sz, &e)) == NULL) {
 			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_zerr(&e);
 				break;
@@ -996,7 +996,7 @@ show_dir(int argc, char **argv)
 			exit(1);
 		}
 
-		if (r == 0)
+		if (slab_sz == 0)
 			break;
 
 		printf("  slab:\n");
@@ -1011,7 +1011,7 @@ show_dir(int argc, char **argv)
 			printf(" removed");
 		printf("\n\n");
 
-		memcpy(data + i, slab_data, r);
+		memcpy(data + i, slab_data, slab_sz);
 		free(slab_data);
 	}
 

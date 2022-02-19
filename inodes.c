@@ -1236,20 +1236,22 @@ fail:
 	return -1;
 }
 
+/*
+ * Inspect the inode fields and inline data.
+ */
 int
 inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 {
 	struct oslab     b;
 	char            *data;
-	ssize_t          data_sz;
+	size_t           data_sz;
 	struct slab_key  sk;
 
 	bzero(inode, sizeof(struct inode));
 	bzero(&b, sizeof(struct oslab));
 
-
-	if ((data = slab_inspect(slab_key(&sk, ino, 0), OSLAB_NOCREATE,
-	    &b.hdr, &data_sz, e)) == NULL)
+	if ((data = slab_disk_inspect(slab_key(&sk, 0, ino), &b.hdr,
+	    &data_sz, e)) == NULL)
 		return -1;
 
 	if (slab_itbl_is_free(&b, ino)) {

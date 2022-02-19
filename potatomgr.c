@@ -1547,7 +1547,7 @@ bg_df()
 }
 
 static void
-bgworker(const char *name, void(*fn)(), int interval_secs)
+bgworker(const char *name, void(*fn)(), int interval_secs, int run_at_exit)
 {
 	char            title[32];
 	struct timespec tp = {interval_secs, 0};
@@ -1574,6 +1574,9 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		fn();
 		nanosleep(&tp, NULL);
 	}
+	exlog(LOG_INFO, NULL, "performing last run before exiting");
+	if (run_at_exit)
+		fn();
 	exlog(LOG_INFO, NULL, "exiting");
 	exit(0);
 }
@@ -2319,20 +2322,20 @@ main(int argc, char **argv)
 		}
 	}
 
-	bgworker("df", &bg_df, 60);
+	bgworker("df", &bg_df, 60, 1);
 	workers++;
 
 	if (scrubber_interval) {
-		bgworker("scrubber", &bg_scrubber, scrubber_interval);
+		bgworker("scrubber", &bg_scrubber, scrubber_interval, 1);
 		workers++;
 	}
 	if (purger_interval) {
-		bgworker("purge", &bg_purge, purger_interval);
+		bgworker("purge", &bg_purge, purger_interval, 1);
 		workers++;
 	}
 
 	for (n = 0; n < bgworkers; n++) {
-		bgworker("flush", &bg_flush, 60);
+		bgworker("flush", &bg_flush, 60, 1);
 		workers++;
 	}
 

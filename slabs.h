@@ -254,8 +254,9 @@ int              slab_key_valid(struct slab_key *, struct exlog_err *);
 int     slab_loop_files(void (*)(const char *), struct exlog_err *);
 
 /* To be used for testing only, acquires no lock */
-struct oslab *slab_disk_inspect(struct slab_key *, struct exlog_err *);
-void         *slab_inspect(struct slab_key *, uint32_t, struct slab_hdr *,
-                  ssize_t *, struct exlog_err *);
+void *slab_disk_inspect(struct slab_key *, struct slab_hdr *, size_t *,
+          struct exlog_err *);
+void *slab_inspect(struct slab_key *, uint32_t, struct slab_hdr *,
+          size_t *, struct exlog_err *);
 
 #endif

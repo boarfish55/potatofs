@@ -632,9 +632,11 @@ test_file_size_and_mtime()
 	char             *p = makepath("file_size");
 	struct timespec   tp;
 	char              msg[LINE_MAX];
-	off_t             sz, bsize;
+	off_t             sz;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct oslab     *b;
+	struct slab_hdr   hdr;
+	void             *slab_data;
+	size_t            slab_sz;
 	struct slab_key   sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
@@ -689,30 +691,24 @@ test_file_size_and_mtime()
 	if (close(fd) == -1)
 		return ERR("", errno);
 
-	if ((b = slab_disk_inspect(slab_key(&sk, st.st_ino, sz), &e)) == NULL) {
+	if ((slab_data = slab_disk_inspect(slab_key(&sk, st.st_ino, sz),
+	    &hdr, &slab_sz, &e)) == NULL) {
 		exlog_prt(&e);
 		return ERR("failed to inspect slab", 0);
 	}
-
-	if ((bsize = slab_size(b, &e)) == -1) {
-		exlog_prt(&e);
-		return ERR("failed to get slab size", 0);
-	}
-
-	close(b->fd);
-	free(b);
+	free(slab_data);
 
 	/*
 	 * Once we start spilling bytes into slabs, the total slab
 	 * sizes should match the file size, even if we use inline data.
 	 * This is so that we preserve block alignment.
 	 */
-	if (bsize != sz) {
+	if (slab_sz != sz) {
 		snprintf(msg, sizeof(msg),
 		    "slab size doesn't match "
 		    "total size minus max inline for the inode: "
 		    "current=%lu, want=%lu",
-		    bsize, sz - inode_max_inline_b());
+		    slab_sz, sz - inode_max_inline_b());
 		return ERR(msg, 0);
 	}
 
@@ -1832,7 +1828,10 @@ main(int argc, char **argv)
 	if (snprintf(mnt, sizeof(mnt), "%s", argv[optind++]) >= sizeof(mnt))
 		errx(1, "error: mount point path too long");
 
-	if (optind >= argc) {
+	if (access(mnt, R_OK|W_OK|X_OK) == -1)
+		errx(1, "access");
+
+	if (optind > argc) {
 		usage();
 		exit(1);
 	}

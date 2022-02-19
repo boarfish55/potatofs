@@ -1039,12 +1039,15 @@ slab_splice_fd(struct oslab *b, off_t offset, size_t count,
 	}
 }
 
-struct oslab *
-slab_disk_inspect(struct slab_key *sk, struct exlog_err *e)
+void *
+slab_disk_inspect(struct slab_key *sk, struct slab_hdr *hdr,
+    size_t *slab_sz, struct exlog_err *e)
 {
-	char             path[PATH_MAX];
-	struct oslab    *b = NULL;
-	int              fd = -1;
+	char         path[PATH_MAX];
+	int          fd;
+	struct stat  st;
+	ssize_t      r;
+	void        *data;
 
 	if (slab_path(path, sizeof(path), sk, 0, e) == -1)
 		return NULL;
@@ -1059,26 +1062,46 @@ slab_disk_inspect(struct slab_key *sk, struct exlog_err *e)
 		return NULL;
 	}
 
-	if ((b = calloc(1, sizeof(struct oslab))) == NULL) {
-		exlog_errf(e, EXLOG_OS, errno, __func__);
-		close(fd);
-		return NULL;
+	if (read_x(fd, hdr, sizeof(struct slab_hdr)) <
+	    sizeof(struct slab_hdr)) {
+		exlog_errf(e, EXLOG_OS, errno,
+		    "%s: short read on slab header", __func__);
+		goto fail;
 	}
 
-	b->fd = fd;
+	if (fstat(fd, &st) == -1) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
+		goto fail;
+	}
+	*slab_sz = st.st_size - sizeof(struct slab_hdr);
 
-	if (slab_read_hdr(b, e) == -1) {
-		close(fd);
-		free(b);
-		return NULL;
+	if ((data = malloc(*slab_sz)) == NULL) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: malloc", __func__);
+		goto fail;
 	}
 
-	return b;
+	if ((r = read_x(fd, data, *slab_sz)) < *slab_sz) {
+		if (r == -1)
+			exlog_errf(e, EXLOG_OS, errno, "%s: read", __func__);
+		else
+			exlog_errf(e, EXLOG_APP, EXLOG_SHORTIO,
+			    "%s: short read on slab; expected size from "
+			    "fstat() is %lu, read_x() returned %lu",
+			    __func__, *slab_sz, r);
+		free(data);
+		goto fail;
+	}
+	close(fd);
+
+	return data;
+fail:
+	close(fd);
+	return NULL;
 }
 
 void *
 slab_inspect(struct slab_key *sk, uint32_t oflags, struct slab_hdr *hdr,
-    ssize_t *slab_sz, struct exlog_err *e)
+    size_t *slab_sz, struct exlog_err *e)
 {
 	int             mgr, fd;
 	struct mgr_msg  m;

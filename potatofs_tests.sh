@@ -17,13 +17,17 @@ cp mgr.pl.sample "$basepath/mgr.pl"
 mountpoint="$basepath/mnt"
 datapath="$basepath/data"
 conf="$basepath/conf"
+
+# We don't want the purger to kick in here since we need to
+# inspect the on-disk slabs after our tests. We also disable the
+# purger process in the potatomgr invocation.
 cat > "$conf" << EOF
 data_dir: $datapath
 mgr_socket_path: $datapath/potatomgr.sock
 backend: $basepath/mgr.pl
 slab_max_age: 60
-unclaim_purge_threshold_pct: 90
-purge_threshold_pct: 0
+unclaim_purge_threshold_pct: 100
+purge_threshold_pct: 100
 EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
