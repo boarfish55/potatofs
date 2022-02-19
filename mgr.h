@@ -25,14 +25,9 @@
 #include "counters.h"
 #include "fs_info.h"
 #include "exlog.h"
+#include "slabs.h"
 
-struct slab_key {
-	int   itbl;
-	ino_t ino;
-	off_t offset;
-};
-
-struct slab_val {
+struct slabdb_val {
 	uint64_t        revision;
 	uint32_t        header_crc;
 	uuid_t          owner;
@@ -74,29 +69,19 @@ struct mgr_msg {
 
 	union {
 		struct {
-			uint32_t flags;
-			uint32_t oflags;
-
-			/*
-			 * If SLAB_ITBL is set in flags, ino will be used to
-			 * select which inode table to claim, offset will be
-			 * unused.
-			 */
-			ino_t    ino;
-			off_t    offset;
+			struct slab_key key;
+			uint32_t        oflags;
 		} claim;
 
 		struct {
-			ino_t    ino;
-			off_t    offset;
+			struct slab_key key;
 		} unclaim;
 
 		struct fs_info fs_info;
-
 		uint8_t        fs_error;
 
 		struct {
-			ino_t    ino;
+			ino_t    base;
 			uint32_t oflags;
 		} claim_next_itbl;
 

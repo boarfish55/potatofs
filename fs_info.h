@@ -34,6 +34,12 @@ struct fs_info {
 	uuid_t          instance_id;
 	size_t          slab_size;
 
+	/*
+	 * Note that we use the f_files, f_ffree and f_favail fields
+	 * to track how many entries are available in the slabdb.
+	 * This essentially tells us how many slabs the filesystem can
+	 * hold globally.
+	 */
 	struct statvfs  stats;
 	struct timespec stats_last_update;
 

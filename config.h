@@ -67,19 +67,21 @@
 #define DEFAULT_PURGE_PCT         60
 
 /*
- * The block size is used for block headers and inode table headers.
- * It's the file I/O size used when potatofs is dealing with its own metadata.
+ * The block size is used for block headers and inode table headers. It's the
+ * file I/O size used when potatofs is dealing with its own metadata. This
+ * shouldn't be changed without careful testing. It's closely related to the
+ * SLAB_SIZE_* definitions below. See also slabs.h and inodes.h.
  */
 #define FS_BLOCK_SIZE 4096
 
 /*
  * Upper/lower bounds on the configured slab size. Must a power of two and
  * no larger than 64 megabytes. Other values might work but require
- * reviewing some of the math in the other structures. A few things to
+ * reviewing some of the math in the other structures. Among things to
  * consider:
  *   - The inode table header, which contains a bitmap of all blocks
  *     in a slab, has to fit in the 'data' space left in the slab header,
- *     which is (FS_BLOCK_SIZE - slab header size).
+ *     which is sizeof(struct slab_hdr), minus header field sizes.
  *   - ...
  */
 #define SLAB_SIZE_FLOOR         1048576

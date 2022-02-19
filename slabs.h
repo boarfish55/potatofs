@@ -28,23 +28,46 @@
 #include "slabs.h"
 #include "util.h"
 
+struct slab_key {
+	/*
+	 * Used in structures that index slabs, as the key to be
+	 * indexed or sorted.
+	 *
+	 * When used to reference an inode table, ino is always set to
+	 * zero and base is set to the first inode contained in the slab.
+	 *
+	 * If inode tables can contain 2048 inodes, the first inode table
+	 * would have a base of 1, the second a base of 2049 and so on.
+	 *
+	 * For slab containing file data, the base references the first
+	 * zero-indexed byte contained in the slab, e.g. 0, 8388608 and so
+	 * on for 8MB-sized slabs. In this case, ino is the inode of the
+	 * file.
+	 */
+	ino_t ino;
+	off_t base;
+};
+
 /*
- * Slabs can either contain file data, inode tables or directory
- * entries. the itbl_hdr and dir_hdr fields contain things specific
- * to each when we're dealing with that type of slab, or empty otherwise.
+ * Slabs can either contain file data or inode tables. The slab_itbl_hdr
+ * (see below) holds data specific to inode tables and is stored
+ * into the data field. Otherwise data is empty. In any case, we keep
+ * the slab header size as FS_BLOCK_SIZE to align with the underlying
+ * filesystem to avoid read on write.
  */
 struct slab_hdr {
 #define SLAB_VERSION 1
 	union {
-		struct slab_hdr_fields {
+		struct {
 			/*
 			 * Increment the SLAB_VERSION definition anytime we
 			 * modify this structure.
 			 */
-			uint32_t slab_version;
+			uint32_t        slab_version;
 
-			uint32_t checksum;
-			uint32_t flags;
+			uint32_t        checksum;
+			struct slab_key key;
+			uint32_t        flags;
 
 			/*
 			 * This is populated by the slab manager only, after
@@ -75,18 +98,20 @@ struct slab_hdr {
 		char padding[FS_BLOCK_SIZE];
 	} v;
 /* slab flags */
-#define SLAB_ITBL    0x00000001
-#define SLAB_DIRTY   0x00000002
-#define SLAB_REMOVED 0x00000004
+#define SLAB_DIRTY   0x00000001
+#define SLAB_REMOVED 0x00000002
 };
 
 struct slab_itbl_hdr {
 	/*
-	 * Base is the number of the first inode in this
-	 * table. Each bit indicates whether the inode is allocated or not.
+	 * Each bit indicates whether the inode is allocated or not. Because
+	 * an inode is sized after our FS_BLOCK_SIZE, the slab can fit as many
+	 * inodes as the slab ceiling size, divided by the fs block size.
+	 * The bitmap must be be able to fit that many bits.
 	 */
-	ino_t    base;
-	uint32_t bitmap[SLAB_SIZE_CEIL / FS_BLOCK_SIZE / 32];
+	uint8_t  initialized;
+	uint32_t bitmap[SLAB_SIZE_CEIL / FS_BLOCK_SIZE /
+	    (sizeof(uint32_t) * 8)];
 	uint32_t n_free;
 };
 
@@ -96,20 +121,11 @@ struct oslab {
 	 * mutex, and cannot be modified outside that context.
 	 */
 
-	/*
-	 * ino and base are used as the SPLAY keys, as well as the
-	 * SLAB_ITBL hdr flag. ino is always zero in the case
-	 * of SLAB_ITBL. base represents either the first inode contained
-	 * in an inode table, or the first byte in a slab.
-	 *
-	 */
-	ino_t              ino;
-	off_t              base;
 	SPLAY_ENTRY(oslab) entry;
-
 	TAILQ_ENTRY(oslab) lru_entry;
 	TAILQ_ENTRY(oslab) itbl_entry;
 
+	struct slab_hdr    hdr;
 	uint64_t           refcnt;
 	int                fd;
 
@@ -125,8 +141,6 @@ struct oslab {
 
 	/* Set to 1 if we have non-fsync()'d data */
 	int                dirty;
-
-	struct slab_hdr    hdr;
 
 	/*
 	 * Used for inode tables, since they need serialized access
@@ -147,9 +161,8 @@ int slab_make_dirs(struct exlog_err *);
  * Computes the path/filename of a slab based on the slab type
  * and inode (for data slabs) or base inode (for itbl slabs).
  */
-int slab_path(char *, size_t, ino_t, off_t, uint32_t, int, struct exlog_err *);
-int slab_parse_path(const char *, uint32_t *, ino_t *, off_t *,
-        struct exlog_err *);
+int slab_path(char *, size_t, struct slab_key *, int, struct exlog_err *);
+int slab_parse_path(const char *, struct slab_key *, struct exlog_err *);
 
 /*
  * Returns a pointer to a slab which can be passed to other slab_*
@@ -170,7 +183,7 @@ int slab_parse_path(const char *, uint32_t *, ino_t *, off_t *,
  * periodically disowned, at which point the underlying file descriptor is
  * closed.
  */
-struct oslab *slab_load(ino_t, off_t, uint32_t, uint32_t, struct exlog_err *);
+struct oslab *slab_load(struct slab_key *, uint32_t, struct exlog_err *);
 int           slab_forget(struct oslab *, struct exlog_err *);
 
 /*
@@ -185,8 +198,11 @@ int           slab_close_itbl(struct oslab *, struct exlog_err *);
 size_t        slab_itbls(ino_t *, size_t, struct exlog_err *);
 
 /* Must be called while the slab bytes_lock is held */
-int   slab_inode_free(struct slab_itbl_hdr *, ino_t);
-ino_t slab_find_free_inode(struct slab_itbl_hdr *);
+int   slab_itbl_is_free(struct oslab *, ino_t);
+ino_t slab_find_free_inode(struct oslab *);
+ino_t slab_itbl_find_unallocated(struct oslab *);
+void  slab_itbl_dealloc(struct oslab *, ino_t);
+void  slab_itbl_alloc(struct oslab *, ino_t);
 
 /*
  * Used to access the inode-specific header; if any changes are made,
@@ -230,12 +246,16 @@ size_t  slab_get_max_size();
 /* Returns how many inodes at most can be contained in a slab. */
 size_t  slab_inode_max();
 
+/* Populates a slab_key from inode/offset/flags */
+struct slab_key *slab_key(struct slab_key *, ino_t, off_t);
+int              slab_key_valid(struct slab_key *, struct exlog_err *);
+
 /* Loop over all local slabs and perform a function. */
 int     slab_loop_files(void (*)(const char *), struct exlog_err *);
 
 /* To be used for testing only, acquires no lock */
-struct oslab *slab_disk_inspect(ino_t, off_t, uint32_t, struct exlog_err *);
-void         *slab_inspect(ino_t, off_t, uint32_t, uint32_t,
-                  struct slab_hdr *, ssize_t *, struct exlog_err *);
+struct oslab *slab_disk_inspect(struct slab_key *, struct exlog_err *);
+void         *slab_inspect(struct slab_key *, uint32_t, struct slab_hdr *,
+                  ssize_t *, struct exlog_err *);
 
 #endif

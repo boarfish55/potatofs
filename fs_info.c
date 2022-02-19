@@ -82,6 +82,10 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		fs_info.stats.f_bfree = 0;
 		fs_info.stats.f_bavail = 0;
 
+		/*
+		 * We use the number of inodes to instead track
+		 * how many slabs we have allocated in our filesystem.
+		 */
 		fs_info.stats.f_files = 0;
 		fs_info.stats.f_ffree = 0;
 		fs_info.stats.f_favail = 0;

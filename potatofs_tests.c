@@ -334,6 +334,32 @@ check_utime_gte(const char *p, struct timespec *mintime, uint16_t what)
 }
 
 char *
+test_slab_size()
+{
+	char            msg[LINE_MAX];
+	struct slab_hdr hdr;
+	size_t          hdr_data_sz;
+
+	if (sizeof(struct slab_hdr) != FS_BLOCK_SIZE) {
+		snprintf(msg, sizeof(msg),
+		    "struct slab_hdr size (%lu) is not equal to the "
+		    "filesystem block size (%d)", sizeof(struct slab_hdr),
+		    FS_BLOCK_SIZE);
+		return ERR(msg, 0);
+	}
+
+	hdr_data_sz = sizeof(hdr) - (hdr.v.f.data - (char *)&hdr);
+	if (sizeof(struct slab_itbl_hdr) > hdr_data_sz) {
+		snprintf(msg, sizeof(msg),
+		    "struct slab_itbl_hdr's size (%lu) does not fit in "
+		    "the struct slab_hdr's additional data area (%lu)",
+		    sizeof(struct slab_itbl_hdr), hdr_data_sz);
+		return ERR(msg, 0);
+	}
+	return NULL;
+}
+
+char *
 test_mounted()
 {
 	struct stat st_want;
@@ -609,6 +635,7 @@ test_file_size_and_mtime()
 	off_t             sz, bsize;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	struct oslab     *b;
+	struct slab_key   sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -662,7 +689,7 @@ test_file_size_and_mtime()
 	if (close(fd) == -1)
 		return ERR("", errno);
 
-	if ((b = slab_disk_inspect(st.st_ino, sz, 0, &e)) == NULL) {
+	if ((b = slab_disk_inspect(slab_key(&sk, st.st_ino, sz), &e)) == NULL) {
 		exlog_prt(&e);
 		return ERR("failed to inspect slab", 0);
 	}
@@ -1186,6 +1213,7 @@ test_file_content()
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	char              msg[PATH_MAX + 1024];
 	ino_t             ino;
+	struct slab_key   sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -1237,7 +1265,7 @@ test_file_content()
 	 * are exhausted in the inode. For the inline bytes, they should
 	 * be \0, since they're actually stored in the inode.
 	 */
-	if (slab_path(path, sizeof(path), ino, 0, 0, 0, &e) == -1) {
+	if (slab_path(path, sizeof(path), slab_key(&sk, ino, 0), 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1290,8 +1318,8 @@ test_file_content()
 	/*
 	 * The second slab should be all 'c'.
 	 */
-	if (slab_path(path, sizeof(path), ino,
-	    SLAB_SIZE_DEFAULT, 0, 0, &e) == -1) {
+	if (slab_path(path, sizeof(path),
+	    slab_key(&sk, ino, SLAB_SIZE_DEFAULT), 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1387,6 +1415,7 @@ test_fallocate_large()
 	char              path[PATH_MAX];
 	char              msg[PATH_MAX + 1024];
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct slab_key   sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -1403,8 +1432,8 @@ test_fallocate_large()
 
 	close(fd);
 
-	if (slab_path(path, sizeof(path), st.st_ino,
-	    slab_get_max_size(), 0, 0, &e) == -1) {
+	if (slab_path(path, sizeof(path),
+	    slab_key(&sk, st.st_ino, slab_get_max_size()), 0, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("failed to get slab path", 0);
 	}
@@ -1597,6 +1626,10 @@ struct potatofs_test {
 	char *(*fn)();
 } tests[] = {
 	{
+		"slab size",
+		&test_slab_size
+	},
+	{
 		"long (truncated) error message",
 		&test_exlog_over_line_max
 	},
@@ -1786,7 +1819,7 @@ main(int argc, char **argv)
 
 	config_read();
 
-	if (argc - optind < 1) {
+	if (optind >= argc) {
 		usage();
 		exit(1);
 	}
@@ -1798,6 +1831,11 @@ main(int argc, char **argv)
 
 	if (snprintf(mnt, sizeof(mnt), "%s", argv[optind++]) >= sizeof(mnt))
 		errx(1, "error: mount point path too long");
+
+	if (optind >= argc) {
+		usage();
+		exit(1);
+	}
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");

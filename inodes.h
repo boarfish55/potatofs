@@ -27,9 +27,16 @@
 #include "exlog.h"
 #include "slabs.h"
 
+/*
+ * For performance, we size inodes to be equal to FS_BLOCK_SIZE.
+ * This also leaves almost 4k bytes for the beginning of the file or directory,
+ * which can be held directly in the inode, and therefore in the inode table.
+ * For a filesystem containing lots of small files, this can save us a lot
+ * time by avoiding having to pull many slabs from the backend.
+ */
 struct inode {
 	union {
-		struct inode_fields {
+		struct {
 			dev_t           dev;
 			ino_t           inode;
 			mode_t          mode;
@@ -47,8 +54,16 @@ struct inode {
 			 * since they use the same lock.
 			 */
 			off_t           size;
+
+			/*
+			 * We can fit up to what's left of the full
+			 * block size in 'data'. This field must be the
+			 * last in this struct, as it will use space
+			 * from of the padding.
+			 */
+			char            data[1];
 		} f;
-		char data[FS_BLOCK_SIZE];
+		char padding[FS_BLOCK_SIZE];
 	} v;
 #define INODE_ATTR_MODE  (1 << 0)
 #define INODE_ATTR_UID   (1 << 1)
@@ -121,7 +136,8 @@ struct inode_splice_bufvec {
 /*
  * No locks acquired; static result.
  */
-off_t inode_max_inline_b();
+off_t  inode_max_inline_b();
+char  *inode_data(struct inode *);
 
 /*
  * Only acquires slab locks. The inode isn't actually loaded at any point.
