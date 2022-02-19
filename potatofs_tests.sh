@@ -29,7 +29,7 @@ EOF
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
-./potatomgr -c "$conf" -w 1 -W 1 -p "$basepath/potatomgr.pid"
+./potatomgr -c "$conf" -w 1 -W 1 -S 0 -P 0 -p "$basepath/potatomgr.pid"
 ./potatofs -o cfg_path="$conf" "$mountpoint" &
 for i in 1 2 3 4 5; do
 	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then

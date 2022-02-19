@@ -2080,7 +2080,7 @@ main(int argc, char **argv)
 	int                 workers = 12, n;
 	int                 bgworkers = 1;
 	int                 purger_interval = 60;
-	int                 scrubber_interval = 60;
+	int                 scrubber_interval = 3600;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
 	char                mdb_path[PATH_MAX];
