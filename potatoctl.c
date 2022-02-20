@@ -50,7 +50,7 @@ static int  top(int, char **);
 static int  dump_counters(int, char **);
 static int  df(int, char **);
 static void usage();
-static int  load_dir(char **, struct inode *);
+static int  load_dir(int, char **, struct inode *);
 static void print_inode(struct inode *, int);
 static void print_slab_hdr(struct slab_hdr *);
 
@@ -142,12 +142,12 @@ read_metrics(uint64_t *counters_now)
 }
 
 int
-valid_inode(ino_t ino)
+valid_inode(int mgr, ino_t ino)
 {
 	struct inode     inode;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 
-	if (inode_inspect(ino, &inode, &e) == -1) {
+	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
 		exlog_prt(&e);
 		return 0;
 	}
@@ -160,7 +160,7 @@ valid_inode(ino_t ino)
 }
 
 int
-fsck_inode(ino_t ino, int unallocated, struct inode *inode,
+fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
     struct fsck_stats *stats)
 {
 	struct dir_entry *de;
@@ -196,7 +196,7 @@ fsck_inode(ino_t ino, int unallocated, struct inode *inode,
 
 	stats->n_dirs++;
 
-	if (load_dir(&dir, inode) == -1) {
+	if (load_dir(mgr, &dir, inode) == -1) {
 		stats->errors++;
 		return -1;
 	}
@@ -205,7 +205,7 @@ fsck_inode(ino_t ino, int unallocated, struct inode *inode,
 	    (char *)de < (dir + inode->v.f.size); de++) {
 		if (de->inode > 0) {
 			stats->n_dirents++;
-			if (!valid_inode(ino))
+			if (!valid_inode(mgr, ino))
 				stats->errors++;
 		}
 		if (de->next > 0 && de->next <= ((char *)de - dir)) {
@@ -260,17 +260,16 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct exlog_err *e)
  * to keep looping, though that current inode table had an issue.
  */
 static struct inode *
-fsck_load_next_itbl(int mgr, struct slab_hdr *hdr,
+fsck_load_next_itbl(int mgr, struct oslab *b,
     off_t *itbl_sz, struct exlog_err *e)
 {
 	struct mgr_msg  m;
 	ssize_t         r;
 	struct inode   *itbl = NULL;
-	struct oslab    b;
 	int             fd;
 
 	m.m = MGR_MSG_CLAIM_NEXT_ITBL;
-	m.v.claim_next_itbl.base = hdr->v.f.key.base;
+	m.v.claim_next_itbl.base = b->hdr.v.f.key.base;
 	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE | OSLAB_SYNC;
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		return NULL;
@@ -281,7 +280,7 @@ fsck_load_next_itbl(int mgr, struct slab_hdr *hdr,
 	if (m.m == MGR_MSG_CLAIM_NEXT_ITBL_END) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no more inode tables after %lu",
-		    __func__, hdr->v.f.key.base);
+		    __func__, b->hdr.v.f.key.base);
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
@@ -289,68 +288,58 @@ fsck_load_next_itbl(int mgr, struct slab_hdr *hdr,
 		return NULL;
 	}
 
-	b.fd = fd;
+	b->fd = fd;
 
-	if (slab_read_hdr(&b, e) == -1) {
-		exlog_prt(e);
-		exlog_zerr(e);
+	if (slab_read_hdr(b, e) == -1)
+		goto end;
+
+	if (b->hdr.v.f.key.ino != m.v.claim.key.ino ||
+	    b->hdr.v.f.key.base != m.v.claim.key.base) {
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
+		    "slab header's ino/base (%lu / %lu) does not match "
+		    "what the slabdb contains (%lu / %lu)",
+		    b->hdr.v.f.key.ino, b->hdr.v.f.key.base,
+		    m.v.claim.key.ino, m.v.claim.key.base);
 		goto end;
 	}
 
-	if (b.hdr.v.f.key.ino != 0 ||
-	    b.hdr.v.f.key.base != hdr->v.f.key.base) {
-		warnx("slab header's ino/base (0 / %lu) does not match "
-		    "what we requested (%lu / %lu)",
-		    b.hdr.v.f.key.ino, b.hdr.v.f.key.base,
-		    hdr->v.f.key.base);
+	if (b->hdr.v.f.slab_version != SLAB_VERSION) {
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
+		    "unrecognized data format version: base=%lu, "
+		    "version=%u", b->hdr.v.f.key.base, b->hdr.v.f.slab_version);
 		goto end;
 	}
 
-	if (b.hdr.v.f.slab_version != SLAB_VERSION) {
-		warnx("unrecognized data format version: base=%lu, "
-		    "version=%u", b.hdr.v.f.key.base, b.hdr.v.f.slab_version);
+	if (verify_checksum(b->fd, &b->hdr, e) == -1)
 		goto end;
-	}
-
-	if (verify_checksum(b.fd, &b.hdr, e) == -1) {
-		exlog_prt(e);
-		exlog_zerr(e);
-		goto end;
-	}
 
 	/*
 	 * Load entire itbl in memory so we can close it.
 	 * Otherwise we'll have flock() deadlock.
 	 */
-	memcpy(hdr, &b.hdr, sizeof(struct slab_hdr));
-	if ((*itbl_sz = slab_size(&b, e)) == ULONG_MAX) {
-		exlog_prt(e);
-		exlog_zerr(e);
+	if ((*itbl_sz = slab_size(b, e)) == ULONG_MAX)
 		goto end;
-	}
+
 	if ((itbl = malloc(*itbl_sz)) == NULL)
 		err(1, "malloc");
 
-	if ((r = slab_read(&b, itbl, 0, *itbl_sz, e)) < *itbl_sz) {
+	if ((r = slab_read(b, itbl, 0, *itbl_sz, e)) < *itbl_sz) {
 		free(itbl);
 		itbl = NULL;
-		if (r == -1) {
-			exlog_prt(e);
-			exlog_zerr(e);
+		if (r == -1)
 			goto end;
-		}
-		warnx("slab shrunk after fstat()");
+		exlog_errf(e, EXLOG_APP, EXLOG_IO, "slab shrunk after fstat()");
 	}
 end:
 	m.m = MGR_MSG_UNCLAIM;
-	memcpy(&m.v.unclaim.key, &b.hdr.v.f.key.ino, sizeof(struct slab_key));
-	if (mgr_send(mgr, b.fd, &m, e) != -1 &&
+	memcpy(&m.v.unclaim.key, &b->hdr.v.f.key, sizeof(struct slab_key));
+	if (mgr_send(mgr, b->fd, &m, e) != -1 &&
 	    mgr_recv(mgr, NULL, &m, e) != -1 &&
 	    m.m != MGR_MSG_UNCLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response: %d", __func__, m.m);
 	}
-	close(b.fd);
+	close(b->fd);
 	return itbl;
 }
 
@@ -377,7 +366,7 @@ fsck(int argc, char **argv)
 
 	bzero(&b, sizeof(b));
 	for (;;) {
-		if ((itbl = fsck_load_next_itbl(mgr, &b.hdr,
+		if ((itbl = fsck_load_next_itbl(mgr, &b,
 		    &itbl_sz, &e)) == NULL) {
 			if (exlog_fail(&e)) {
 				if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
@@ -411,7 +400,7 @@ fsck(int argc, char **argv)
 			}
 
 			is_free = slab_itbl_is_free(&b, ino);
-			fsck_inode(ino, is_free,
+			fsck_inode(mgr, ino, is_free,
 			    ((slab_end) ? NULL : inode), &stats);
 			if (is_free)
 				n_free++;
@@ -732,12 +721,12 @@ fail:
  * all slabs tied to that inode.
  */
 int
-load_dir(char **data, struct inode *inode)
+load_dir(int mgr, char **data, struct inode *inode)
 {
 	off_t             offset, slab_sz;
 	ssize_t           r;
 	ino_t             ino = inode->v.f.inode;
-	int               mgr, fd;
+	int               fd;
 	struct mgr_msg    m;
 	struct oslab     *b;
 	char              path[PATH_MAX];
@@ -757,31 +746,25 @@ load_dir(char **data, struct inode *inode)
 		return 0;
 	}
 
-	if ((mgr = mgr_connect(&e)) == -1) {
-		exlog_prt(&e);
-		goto fail;
-	}
-
 	for (; offset < inode->v.f.size; offset += r) {
 		m.m = MGR_MSG_CLAIM;
-		m.v.claim.key.ino = ino;
-		m.v.claim.key.base = offset;
+		slab_key(&m.v.claim.key, ino, offset);
 		m.v.claim.oflags = OSLAB_NOCREATE;
 
 		if (mgr_send(mgr, -1, &m, &e) == -1) {
 			exlog_prt(&e);
-			goto fail_close_mgr;
+			goto fail;
 		}
 
 		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
 			exlog_prt(&e);
-			goto fail_close_mgr;
+			goto fail;
 		}
 
 		if (m.m != MGR_MSG_CLAIM_OK) {
 			warnx("failed to claim slab for inode %lu "
 			    "at offset %lu: resp=%d", ino, offset, m.m);
-			goto fail_close_mgr;
+			goto fail;
 		}
 
 		if ((b = calloc(1, sizeof(struct oslab))) == NULL)
@@ -845,20 +828,15 @@ load_dir(char **data, struct inode *inode)
 			break;
 	}
 
-	close(mgr);
-
 	if (offset < inode->v.f.size) {
 		warnx("inode %lu is truncated; data might be incomplete", ino);
 		return -1;
 	}
 	*data = d;
 	return 0;
-
 fail_free_slab:
 	close(b->fd);
 	free(b);
-fail_close_mgr:
-	close(mgr);
 fail:
 	free(d);
 	*data = NULL;
@@ -877,6 +855,7 @@ show_inode(int argc, char **argv)
 	size_t            slab_sz;
 	char              path[PATH_MAX];
 	struct slab_key   sk;
+	int               mgr;
 
 	if (argc < 1) {
 		usage();
@@ -886,7 +865,12 @@ show_inode(int argc, char **argv)
 	if ((ino = strtoull(argv[0], NULL, 10)) == ULLONG_MAX)
 		errx(1, "inode provided is invalid");
 
-	if (inode_inspect(ino, &inode, &e) == -1) {
+	if ((mgr = mgr_connect(&e)) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
 		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			errx(1, "inode is not allocated");
 		exlog_prt(&e);
@@ -904,7 +888,7 @@ show_inode(int argc, char **argv)
 			exit(1);
 		}
 
-		if ((data = slab_inspect(slab_key(&sk, ino, i),
+		if ((data = slab_inspect(mgr, slab_key(&sk, ino, i),
 		    OSLAB_NOCREATE, &hdr, &slab_sz, &e)) == NULL) {
 			exlog_prt(&e);
 			exit(1);
@@ -930,6 +914,8 @@ show_inode(int argc, char **argv)
 		printf("\n");
 	}
 
+	close(mgr);
+
 	if (i < inode.v.f.size)
 		warnx("  ** inode is truncated; data might be incomplete");
 	return 0;
@@ -939,7 +925,7 @@ int
 show_dir(int argc, char **argv)
 {
 	struct slab_hdr   hdr;
-	int               n;
+	int               n, mgr;
 	off_t             i;
 	ino_t             ino;
 	struct inode      inode;
@@ -961,7 +947,12 @@ show_dir(int argc, char **argv)
 	if (ino < 1)
 		errx(1, "inode must be greater than zero");
 
-	if (inode_inspect(ino, &inode, &e) == -1) {
+	if ((mgr = mgr_connect(&e)) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
 		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			errx(1, "inode is not allocated");
 		exlog_prt(&e);
@@ -986,7 +977,7 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 
 	for (; i < inode.v.f.size; i += slab_sz) {
-		if ((slab_data = slab_inspect(&sk, OSLAB_NOCREATE, &hdr,
+		if ((slab_data = slab_inspect(mgr, &sk, OSLAB_NOCREATE, &hdr,
 		    &slab_sz, &e)) == NULL) {
 			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_zerr(&e);
@@ -1014,6 +1005,8 @@ show_dir(int argc, char **argv)
 		memcpy(data + i, slab_data, slab_sz);
 		free(slab_data);
 	}
+
+	close(mgr);
 
 	if (i < inode.v.f.size)
 		warnx("  ** inode is truncated; data might be incomplete");
@@ -1043,6 +1036,8 @@ print_slab_hdr(struct slab_hdr *hdr)
 	printf("    slab_version:    %u\n", hdr->v.f.slab_version);
 	printf("    checksum:        %u\n", hdr->v.f.checksum);
 	printf("    revision:        %lu\n", hdr->v.f.revision);
+	printf("    inode / base:    %lu / %lu%s\n", hdr->v.f.key.ino,
+	    hdr->v.f.key.base, (hdr->v.f.key.ino) ? "" : " (itbl)");
 	printf("    flags:          ");
 	if (hdr->v.f.flags & SLAB_DIRTY)
 		printf(" dirty");

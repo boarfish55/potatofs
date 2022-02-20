@@ -1240,7 +1240,7 @@ fail:
  * Inspect the inode fields and inline data.
  */
 int
-inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
+inode_disk_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 {
 	struct oslab     b;
 	char            *data;
@@ -1252,6 +1252,42 @@ inode_inspect(ino_t ino, struct inode *inode, struct exlog_err *e)
 
 	if ((data = slab_disk_inspect(slab_key(&sk, 0, ino), &b.hdr,
 	    &data_sz, e)) == NULL)
+		return -1;
+
+	if (slab_itbl_is_free(&b, ino)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
+		    "%s: no such inode allocated: %lu", __func__, ino);
+		goto fail;
+	}
+
+	if ((data + (ino - b.hdr.v.f.key.base) + sizeof(struct inode) >
+	    data + data_sz)) {
+		exlog_errf(e, EXLOG_APP, EXLOG_IO,
+		    "%s: short read while reading inode %lu", __func__, ino);
+		goto fail;
+	}
+	memcpy(inode, data + (ino - b.hdr.v.f.key.base) *
+	    sizeof(struct inode), sizeof(struct inode));
+	free(data);
+	return 0;
+fail:
+	free(data);
+	return -1;
+}
+
+int
+inode_inspect(int mgr, ino_t ino, struct inode *inode, struct exlog_err *e)
+{
+	struct oslab     b;
+	char            *data;
+	size_t           data_sz;
+	struct slab_key  sk;
+
+	bzero(inode, sizeof(struct inode));
+	bzero(&b, sizeof(struct oslab));
+
+	if ((data = slab_inspect(mgr, slab_key(&sk, 0, ino), OSLAB_NOCREATE,
+	    &b.hdr, &data_sz, e)) == NULL)
 		return -1;
 
 	if (slab_itbl_is_free(&b, ino)) {

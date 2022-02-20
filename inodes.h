@@ -208,6 +208,7 @@ void inode_shutdown();
 int  inode_startup();
 
 /* For testing only, acquires no lock */
-int inode_inspect(ino_t, struct inode *, struct exlog_err *);
+int inode_inspect(int, ino_t, struct inode *, struct exlog_err *);
+int inode_disk_inspect(ino_t, struct inode *, struct exlog_err *);
 
 #endif

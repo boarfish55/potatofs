@@ -583,9 +583,9 @@ slab_key_valid(struct slab_key *sk, struct exlog_err *e)
 	} else {
 		if (sk->base % slab_get_max_size() != 0)
 			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-			    "%s: inode has base %lu that is not a multiple "
+			    "%s: inode %lu has base %lu that is not a multiple "
 			    "of slab_get_max_size() (%lu)",
-			    __func__, sk->base, slab_get_max_size());
+			    __func__, sk->ino, sk->base, slab_get_max_size());
 	}
 	return 0;
 }
@@ -1100,52 +1100,49 @@ fail:
 }
 
 void *
-slab_inspect(struct slab_key *sk, uint32_t oflags, struct slab_hdr *hdr,
-    size_t *slab_sz, struct exlog_err *e)
+slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
+    struct slab_hdr *hdr, size_t *slab_sz, struct exlog_err *e)
 {
-	int             mgr, fd;
+	int             fd;
 	struct mgr_msg  m;
 	struct oslab   *b;
 	void           *data = NULL;
 	ssize_t         r;
-
-	if ((mgr = mgr_connect(e)) == -1)
-		return NULL;
 
 	m.m = MGR_MSG_CLAIM;
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = oflags;
 
 	if (mgr_send(mgr, -1, &m, e) == -1)
-		goto fail_close_mgr;
+		return NULL;
 
 	if (mgr_recv(mgr, &fd, &m, e) == -1)
-		goto fail_close_mgr;
+		return NULL;
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
 		    "%s: no such slab", __func__);
-		goto fail_close_mgr;
+		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, ((m.err != 0) ? m.err : EXLOG_MGR),
 		    "%s: bad manager response", __func__);
-		goto fail_close_mgr;
+		return NULL;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response; "
 		    "ino expected=%lu, received=%lu "
 		    "base expected=%lu, received=%lu", __func__,
 		    sk->ino, m.v.claim.key.ino, sk->base, m.v.claim.key.base);
-		goto fail_close_mgr;
+		return NULL;
 	} else if (fd == -1) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
 		    "%s: bad manager response; mgr returned fd -1", __func__);
-		goto fail_close_mgr;
+		return NULL;
 	}
 
 	if ((b = calloc(1, sizeof(struct oslab))) == NULL) {
 		exlog_errf(e, EXLOG_OS, errno, __func__);
-		goto fail_close_mgr;
+		return NULL;
 	}
 
 	b->fd = fd;
@@ -1195,14 +1192,11 @@ slab_inspect(struct slab_key *sk, uint32_t oflags, struct slab_hdr *hdr,
 
 	close(b->fd);
 	free(b);
-	close(mgr);
 	return data;
 fail_free_data:
 	free(data);
 fail_free_slab:
 	close(fd);
 	free(b);
-fail_close_mgr:
-	close(mgr);
 	return NULL;
 }

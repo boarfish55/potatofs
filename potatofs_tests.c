@@ -103,7 +103,7 @@ get_disk_inode(ino_t ino, struct stat *st, struct exlog_err *e)
 {
 	struct inode inode;
 
-	if (inode_inspect(ino, &inode, e) == -1)
+	if (inode_disk_inspect(ino, &inode, e) == -1)
 		return -1;
 	if (st != NULL)
 		inode_cp_stat(st, &inode);
@@ -122,7 +122,7 @@ check_stat(const char *p, struct stat *st_want, uint16_t what)
 		return ERR("", errno);
 
 	/* Check the data structure on disk */
-	if (inode_inspect(st.st_ino, &inode, &e) == -1) {
+	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("reading inode failed", 0);
 	}
@@ -1472,7 +1472,7 @@ test_many_inodes()
 		return ERR("", errno);
 	errno = 0;
 	while ((de = readdir(dir))) {
-		if (inode_inspect(de->d_ino, &inode, &e) == -1) {
+		if (inode_disk_inspect(de->d_ino, &inode, &e) == -1) {
 			exlog_prt(&e);
 			return ERR("reading inode failed", 0);
 		}
@@ -1499,7 +1499,7 @@ inode_reuse()
 		return ERR("", errno);
 	if (stat(p, &st) == -1)
 		return ERR("", errno);
-	if (inode_inspect(st.st_ino, &inode, &e) == -1) {
+	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("reading inode failed", 0);
 	}
@@ -1510,7 +1510,7 @@ inode_reuse()
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 
-	if (inode_inspect(st.st_ino, &inode, &e) == -1) {
+	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
 		exlog_prt(&e);
 		return ERR("reading inode failed", 0);
 	}

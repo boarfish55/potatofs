@@ -754,8 +754,12 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	struct statvfs  stv;
 	uint32_t        crc;
 
-	if (slab_key_valid(&m->v.unclaim.key, e) == -1)
-		return -1;
+	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
+		exlog(LOG_ERR, e, "%s", __func__);
+		exlog_zerr(e);
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: aborting", __func__);
+	}
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
@@ -1127,8 +1131,12 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	struct timespec tp = {0, 10000000};
 	int             open_retries = 1000;
 
-	if (slab_key_valid(&m->v.claim.key, e) == -1)
-		return -1;
+	if (slab_key_valid(&m->v.claim.key, e) == -1) {
+		exlog(LOG_ERR, e, "%s", __func__);
+		exlog_zerr(e);
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: aborting", __func__);
+	}
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -1409,15 +1417,14 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 	MDB_dbi          dbi;
 	MDB_cursor      *cursor;
 	MDB_val          mk, mv;
-	struct slab_key  k;
+	struct slab_key  sk;
 	struct mgr_msg   claim_msg;
 
-	bzero(&k, sizeof(k));
-	k.ino = 0;
-	k.base = m->v.claim_next_itbl.base;
+	bzero(&sk, sizeof(sk));
+	sk.base = m->v.claim_next_itbl.base;
 
-	mk.mv_size = sizeof(k);
-	mk.mv_data = &k;
+	mk.mv_size = sizeof(sk);
+	mk.mv_data = &sk;
 
 	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn))) {
 		exlog(LOG_ERR, NULL, "%s: mdb_txn_begin: %s",
@@ -1439,7 +1446,16 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail;
 	}
 
-	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT))) {
+	/*
+	 * Because we work with a new cursor on every MGR_MSG_CLAIM_NEXT_ITBL
+	 * message, we need to start with MDB_SET_RANGE, compare if we the
+	 * entry we're at is greater than what we expected, and do MDB_NEXT
+	 * if it is not. Moreover, we must ensure to stop if we start looping
+	 * over inodes greater than zero, meaning we're no longer looping
+	 * over inode tables.
+	 */
+	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_SET_RANGE))) {
+		mdb_cursor_close(cursor);
 		mdb_txn_abort(txn);
 		if (r == MDB_NOTFOUND) {
 			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
@@ -1450,16 +1466,40 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail;
 	}
 
-	k.ino = ((struct slab_key *)mk.mv_data)->ino;
-	k.base = ((struct slab_key *)mk.mv_data)->base;
+	if ((r = memcmp(&sk, (struct slab_key *)mk.mv_data,
+	    sizeof(struct slab_key))) == 0) {
+		if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT))) {
+			mdb_cursor_close(cursor);
+			mdb_txn_abort(txn);
+			if (r == MDB_NOTFOUND) {
+				m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
+				if (mgr_send(c, -1, m, e) == -1)
+					return -1;
+				return 0;
+			}
+			goto fail;
+		}
+	}
+
+	sk.ino = ((struct slab_key *)mk.mv_data)->ino;
+	sk.base = ((struct slab_key *)mk.mv_data)->base;
+
+	if (sk.ino > 0 || sk.base < m->v.claim_next_itbl.base) {
+		mdb_cursor_close(cursor);
+		mdb_txn_abort(txn);
+		m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
+		if (mgr_send(c, -1, m, e) == -1)
+			return -1;
+		return 0;
+	}
 
 	mdb_cursor_close(cursor);
 	mdb_txn_abort(txn);
 
 	claim_msg.m = MGR_MSG_CLAIM;
 	claim_msg.v.claim.oflags = m->v.claim_next_itbl.oflags;
-	claim_msg.v.claim.key.ino = k.ino;
-	claim_msg.v.claim.key.base = k.base;
+	claim_msg.v.claim.key.ino = sk.ino;
+	claim_msg.v.claim.key.base = sk.base;
 
 	return claim(c, &claim_msg, e);
 fail:
