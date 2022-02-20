@@ -5,14 +5,13 @@ fatal() {
 	exit 1
 }
 
-basepath="$(mktemp -d -t potatofs.XXXXXX)"
-
+basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 
 [ -x ./potatofs ] || fatal "potatofs is not found or executable"
 [ -x ./potatofs_tests ] || fatal "potatofs_tests is not found or executable"
 [ -d "$basepath" ] || fatal "temp dir not found"
 
-cp mgr.pl.sample "$basepath/mgr.pl"
+cp backends/backend_cp.sh "$basepath/backend"
 
 mountpoint="$basepath/mnt"
 datapath="$basepath/data"
@@ -24,7 +23,7 @@ conf="$basepath/conf"
 cat > "$conf" << EOF
 data_dir: $datapath
 mgr_socket_path: $datapath/potatomgr.sock
-backend: $basepath/mgr.pl
+backend: $basepath/backend
 slab_max_age: 60
 unclaim_purge_threshold_pct: 100
 purge_threshold_pct: 100
@@ -59,7 +58,9 @@ echo "*** fsck ***"
 echo ""
 
 echo "*** cleanup ***"
-kill `cat $basepath/potatomgr.pid`
+pid=`cat $basepath/potatomgr.pid`
+kill $pid
+while kill -0 $pid 2>/dev/null; do sleep 1; done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	echo "Done."
