@@ -31,7 +31,7 @@ sub usage
 	print("\n");
 	print("           Output is <used bytes> / <total available bytes>\n");
 	print("\n");
-	print("       $appname get <slab name> <local path>\n");
+	print("       $appname get <slab name> <local path> <inode> <base>\n");
 	print("\n");
 	print("           <slab name> is the file name, local path is the \n" .
 	      "           absolute path of the slab file.\n");

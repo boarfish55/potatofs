@@ -1858,6 +1858,9 @@ main(int argc, char **argv)
 	if (sigaction(SIGPIPE, &act, NULL) == -1)
 		err(1, "sigaction");
 
+	if (getenv("POTATOFS_CONFIG"))
+		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
+
 	fs_config.uid = getuid();
 	fs_config.gid = getgid();
 

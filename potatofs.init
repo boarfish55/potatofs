@@ -1,0 +1,44 @@
+#!/bin/sh
+
+fatal() {
+	echo "error: $1" >&2
+	exit 1
+}
+
+basepath="/var/potatofs"
+datapath="$basepath/data"
+mountpoint="/mnt/potatofs"
+binpath=$HOME/potatofs/bin
+conf="$HOME/potatofs/config"
+pidfile=$basepath/potatomgr.pid
+
+[ -d "$mountpoint" ] || fatal "mountpoint not found"
+[ -d "$basepath" ] || fatal "base dir not found"
+[ -d "$datapath" ] || fatal "data dir not found"
+[ -x $binpath/potatofs ] || fatal "potatofs is not found or executable"
+[ -x $binpath/potatoctl ] || fatal "potatofs_tests is not found or executable"
+[ -x $binpath/potatomgr ] || fatal "potatofs_tests is not found or executable"
+
+case $1 in
+	start)
+		echo -n "* Starting potatomgr..."
+		$binpath/potatomgr -c $conf -p $pidfile
+		echo "OK."
+
+		echo -n "* fsck"
+		$binpath/potatoctl -c $conf fsck
+		echo ""
+
+		echo "* Mounting..."
+		$binpath/potatofs -o cfg_path=$conf $mountpoint
+		;;
+	stop)
+		fusermount -u $mountpoint
+		kill $pidfile
+		;;
+	*)
+		echo "Usage: $(basename $0) <start|stop>"
+		;;
+esac
+
+exit $?

@@ -48,6 +48,7 @@ static int  show_inode(int, char **);
 static int  fsck(int, char **);
 static int  top(int, char **);
 static int  dump_counters(int, char **);
+static int  dump_config(int, char **);
 static int  df(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *);
@@ -66,6 +67,7 @@ struct subc {
 	{ "inode", &show_inode, 0 },
 	{ "top", &top, 0 },
 	{ "counters", &dump_counters, 0 },
+	{ "config", &dump_config, 0 },
 	{ "df", &df, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -502,6 +504,33 @@ df(int argc, char **argv)
 	printf("  Usage:       %.1f / %.1f GiB (%.1f%%)\n", used, total,
 	    used * 100.0 / total);
 
+	return 0;
+}
+
+int
+dump_config(int argc, char **argv)
+{
+	// TODO: this should be pulled from the running filesystem
+	// eventually.
+	printf("uid:                         %u\n", fs_config.uid);
+	printf("gid:                         %u\n", fs_config.gid);
+	printf("dbg:                         %s\n",
+	    (fs_config.dbg) ? fs_config.dbg : "off");
+	printf("max_open_slabs:              %lu\n", fs_config.max_open_slabs);
+	printf("entry_timeouts:              %u\n", fs_config.entry_timeouts);
+	printf("slab_max_age:                %u\n", fs_config.slab_max_age);
+	printf("slab_size:                   %lu\n", fs_config.slab_size);
+	printf("noatime:                     %s\n",
+	    (fs_config.noatime) ? "true" : "false");
+	printf("data_dir:                    %s\n", fs_config.data_dir);
+	printf("mgr_sock_path:               %s\n", fs_config.mgr_sock_path);
+	printf("mgr_exec:                    %s\n", fs_config.mgr_exec);
+	printf("cfg_path:                    %s\n", fs_config.cfg_path);
+	printf("mdb_map_size:                %lu\n", fs_config.mdb_map_size);
+	printf("unclaim_purge_threshold_pct: %u\n",
+	    fs_config.unclaim_purge_threshold_pct);
+	printf("purge_threshold_pct:         %u\n",
+	    fs_config.purge_threshold_pct);
 	return 0;
 }
 
@@ -1148,6 +1177,9 @@ main(int argc, char **argv)
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	char             *data_dir = FS_DEFAULT_DATA_PATH;
 	char              opt;
+
+	if (getenv("POTATOFS_CONFIG"))
+		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
 	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
 		switch (opt) {

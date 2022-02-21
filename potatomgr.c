@@ -121,6 +121,9 @@ set_fs_error()
 		return -1;
 	}
 
+	// TODO: We'll need to inform the fs that we ran into an error.
+	//       Eventually the fs will provide a way for us to send it
+	//       messages directly.
 	fs_info.error = 1;
 
 	if (fs_info_write(&fs_info, &e) == -1) {
@@ -652,6 +655,12 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 	struct slab_hdr dst_hdr;
 	ssize_t         r;
 
+	/*
+	 * Retry open/flock() every 10ms, for 1000 times, thus 10s.
+	 */
+	struct timespec tp = {0, 10000000};
+	int             open_retries = 1000;
+
 	if (slab_path(name, sizeof(name), sk, 1, e) == -1)
 		return -1;
 
@@ -660,11 +669,23 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: outq slab name too long", __func__);
 
-	if ((dst_fd = open_wflock(dst,
-	    O_CREAT|O_WRONLY, 0600, LOCK_EX)) == -1) {
-		return exlog_errf(e, EXLOG_OS, errno, "%s: failed "
-		    "to open_wflock() outq slab %s", __func__, dst);
+	for (; open_retries > 0; open_retries--) {
+		if ((dst_fd = open_wflock(dst, O_CREAT|O_WRONLY, 0600,
+		    LOCK_EX|LOCK_NB)) == -1) {
+			if (errno == EWOULDBLOCK) {
+				nanosleep(&tp, NULL);
+				continue;
+			}
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: open_wflock() for slab %s", __func__, dst);
+		}
+		break;
 	}
+	if (open_retries == 0)
+		return exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
+		    "%s: open_wflock() timed out after multiple retries "
+		    "for slab %s; this should not happen unless something is "
+		    "stuck trying to send to the backend.", __func__, dst);
 
 	if (fstat(dst_fd, &st) == -1) {
 		exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
@@ -679,10 +700,11 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 			goto fail;
 		}
 		if (dst_hdr.v.f.revision >= hdr->v.f.revision) {
-			exlog(LOG_INFO, NULL, "%s: slab in outgoing dir has a "
-			    "revision greater or equal to this one: %s "
-			    "(revision %llu >= %llu)", __func__, dst,
-			    dst_hdr.v.f.revision, hdr->v.f.revision);
+			exlog(LOG_INFO, NULL, "%s: slab %s has a "
+			    "revision greater or equal to the one in our "
+			    "data dir (revision %llu >= %llu)",
+			    __func__, dst, dst_hdr.v.f.revision,
+			    hdr->v.f.revision);
 			goto end;
 		}
 	}
@@ -717,8 +739,9 @@ copy_again:
 		r = write_x(dst_fd, buf, r);
 		if (r == -1) {
 			if (errno == ENOSPC) {
-				exlog(LOG_ERR, NULL, "%s: ran out of space; "
-				    "retrying", __func__);
+				exlog(LOG_ERR, NULL, "%s: ran out of space "
+				    "while copying slab %s; retrying",
+				    __func__, dst);
 				sleep(5);
 				goto copy_again;
 			}
@@ -782,8 +805,20 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	if (hdr.v.f.flags & SLAB_DIRTY) {
 		hdr.v.f.revision++;
 		hdr.v.f.flags &= ~SLAB_DIRTY;
-		if (copy_outgoing_slab(fd, &m->v.unclaim.key, &hdr, e) == -1)
-			goto fail;
+		if (copy_outgoing_slab(fd, &m->v.unclaim.key, &hdr, e) == -1) {
+			if (exlog_err_is(e, EXLOG_MGR, EXLOG_BUSY)) {
+				exlog_zerr(e);
+				exlog(LOG_NOTICE, NULL, "%s: slab "
+				    "(ino=%lu / base=%lu) is "
+				    "being locked for a long time; is the "
+				    "backend responsive? Continuing anyway "
+				    "without sending to outgoing; "
+				    "the scrubber will pick it up later",
+				    __func__, m->v.unclaim.key.ino,
+				    m->v.unclaim.key.base);
+			} else
+				goto fail;
+		}
 
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 			exlog_errf(e, EXLOG_OS, errno,
@@ -821,23 +856,31 @@ fail:
 	exlog(LOG_ERR, e, "%s");
 	exlog_zerr(e);
 	m->m = MGR_MSG_UNCLAIM_ERR;
+	close(fd);
 	return mgr_send(c, -1, m, e);
 }
 
 static int
 backend_get(const char *local_path, const char *backend_path,
-    size_t *in_bytes, struct exlog_err *e)
+    size_t *in_bytes, struct slab_key *sk, struct exlog_err *e)
 {
-	char            *args[4];
+	char            *args[6];
 	int              wstatus;
 	char             stdout[1024], stderr[1024];
 	json_t          *j = NULL, *o;
 	json_error_t     jerr;
+	char             str_ino[21];
+	char             str_base[21];
+
+	snprintf(str_ino, sizeof(str_ino), "%020lu", sk->ino);
+	snprintf(str_base, sizeof(str_base), "%020lu", sk->base);
 
 	args[0] = "get";
 	args[1] = (char *)backend_path;
 	args[2] = (char *)local_path;
-	args[3] = NULL;
+	args[3] = str_ino;
+	args[4] = str_base;
+	args[5] = NULL;
 
 	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
 	    stderr, sizeof(stderr), e) == -1)
@@ -1040,9 +1083,6 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	if (lseek(src_fd, 0, SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: lseek src_fd", __func__);
-	if (lseek(dst_fd, 0, SEEK_SET) == -1)
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: lseek dst_fd", __func__);
 
 	if ((r = read_x(src_fd, &hdr, sizeof(hdr))) < sizeof(hdr)) {
 		if (r == -1)
@@ -1064,18 +1104,17 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		    revision, hdr.v.f.revision);
 	}
 
-	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc) {
+	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc)
 		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: mismatching header CRC: "
 		    "expected=%u, slab=%u", __func__, header_crc, crc);
-	}
 
 write_hdr_again:
-	if (clock_gettime(CLOCK_REALTIME, &hdr.v.f.last_claimed_at) == -1) {
-		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return -1;
-	}
-	if (write_x(dst_fd, &hdr, sizeof(hdr)) == -1) {
+	if (clock_gettime(CLOCK_REALTIME, &hdr.v.f.last_claimed_at) == -1)
+		return exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime",
+		    __func__);
+
+	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 		if (errno == ENOSPC) {
 			exlog(LOG_ERR, NULL, "%s: ran out of space during; "
 			    "retrying", __func__);
@@ -1084,10 +1123,15 @@ write_hdr_again:
 		}
 		return exlog_errf(e, EXLOG_OS, errno, "%s: write", __func__);
 	}
-
 	crc = crc32_z(0L, Z_NULL, 0);
 
 copy_again:
+	if (lseek(src_fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: lseek src_fd", __func__);
+	if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: lseek dst_fd", __func__);
 	while ((r = read_x(src_fd, buf, sizeof(buf)))) {
 		if (r == -1)
 			return exlog_errf(e, EXLOG_OS, errno,
@@ -1097,8 +1141,11 @@ copy_again:
 
 		if (write_x(dst_fd, buf, r) == -1) {
 			if (errno == ENOSPC) {
-				exlog(LOG_ERR, NULL, "%s: ran out of space; "
-				    "retrying", __func__);
+				exlog(LOG_ERR, NULL, "%s: ran out of space "
+				    "while copying slab with key "
+				    "ino=%lu / base=%lu; retrying",
+				    __func__, hdr.v.f.key.ino,
+				    hdr.v.f.key.base);
 				sleep(5);
 				goto copy_again;
 			}
@@ -1197,6 +1244,15 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * available worker to release it. The fs itself would normally never
 	 * cause this since it has its own locking around the claimed slab
 	 * and would never claim the same slab if it already has a claim on it.
+	 *
+	 * Note that we _never_ unlink dst during the claim process, even
+	 * if we error out. This is to ensure another process doesn't come
+	 * along, create a new file then lock it. Then we end up with
+	 * two processes each having a lock on their own instance of dst_fd,
+	 * but sharing a lock (therefore blocking) on the incoming_fd.
+	 *
+	 * TODO: We have to be sure the slabdb will not let anyone use an
+	 * incomplete download of a slab.
 	 */
 	for (; open_retries > 0; open_retries--) {
 		if ((dst_fd = open_wflock(dst, fd_flags,
@@ -1324,29 +1380,17 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		close(incoming_fd);
 		exlog_zerr(e);
 	} else if (errno != ENOENT) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock() for incoming slab %s",
-		    __func__, in_path);
+		exlog_errf(e, EXLOG_OS, errno, "%s: open_wflock() for "
+		    "incoming slab %s", __func__, in_path);
 		goto fail_close_dst;
 	}
 
 get_again:
-	if (backend_get(in_path, name, &in_bytes, e) == -1) {
-		if (m->v.claim.oflags & OSLAB_NOCREATE &&
-		    exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
-			unlink(dst);
-			close(dst_fd);
-			exlog_zerr(e);
-			m->m = MGR_MSG_CLAIM_NOENT;
-			if (mgr_send(c, -1, m, e) == -1) {
-				exlog(LOG_ERR, e, "%s", __func__);
-				goto fail;
-			}
-			return 0;
-		} else if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
+	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key, e) == -1) {
+		if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual
-			 * consistentcy?
+			 * consistentcy? Or the backend actually lost data.
 			 */
 			exlog_zerr(e);
 			exlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
@@ -1365,22 +1409,24 @@ get_again:
 	}
 	mgr_counter_add(MGR_COUNTER_BACKEND_IN_BYTES, in_bytes);
 
+	// TODO: dealock here? Something didn't unlock it somewhere
+	// I suspect many workers raced to copy this slab and stepped on each
+	// other...
+	// Do we actually need a lock on the incoming_fd since we hold one
+	// on the dst slab anyway?
 	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: failed to open_wflock "
 		    "after successful backend_get of %s", __func__, in_path);
-		unlink(dst);
 		goto fail_close_dst;
 	}
 	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 	    revision, e) == -1) {
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_INVAL)) {
 			exlog_zerr(e);
-			exlog(LOG_ERR, NULL, "%s: wrong revision/header_crc "
-			    "from backend; retrying", __func__);
+			exlog(LOG_ERR, e, "%s: retrying; ", __func__);
 			sleep(5);
 			goto get_again;
 		}
-		unlink(dst);
 		goto fail_close_dst;
 	}
 
@@ -1763,6 +1809,13 @@ scrub(const char *path)
 		    "to outgoing now", __func__, path);
 		hdr.v.f.revision++;
 		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {
+			if (exlog_err_is(&e, EXLOG_MGR, EXLOG_BUSY)) {
+				exlog_zerr(&e);
+				exlog(LOG_NOTICE, NULL, "%s: slab %s is "
+				    "being locked for a long time; is the "
+				    "backend responsive?", __func__, path);
+				goto end;
+			}
 			exlog(LOG_ERR, &e, "%s", __func__);
 			goto end;
 		}
@@ -2130,6 +2183,8 @@ main(int argc, char **argv)
 	int                 r;
 	struct fs_info      fs_info;
 
+	if (getenv("POTATOFS_CONFIG"))
+		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
 	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:S:P:")) != -1) {
 		switch (opt) {

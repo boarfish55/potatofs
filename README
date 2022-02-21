@@ -1,8 +1,8 @@
 DISCLAIMER
 ==========
-This is a work in progress. The best you can currently expect from this
-filesystem is to cause performance degradation and possible data corruption.
-Do not use to store anything you're not willing to lose!
+This is a work in progress. Expect poor performance and possible data
+corruption. Do not use to store anything you're not prepared to lose!
+
 
 OVERVIEW
 ========
@@ -50,12 +50,25 @@ Author: Pascal Lalonde <plalonde@overnet.ca>
 
 See the COPYING file for licensing information.
 
-Dependencies / license:
+Dependencies / license (not including backends):
+- pkg-config
 - libuuid (BSD-3)
 - libfuse (LGPL-2)
 - libbsd-dev (BSD-3, BSD-2, Expat)
 - liblmdb (OpenLDAP)
 - zlib (zlib)
+- libjansson-dev >= 2.9 (Expat)
+
+
+INSTALLATION & USAGE
+====================
+$ make
+
+Then, create yourself a partition (or use an existing one, though this is not
+recommended), typically /var/potatofs. Grant the user who will mount this
+filesystem access to that partition. An example init script is provided.
+
+$ ./potatofs.init start
 
 
 DESIGN NOTES
@@ -84,3 +97,25 @@ directory, a large majority of files are under 4K in size.
 Directory entries are currently a fixed size, with 255 bytes reserved for
 file names. This is not ideal, and someday I might go back and handle
 variable-sized records for filenames.
+
+
+KNOWN ISSUES
+============
+
+* During testing under low-space situations on the cache partition I've
+  hit some corruption/deadlock issue. Though some safeguards were added, it
+  wasn't fully root caused yet and therefore it's safer to make sure space
+  is never low.
+
+
+TODO
+====
+
+* Add a way for potatoctl to dump inode fields in JSON, such as to list
+  all entries in a directory, or the size of a file inode. Useful to
+  to manual claims and all.
+* Purging also needs to cleanup the backend of unreferenced slabs on the
+  backend.
+* potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
+* exlog (possibly renaming to xlog) needs to cleanup in how calls are made
+  and also how we have to clear the error in many places.

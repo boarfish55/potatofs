@@ -1797,6 +1797,9 @@ main(int argc, char **argv)
 	int                   status = 0;
 	char                  opt;
 
+	if (getenv("POTATOFS_CONFIG"))
+		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
+
 	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
 		switch (opt) {
 			case 'h':

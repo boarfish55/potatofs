@@ -9,10 +9,11 @@ usage() {
 	echo ""
 	echo "           Output is <used bytes> / <total available bytes>"
 	echo ""
-	echo "       $(basename $0) get <slab name> <local path>"
+	echo "       $(basename $0) get <slab name> <local path> <inode> <base>"
 	echo ""
 	echo "           <slab name> is the file name, local path is the"
-	echo "           absolute path of the slab file."
+	echo "           absolute path of the slab file. <inode> and <base> "
+	echo "           are provided for informational purposes."
 	echo ""
 	echo "       $(basename $0) put <local name> <slab name>"
 	echo ""
@@ -41,6 +42,12 @@ do_df() {
 do_get() {
 	slab=$1
 	local_path=$2
+	inode=$3
+	base=$4
+	if [ -z "$slab" -o -z "$local_path" ]; then
+		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
+		return 2
+	fi
 	if [ ! -r "$backend_path/$slab" ]; then
 		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such slab on backend: $slab\"}"
 		return 1
@@ -52,11 +59,19 @@ do_get() {
 		return 1
 	fi
 	echo "{\"status\": \"OK\", \"in_bytes\": $sz}"
+	if [ ! -z "$inode" -a ! -z "$base" ]; then
+		logger -i -t potatofs-backend -p user.info \
+			"getting inode $inode / base $base"
+	fi
 }
 
 do_put() {
 	local_path=$1
 	slab=$2
+	if [ -z "$slab" -o -z "$local_path" ]; then
+		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
+		return 2
+	fi
 	if [ ! -r "$local_path" ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"no such slab: $local_path\"}"
 		return 1
@@ -77,7 +92,7 @@ case $1 in
 		do_df
 		;;
 	get)
-		do_get $2 $3
+		do_get $2 $3 $4 $5
 		;;
 	put)
 		do_put $2 $3

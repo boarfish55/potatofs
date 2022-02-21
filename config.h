@@ -33,7 +33,7 @@
 #define MGR_DEFAULT_SOCKET_PATH   "/var/potatofs/potatomgr.sock"
 #define MGR_DEFAULT_UNPRIV_USER   "potatomgr"
 #define MGR_DEFAULT_UNPRIV_GROUP  "potatomgr"
-#define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/mgr.pl"
+#define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/potato_backend.sh"
 #define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
 #define DEFAULT_MDB_NAME          "slabs.mdb"
 

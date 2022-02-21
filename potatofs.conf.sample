@@ -8,4 +8,11 @@ mgr_socket_path: /var/potatofs/potatomgr.sock
 
 # The backend script. See the mgr.pl.sample for a proof-of-concept
 # implementation.
-backend: /usr/local/bin/mgr.pl
+backend: /usr/local/bin/backend.sh
+
+# See config.h for explanations
+slab_max_age: 300
+unclaim_purge_threshold_pct: 90
+purge_threshold_pct: 60
+mdb_map_size: 67108864
+noatime: yes
