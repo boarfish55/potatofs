@@ -62,13 +62,18 @@ Dependencies / license (not including backends):
 
 INSTALLATION & USAGE
 ====================
+
+```
 $ make
+```
 
 Then, create yourself a partition (or use an existing one, though this is not
 recommended), typically /var/potatofs. Grant the user who will mount this
 filesystem access to that partition. An example init script is provided.
 
+```
 $ ./potatofs.init start
+```
 
 
 DESIGN NOTES
