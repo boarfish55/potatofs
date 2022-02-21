@@ -22,6 +22,7 @@
 
 #include <sys/queue.h>
 #include <sys/tree.h>
+#include <uuid/uuid.h>
 #include "config.h"
 #include "openfiles.h"
 #include "exlog.h"
@@ -56,7 +57,7 @@ struct slab_key {
  * filesystem to avoid read on write.
  */
 struct slab_hdr {
-#define SLAB_VERSION 1
+#define SLAB_VERSION 2
 	union {
 		struct {
 			/*
@@ -88,6 +89,12 @@ struct slab_hdr {
 			uint64_t revision;
 
 			/*
+			 * We save the last owner to avoid using slabs
+			 * that were created by an unknown instance.
+			 */
+			uuid_t   last_owner;
+
+			/*
 			 * We can fit up to what's left of the full
 			 * block size in 'data'. This field must be the
 			 * last in this struct, as it will use space
@@ -108,6 +115,9 @@ struct slab_itbl_hdr {
 	 * an inode is sized after our FS_BLOCK_SIZE, the slab can fit as many
 	 * inodes as the slab ceiling size, divided by the fs block size.
 	 * The bitmap must be be able to fit that many bits.
+	 *
+	 * Increment the SLAB_VERSION definition anytime we
+	 * modify this structure.
 	 */
 	uint8_t  initialized;
 	uint32_t bitmap[SLAB_SIZE_CEIL / FS_BLOCK_SIZE /

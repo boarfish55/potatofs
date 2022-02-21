@@ -454,8 +454,8 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if (inode_startup(&e) == -1)
 		goto fail;
 
-	exlog(LOG_NOTICE, NULL, "atime is %s",
-	    (c->noatime) ? "disabled" : "enabled");
+	exlog(LOG_NOTICE, NULL, "noatime is %s",
+	    (c->noatime) ? "set" : "unset");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL) {
 		if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
@@ -1846,6 +1846,7 @@ main(int argc, char **argv)
 	int               status = -1;
 	struct sigaction  act;
 	sigset_t          set;
+	int               foreground;
 
 	sigemptyset(&set);
 	sigaddset(&set, SIGPIPE);
@@ -1876,7 +1877,7 @@ main(int argc, char **argv)
 	if (exlog_init(PROGNAME, fs_config.dbg, 1) == -1)
 		err(1, "exlog_init");
 
-	if (fuse_parse_cmdline(&args, &mountpoint, NULL, NULL) != -1 &&
+	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) != -1 &&
 	    (ch = fuse_mount(mountpoint, &args)) != NULL) {
 		struct fuse_session *se;
 
@@ -1885,7 +1886,8 @@ main(int argc, char **argv)
 		if (se != NULL) {
 			if (fuse_set_signal_handlers(se) != -1) {
 				fuse_session_add_chan(se, ch);
-				status = fuse_session_loop_mt(se);
+				if (fuse_daemonize(foreground) == 0)
+					status = fuse_session_loop_mt(se);
 				fuse_remove_signal_handlers(se);
 				fuse_session_remove_chan(ch);
 			}

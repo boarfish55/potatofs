@@ -37,6 +37,10 @@
 struct inode {
 	union {
 		struct {
+			/*
+			 * Increment the SLAB_VERSION (slabs.h) definition
+			 * anytime we modify this structure.
+			 */
 			dev_t           dev;
 			ino_t           inode;
 			mode_t          mode;

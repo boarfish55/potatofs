@@ -106,16 +106,27 @@ KNOWN ISSUES
   hit some corruption/deadlock issue. Though some safeguards were added, it
   wasn't fully root caused yet and therefore it's safer to make sure space
   is never low.
+* If the backend were to become unavailable (or the transport, i.e. Internet),
+  most likely I/O operations would stall in 'D' state, with no way to
+  recover until the backend is available again. Error handling in these
+  situations is questionable at best and needs to be reviewed. We can't
+  properly interrupt I/O ops in flight at this time.
 
 
 TODO
 ====
 
+* Doublecheck that atime is working as intended, add a test
+* Have fsck verify the slabdb too; the db must match the actual slabs.
+* Compare owners in slabdb and backend slabs when downloading slabs to
+  make sure we're not using something from a "rogue" instance.
+* Purging also needs to cleanup the backend of unreferenced slabs on the
+  backend.
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
   all entries in a directory, or the size of a file inode. Useful to
   to manual claims and all.
-* Purging also needs to cleanup the backend of unreferenced slabs on the
-  backend.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * exlog (possibly renaming to xlog) needs to cleanup in how calls are made
   and also how we have to clear the error in many places.
+* Refactor de fuse ops handling as a queue so we can implement nice things
+  like interrupting in flight operations, or journaling/soft updates.

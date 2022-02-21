@@ -5,6 +5,7 @@ fatal() {
 	exit 1
 }
 
+backend_data_path=/dev/shm/potatofs_backend
 basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 
 [ -x ./potatofs ] || fatal "potatofs is not found or executable"
@@ -27,13 +28,14 @@ backend: $basepath/backend
 slab_max_age: 60
 unclaim_purge_threshold_pct: 100
 purge_threshold_pct: 100
+noatime: no
 EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
 ./potatomgr -c "$conf" -w 1 -W 1 -S 0 -P 0 -p "$basepath/potatomgr.pid"
-./potatofs -o cfg_path="$conf" "$mountpoint" &
+./potatofs -f -o cfg_path="$conf" "$mountpoint" &
 for i in 1 2 3 4 5; do
 	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then
 		break
@@ -63,6 +65,7 @@ kill $pid
 while kill -0 $pid 2>/dev/null; do sleep 1; done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
+	rm -rf "$backend_data_path"
 	echo "Done."
 else
 	echo "Encountered errors; not cleaning data dir at $basepath"

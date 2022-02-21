@@ -750,6 +750,8 @@ copy_again:
 		}
 	}
 
+	// TODO: set last_owner here
+
 	dst_hdr.v.f.flags &= ~SLAB_DIRTY;
 
 	if (pwrite_x(dst_fd, &dst_hdr, sizeof(dst_hdr), 0) < sizeof(dst_hdr)) {
@@ -846,6 +848,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 			    "%s: unlink src %s", __func__, src);
 			purge = 0;
 		}
+		exlog(LOG_INFO, NULL, "%s: purged path", __func__);
 	}
 
 	close(fd);
@@ -1092,6 +1095,8 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 			return exlog_errf(e, EXLOG_MGR, EXLOG_SHORTIO,
 			    "%s: short read on slab header", __func__);
 	}
+
+	// TODO: compare last_owner and see if we know of this instance.
 
 	if (hdr.v.f.revision != revision) {
 		/*
@@ -2027,6 +2032,8 @@ bg_purge()
 
 		if (unlink(path) == -1)
 			exlog_strerror(LOG_ERR, errno, "%s", __func__);
+
+		exlog(LOG_INFO, NULL, "%s: purged path", __func__);
 
 		close(fd);
 
