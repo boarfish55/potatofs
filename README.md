@@ -71,6 +71,20 @@ Then, create yourself a partition (or use an existing one, though this is not
 recommended), typically /var/potatofs. Grant the user who will mount this
 filesystem access to that partition. An example init script is provided.
 
+You'll need to select a backend and tweak your configuration file. Look
+at the example backends to see how to come up with your own. Essentially a
+backend script needs to support the `get`, `put` and `df` commands and return
+specific error codes. The `backend_cp.sh` script is the simplest one to
+use as a starting point.
+
+Then you'll need to put the configuration file somewhere and adjust the
+backend's path and data path. See `potatofs.conf.sample` for an example
+configuration. You can install it as `/etc/potatofs.conf` or use the
+`POTATOFS_CONFIG` environment variable to provide an alternate path, or
+use the `-c` command line flag.
+
+Once all this is done:
+
 ```
 $ ./potatofs.init start
 ```
