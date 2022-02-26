@@ -19,6 +19,8 @@ pidfile=$basepath/potatomgr.pid
 [ -x $binpath/potatoctl ] || fatal "potatofs_tests is not found or executable"
 [ -x $binpath/potatomgr ] || fatal "potatofs_tests is not found or executable"
 
+ulimit -n 4096
+
 case $1 in
 	start)
 		echo -n "* Starting potatomgr..."
@@ -30,11 +32,13 @@ case $1 in
 		echo ""
 
 		echo "* Mounting..."
-		$binpath/potatofs -o cfg_path=$conf $mountpoint
+		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048 \
+			$mountpoint
 		;;
 	stop)
 		fusermount -u $mountpoint
-		kill $pidfile
+		while pgrep potatofs >/dev/null; do sleep 1; done
+		kill `cat $pidfile`
 		;;
 	*)
 		echo "Usage: $(basename $0) <start|stop>"

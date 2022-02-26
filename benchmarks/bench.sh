@@ -1,7 +1,14 @@
 #!/bin/sh
 
+fail() {
+	echo "$(basename $0): $1" >&2
+	exit 1
+}
+
+dir="$1"
+[ -d "$dir" ] || fail "no such dir $dir"
+
 name=potatofs_rw_integrity
-dir=/var/potatofs/mnt
 out=$(mktemp -t potatofs_rw_integrity_$(date +'%Y-%m-%d').out.XXXXXX)
 
 if ! fio --name="$name" \
@@ -16,7 +23,7 @@ if ! fio --name="$name" \
 	--numjobs=4 \
 	--time_based=1 \
 	--runtime=600 \
-	--size=4G \
+	--size=2G \
 	--nrfiles=500 \
 	--ioengine=psync \
 	--iodepth=1 \

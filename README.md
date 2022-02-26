@@ -135,6 +135,7 @@ KNOWN ISSUES
 TODO
 ====
 
+* Make the workers and timeouts configurable in the config file
 * Add a test for unlink on large file; resulting slabs should be
   truncated.
 * Add validation in config_read, right now even if we point it at a dir
