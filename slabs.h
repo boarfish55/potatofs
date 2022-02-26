@@ -71,13 +71,6 @@ struct slab_hdr {
 			uint32_t        flags;
 
 			/*
-			 * This is populated by the slab manager only, after
-			 * successfully claiming ownership. Useful for LRU
-			 * purge of local slabs.
-			 */
-			struct timespec last_claimed_at;
-
-			/*
 			 * Because at startup multiple instance of potatofs
 			 * have to decide who has ownership of a given slab,
 			 * whoever has the most recent revision wins. If

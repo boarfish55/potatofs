@@ -135,17 +135,32 @@ KNOWN ISSUES
 TODO
 ====
 
+* Add a test for unlink on large file; resulting slabs should be
+  truncated.
+* Add validation in config_read, right now even if we point it at a dir
+  it just silently works.
+* In low-space conditions, run flush/purge more often to free up space. The
+  problem is that is also clogs up the workers. Maybe we need an separate
+  control socket that's used by non-workers. Would also solve the
+  potatoctl claim vs. fs deadlock.
+* Don't put backend get/put args on the command line, for security reasons.
+  Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
+  about the fact that those leak the slab names in the ps output and it's
+  better to use something other than shell scripts.
+* Add a "rm" handler in backend scritps, though mention this will only
+  be used by fsck, therefore is optional.
+* Add a "wide" option to top
 * Doublecheck that atime is working as intended, add a test
 * Have fsck verify the slabdb too; the db must match the actual slabs.
-* Compare owners in slabdb and backend slabs when downloading slabs to
-  make sure we're not using something from a "rogue" instance.
-* Purging also needs to cleanup the backend of unreferenced slabs on the
-  backend.
+* Purging also needs to cleanup the backend of unreferenced slabs? Or
+  maybe just fsck.
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
-  all entries in a directory, or the size of a file inode. Useful to
-  to manual claims and all.
+  all entries in a directory, or the size of an inode. Useful to
+  to do manual claims and all.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * exlog (possibly renaming to xlog) needs to cleanup in how calls are made
-  and also how we have to clear the error in many places.
+  and also how we have to clear the error in many places. Also we should
+  add a descriptive text to the contextual errors instead of just printing
+  the index.
 * Refactor de fuse ops handling as a queue so we can implement nice things
   like interrupting in flight operations, or journaling/soft updates.

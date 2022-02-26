@@ -17,7 +17,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-backend_path="/dev/shm/potatofs_backend"
+ssh_host="potatofs@<some host>"
+backend_path="/var/potatofs_backend"
 
 usage() {
 	echo "Usage: $(basename $0) -h <command>"
@@ -45,7 +46,7 @@ if [ "$1" = "-h" ]; then
 fi
 
 do_df() {
-	df_out=$(df -k $backend_path | tail -1)
+	df_out=$(ssh $ssh_host df -k $backend_path | tail -1)
 	if [ $? -ne 0 ]; then
 		echo '{"status": "ERR", "msg": "df failed"}'
 		return 1
@@ -65,16 +66,16 @@ do_get() {
 		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
 		return 2
 	fi
-	if [ ! -r "$backend_path/$slab" ]; then
+	if ! ssh $ssh_host test -r "$backend_path/$slab"; then
 		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such slab on backend: $slab\"}"
 		return 1
 	fi
-	sz=$(stat -c %s "$backend_path/$slab")
-	cp "$backend_path/$slab" "$local_path"
+	scp $ssh_host:$backend_path/$slab "$local_path"
 	if [ $? -ne 0 ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to get slab: $slab\"}"
 		return 1
 	fi
+	sz=$(stat -c %s "$local_path")
 	echo "{\"status\": \"OK\", \"in_bytes\": $sz}"
 	if [ ! -z "$inode" -a ! -z "$base" ]; then
 		logger -i -t potatofs-backend -p user.info \
@@ -94,15 +95,13 @@ do_put() {
 		return 1
 	fi
 	sz=$(stat -c %s "$local_path")
-	cp "$local_path" "$backend_path/$slab"
+	scp "$local_path" $ssh_host:$backend_path/$slab
 	if [ $? -ne 0 ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to put slab: $slab\"}"
 		return 1
 	fi
 	echo "{\"status\": \"OK\", \"out_bytes\": $sz}"
 }
-
-mkdir -p $backend_path
 
 case $1 in
 	df)

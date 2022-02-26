@@ -111,7 +111,7 @@ extern locale_t       log_locale;
 struct fs_info        fs_info;
 
 void
-read_metrics(uint64_t *counters_now)
+read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
 {
 	int              c, mgr;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
@@ -137,8 +137,11 @@ read_metrics(uint64_t *counters_now)
 		errx(1, "%s: bad manager response: %d",
 		    __func__, m.m);
 
-	for (c = 0; c < MGR_COUNTER_LAST; c++)
+	for (c = 0; c < COUNTER_LAST; c++)
 		counters_now[c] = m.v.rcv_counters.c[c];
+
+	for (c = 0; c < MGR_COUNTER_LAST; c++)
+		mgr_counters_now[c] = m.v.rcv_counters.mgr_c[c];
 
 	close(mgr);
 }
@@ -249,8 +252,10 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct exlog_err *e)
 
 	if (hdr->v.f.checksum != crc)
 		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: mismatching content CRC: expected=%lu, actual=%u",
-		    __func__, hdr->v.f.checksum, crc);
+		    "%s: mismatching content CRC for ino=%lu / base=%lu: "
+		    "expected=%lu, actual=%u",
+		    __func__, hdr->v.f.key.ino, hdr->v.f.key.base,
+		    hdr->v.f.checksum, crc);
 
 	return 0;
 }
@@ -432,7 +437,7 @@ print_metric_header()
 {
 	printf("%10s %10s %10s %10s %10s %10s %10s\n",
 	    "read/s", "read MB/s", "write/s", "write MB/s",
-	    "fsync/s", "fsyncdir/s", "errors");
+	    "be-r MB/s", "be-w MB/s", "errors");
 }
 
 int
@@ -538,13 +543,17 @@ int
 dump_counters(int argc, char **argv)
 {
 	int      c;
-	uint64_t counters[MGR_COUNTER_LAST];
+	uint64_t counters[COUNTER_LAST];
+	uint64_t mgr_counters[MGR_COUNTER_LAST];
 
-	read_metrics(counters);
+	read_metrics(counters, mgr_counters);
 	printf("{\n");
+	for (c = 0; c < COUNTER_LAST; c++)
+		printf("    \"%s\": %lu,\n",
+		    counter_names[c], counters[c]);
 	for (c = 0; c < MGR_COUNTER_LAST; c++)
 		printf("    \"%s\": %lu%s\n",
-		    counter_names[c], counters[c],
+		    mgr_counter_names[c], mgr_counters[c],
 		    (c == (MGR_COUNTER_LAST - 1)) ? "" : ",");
 	printf("}\n");
 	return 0;
@@ -554,42 +563,56 @@ int
 top(int argc, char **argv)
 {
 	unsigned int    seconds = 2;
-	uint64_t        counters_now[MGR_COUNTER_LAST];
-	uint64_t        counters_prev[MGR_COUNTER_LAST];
-	double          counters_delta[MGR_COUNTER_LAST];
+	uint64_t        counters_now[COUNTER_LAST];
+	uint64_t        counters_prev[COUNTER_LAST];
+	double          counters_delta[COUNTER_LAST];
+	uint64_t        mgr_counters_now[MGR_COUNTER_LAST];
+	uint64_t        mgr_counters_prev[MGR_COUNTER_LAST];
+	double          mgr_counters_delta[MGR_COUNTER_LAST];
 	int             c, i;
 	struct timespec ts, te;
 
 	if (argc > 0)
 		seconds = strtol(argv[0], NULL, 10);
 
-	read_metrics(counters_prev);
+	read_metrics(counters_prev, mgr_counters_prev);
 	for (i = 0;; i++) {
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		sleep(seconds);
 
-		read_metrics(counters_now);
+		read_metrics(counters_now, mgr_counters_now);
 		clock_gettime(CLOCK_MONOTONIC, &te);
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
 			counters_prev[c] = counters_now[c];
 		}
+		for (c = 0; c < MGR_COUNTER_LAST; c++) {
+			mgr_counters_delta[c] = mgr_counters_now[c] -
+			    mgr_counters_prev[c];
+			mgr_counters_prev[c] = mgr_counters_now[c];
+		}
 
 		if (i % 23 == 0)
 			print_metric_header();
-		printf("%10.1f %10.2f %10.1f %10.2f %10.1f %10.1f %10lu\n",
+		printf("%10.1f %10.2f %10.1f %10.2f %10.2f %10.2f %10lu\n",
 		    counters_delta[COUNTER_FS_READ] /
 		    (te.tv_sec - ts.tv_sec),
+
 		    counters_delta[COUNTER_READ_BYTES] /
 		    1024.0 / 1024.0 / (te.tv_sec - ts.tv_sec),
+
 		    counters_delta[COUNTER_FS_WRITE] /
 		    (te.tv_sec - ts.tv_sec),
+
 		    counters_delta[COUNTER_WRITE_BYTES] /
 		    1024.0 / 1024.0 / (te.tv_sec - ts.tv_sec),
-		    counters_delta[COUNTER_FS_FSYNC] /
-		    (te.tv_sec - ts.tv_sec),
-		    counters_delta[COUNTER_FS_FSYNCDIR] /
-		    (te.tv_sec - ts.tv_sec),
+
+		    mgr_counters_delta[MGR_COUNTER_BACKEND_IN_BYTES] /
+		    1024.0 / 1024.0 / (te.tv_sec - ts.tv_sec),
+
+		    mgr_counters_delta[MGR_COUNTER_BACKEND_OUT_BYTES] /
+		    1024.0 / 1024.0 / (te.tv_sec - ts.tv_sec),
+
 		    counters_now[COUNTER_FS_ERROR]);
 	}
 	return 0;

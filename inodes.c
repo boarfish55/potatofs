@@ -424,7 +424,11 @@ inode_truncate(struct oinode *oi, off_t offset, struct exlog_err *e)
 	if (old_size == offset)
 		goto end;
 
-	/* Fill in inline data with zeroes. */
+	/*
+	 * Fill in inline data with zeroes. When shrinking the file,
+	 * fill from inode_max_inline_b() to offset; when growing the
+	 * file, we fill from old_size to offset.
+	 */
 	zero_start = (old_size < offset) ? old_size : offset;
 	if (zero_start < inode_max_inline_b())
 		bzero(f_data + zero_start,

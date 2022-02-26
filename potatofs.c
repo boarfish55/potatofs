@@ -696,7 +696,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	}
 
 	if (inode_splice_end_read(&si, &e) == -1)
-		exlog(LOG_ERR, &e, __func__);
+		exlog(LOG_ERR, &e, "%s: inode_splice_end_read", __func__);
 	free(bv);
 }
 
@@ -751,8 +751,8 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	}
 
 	if ((w = fuse_buf_copy(bv, bufv, FUSE_BUF_FORCE_SPLICE)) < 0) {
-		exlog_errf(&e, EXLOG_OS, -w, "fuse_buf_copy");
-		FS_ERR(&r_sent, req, &e);
+		FUSE_REPLY(&r_sent, fuse_reply_err(req, -w));
+		return;
 	}
 	exlog_zerr(&e);
 

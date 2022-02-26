@@ -98,9 +98,15 @@ SPLAY_GENERATE(slab_tree, oslab, entry, slab_cmp);
 int
 slab_read_hdr(struct oslab *b, struct exlog_err *e)
 {
-	if (pread_x(b->fd, &b->hdr, sizeof(b->hdr), 0) < sizeof(b->hdr))
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: short read on slab header", __func__);
+	ssize_t r;
+	if ((r = pread_x(b->fd, &b->hdr, sizeof(b->hdr), 0)) < sizeof(b->hdr)) {
+		if (r == -1)
+			return exlog_errf(e, EXLOG_OS, errno,
+			    "%s: short read on slab header", __func__);
+		return exlog_errf(e, EXLOG_APP, EXLOG_SHORTIO,
+		    "%s: short read on slab header; read %d bytes",
+		    __func__, r);
+	}
 	return 0;
 }
 
@@ -176,8 +182,10 @@ slab_unclaim(struct oslab *b)
 		}
 
 		if (m.m != MGR_MSG_UNCLAIM_OK) {
-			exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
-			    __func__, m.m);
+			exlog(LOG_ERR, NULL, "%s: bad manager response %d "
+			    "for slab sk=%lu/%lu",
+			    __func__, m.m, b->hdr.v.f.key.ino,
+			    b->hdr.v.f.key.base);
 			goto fail;
 		} else if (memcmp(&m.v.unclaim.key, &b->hdr.v.f.key,
 		    sizeof(struct slab_key))) {
@@ -745,7 +753,8 @@ slab_load(struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
 		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, ((m.err != 0) ? m.err : EXLOG_MGR),
-		    "%s: bad manager response", __func__);
+		    "%s: bad manager response for claim on slab sk=%lu/%lu",
+		    __func__, sk->ino, sk->base);
 		goto fail_destroy_locks;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
@@ -757,11 +766,18 @@ slab_load(struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
 		goto fail_destroy_locks;
 	} else if (b->fd == -1) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
-		    "%s: bad manager response; mgr returned fd -1", __func__);
+		    "%s: bad manager response; mgr returned fd -1 on slab "
+		    "sk=%lu/%lu", __func__, sk->ino, sk->base);
 		goto fail_destroy_locks;
 	}
 
 	b->dirty = 0;
+
+	/*
+	 * While slab_read_hdr() will fill this up, if it fails we'll
+	 * need it to unclaim.
+	 */
+	memcpy(&b->hdr.v.f.key, sk, sizeof(struct slab_key));
 
 	if (slab_read_hdr(b, e) == -1)
 		goto fail_unclaim;
@@ -799,26 +815,23 @@ slab_load(struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
 
 	if (counter_get(COUNTER_N_OPEN_SLABS) >= owned_slabs.max_open) {
 		exlog_dbg(EXLOG_SLAB, "%s: cache full; purging slabs", __func__);
-		counter_incr(COUNTER_N_SLABS_PURGE);
-		for (;;) {
-			if (TAILQ_EMPTY(&owned_slabs.lru_head)) {
-				exlog(LOG_WARNING, NULL,
-				    "%s: cache full; failed to find "
-				    "unreferenced slab; sleeping %lu seconds",
-				    __func__, t.tv_sec);
-				nanosleep(&t, NULL);
-				continue;
-			}
-			purged = TAILQ_FIRST(&owned_slabs.lru_head);
-			TAILQ_REMOVE(&owned_slabs.lru_head, purged, lru_entry);
-			if (!b->hdr.v.f.key.ino)
-				TAILQ_REMOVE(&owned_slabs.itbl_head, purged,
-				    itbl_entry);
-			SPLAY_REMOVE(slab_tree, &owned_slabs.head, purged);
-			slab_unclaim(purged);
-			counter_decr(COUNTER_N_OPEN_SLABS);
-			goto end;
+		while (TAILQ_EMPTY(&owned_slabs.lru_head)) {
+			exlog(LOG_WARNING, NULL,
+			    "%s: cache full; failed to find "
+			    "unreferenced slab; sleeping %lu seconds",
+			    __func__, t.tv_sec);
+			nanosleep(&t, NULL);
 		}
+		purged = TAILQ_FIRST(&owned_slabs.lru_head);
+		TAILQ_REMOVE(&owned_slabs.lru_head, purged, lru_entry);
+		if (!purged->hdr.v.f.key.ino)
+			TAILQ_REMOVE(&owned_slabs.itbl_head, purged,
+			    itbl_entry);
+		SPLAY_REMOVE(slab_tree, &owned_slabs.head, purged);
+		slab_unclaim(purged);
+		counter_incr(COUNTER_SLABS_PURGED);
+		counter_decr(COUNTER_N_OPEN_SLABS);
+		goto end;
 	}
 
 	goto end;
@@ -982,6 +995,11 @@ slab_unlink(struct oslab *b, struct exlog_err *e)
 {
 	LK_WRLOCK(&b->lock);
 	b->hdr.v.f.flags |= SLAB_REMOVED;
+	if ((ftruncate(b->fd, sizeof(struct slab_hdr))) == -1) {
+		LK_UNLOCK(&b->lock);
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: ftruncate", __func__);
+	}
 	if (slab_write_hdr_nolock(b, e) == -1) {
 		LK_UNLOCK(&b->lock);
 		return -1;

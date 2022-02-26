@@ -51,7 +51,8 @@
 
 struct mgr_counters {
 	sem_t    sem;
-	uint64_t c[COUNTER_LAST + MGR_COUNTER_LAST];
+	uint64_t c[COUNTER_LAST];
+	uint64_t mgr_c[MGR_COUNTER_LAST];
 	size_t   mdb_entries;
 };
 
@@ -63,6 +64,7 @@ uuid_t               instance_id;
 uuid_t               uuid_zero;
 struct mgr_counters *mgr_counters;
 int                  shutdown_requested = 0;
+const uint32_t       flock_timeout = 10;
 
 static void
 usage()
@@ -142,7 +144,7 @@ mgr_counter_add(int c, uint64_t v)
 		return;
 	}
 
-	mgr_counters->c[c] += v;
+	mgr_counters->mgr_c[c] += v;
 
 	if (sem_post(&mgr_counters->sem) == -1)
 		exlog_strerror(LOG_ERR, errno, "sem_wait");
@@ -162,8 +164,11 @@ mgr_counter_incr_mdb_entries()
 		exlog_strerror(LOG_ERR, errno, "sem_wait");
 }
 
+/*
+ * If last_claimed is NULL, we just write back the previous value.
+ */
 static int
-slabdb_put(struct slab_key *key, uint64_t revision, uint32_t header_crc,
+slabdb_put(struct slab_key *sk, uint64_t revision, uint32_t header_crc,
     uuid_t owner, const struct timespec *last_claimed, struct exlog_err *e)
 {
 	int                r;
@@ -197,8 +202,8 @@ slabdb_put(struct slab_key *key, uint64_t revision, uint32_t header_crc,
 	 * the structure gaps, as that would mess up the key in the database.
 	 */
 	bzero(&k, sizeof(k));
-	k.ino = key->ino;
-	k.base = key->base;
+	k.ino = sk->ino;
+	k.base = sk->base;
 
 	mk.mv_size = sizeof(k);
 	mk.mv_data = &k;
@@ -208,11 +213,18 @@ slabdb_put(struct slab_key *key, uint64_t revision, uint32_t header_crc,
 	v.header_crc = header_crc;
 	uuid_copy(v.owner, owner);
 	uuid_unparse(v.owner, u);
-	memcpy(&v.last_claimed, last_claimed, sizeof(struct timespec));
+	if (last_claimed)
+		memcpy(&v.last_claimed, last_claimed, sizeof(struct timespec));
 
 	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_SET_KEY)) == 0 &&
 	    memcmp(&k, mk.mv_data, sizeof(k)) == 0 &&
-	    memcmp(&v, mv.mv_data, sizeof(v)) == 0) {
+	    v.revision == ((struct slabdb_val *)mv.mv_data)->revision &&
+	    v.header_crc == ((struct slabdb_val *)mv.mv_data)->header_crc &&
+	    uuid_compare(v.owner,
+	    ((struct slabdb_val *)mv.mv_data)->owner) == 0 &&
+	    (last_claimed == NULL ||
+	    memcmp(last_claimed, &((struct slabdb_val *)mv.mv_data)->last_claimed,
+	    sizeof(struct timespec)))) {
 		/* Found the key, same value; do nothing. */
 		exlog(LOG_DEBUG, NULL, "%s: no change for k=%lu/%lu, "
 		    "v=%lu/%u/%s; not writing", __func__,
@@ -239,17 +251,18 @@ slabdb_put(struct slab_key *key, uint64_t revision, uint32_t header_crc,
 		goto fail_close_cursor;
 	}
 
-	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%lu/%u/%s", __func__,
-	    ((struct slab_key *)mk.mv_data)->ino,
-	    ((struct slab_key *)mk.mv_data)->base,
-	    ((struct slabdb_val *)mv.mv_data)->revision,
-	    ((struct slabdb_val *)mv.mv_data)->header_crc, u);
-
 	if ((r = mdb_txn_commit(txn))) {
 		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
 		    __func__, mdb_strerror(r));
-		goto fail_close_cursor;
+		mdb_cursor_close(cursor);
+		/*
+		 * TODO: It's unclear if mdb_txn_abort() should be used when
+		 * commit fails. I've seen MDB_BAD_RSLOT when we do so.
+		 */
+		return -1;
 	}
+	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%lu/%u/%s", __func__,
+	    k.ino, k.base, v.revision, v.header_crc, u);
 	return 0;
 fail_close_cursor:
 	mdb_cursor_close(cursor);
@@ -308,9 +321,12 @@ slabdb_get(struct slab_key *key, uint32_t oflags, uint64_t *revision,
 		}
 
 		bzero(&v, sizeof(v));
-		v.revision = 0;
-		v.header_crc = 0L;
 		uuid_copy(v.owner, instance_id);
+		if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
+			exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime",
+			    __func__);
+			goto fail;
+		}
 
 		mv.mv_size = sizeof(v);
 		mv.mv_data = &v;
@@ -318,10 +334,6 @@ slabdb_get(struct slab_key *key, uint32_t oflags, uint64_t *revision,
 		// TODO: consensus resolution here; determine owner of
 		// new slab.
 
-		uuid_unparse(v.owner, u);
-		exlog(LOG_DEBUG, NULL, "%s: writing new slab: mdb_put(): "
-		    "k=%lu/%lu, v=%u/%lu/%s\n", __func__, k.ino,
-		    k.base, *revision, *header_crc, u);
 		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
@@ -334,28 +346,35 @@ slabdb_get(struct slab_key *key, uint32_t oflags, uint64_t *revision,
 			goto fail;
 		}
 		mgr_counter_incr_mdb_entries();
+
+		*revision = v.revision;
+		*header_crc = v.header_crc;
+		uuid_copy(*owner, v.owner);
+		memcpy(last_claimed, &v.last_claimed, sizeof(struct timespec));
+
 		goto end;
 	}
+
+	*revision = ((struct slabdb_val *)mv.mv_data)->revision;
+	*header_crc = ((struct slabdb_val *)mv.mv_data)->header_crc;
+	memcpy(last_claimed, &((struct slabdb_val *)mv.mv_data)->last_claimed,
+	    sizeof(struct timespec));
 
 	if (uuid_compare(((struct slabdb_val *)mv.mv_data)->owner,
 	    instance_id) != 0) {
 		// TODO: consensus resolution here; determine owner of
 		// existing slab
-		bzero(&v, sizeof(v));
-		v.revision = ((struct slabdb_val *)mv.mv_data)->revision;
-		v.header_crc = ((struct slabdb_val *)mv.mv_data)->header_crc;
-		memcpy(&v.last_claimed,
-		    &((struct slabdb_val *)mv.mv_data)->last_claimed,
-		    sizeof(struct timespec));
+		memcpy(&v, mv.mv_data, sizeof(v));
 		uuid_copy(v.owner, instance_id);
+		uuid_copy(*owner, instance_id);
 
 		mv.mv_size = sizeof(v);
 		mv.mv_data = &v;
 
 		uuid_unparse(v.owner, u);
-		exlog(LOG_DEBUG, NULL, "%s: changing ownership: mdb_put(): "
+		exlog(LOG_DEBUG, NULL, "%s: changing ownership: "
 		    "k=%lu/%lu, v=%u/%lu/%s\n", __func__, k.ino, k.base,
-		    *revision, *header_crc, u);
+		    v.revision, v.header_crc, u);
 		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
 			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
 			    __func__, mdb_strerror(r));
@@ -366,14 +385,12 @@ slabdb_get(struct slab_key *key, uint32_t oflags, uint64_t *revision,
 			    __func__, mdb_strerror(r));
 			goto fail;
 		}
-	} else
+	} else {
+		uuid_copy(*owner, ((struct slabdb_val *)mv.mv_data)->owner);
 		mdb_txn_abort(txn);
+	}
 end:
-	*revision = ((struct slabdb_val *)mv.mv_data)->revision;
-	*header_crc = ((struct slabdb_val *)mv.mv_data)->header_crc;
-	uuid_copy(*owner, ((struct slabdb_val *)mv.mv_data)->owner);
 	uuid_unparse(*owner, u);
-
 	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%u/%lu/%s\n", __func__,
 	    k.ino, k.base, *revision, *header_crc, u);
 
@@ -479,8 +496,11 @@ rcv_counters(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail;
 	}
 
-	for (i = 0; i < MGR_COUNTER_LAST; i++)
+	for (i = 0; i < COUNTER_LAST; i++)
 		m->v.rcv_counters.c[i] = mgr_counters->c[i];
+
+	for (i = 0; i < MGR_COUNTER_LAST; i++)
+		m->v.rcv_counters.mgr_c[i] = mgr_counters->mgr_c[i];
 
 	if (sem_post(&mgr_counters->sem) == -1) {
 		exlog_strerror(LOG_ERR, errno, "sem_wait");
@@ -651,15 +671,8 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 	int             dst_fd;
 	char            dst[PATH_MAX], name[NAME_MAX + 1];
 	char            buf[8192];
-	struct stat     st;
 	struct slab_hdr dst_hdr;
 	ssize_t         r;
-
-	/*
-	 * Retry open/flock() every 10ms, for 1000 times, thus 10s.
-	 */
-	struct timespec tp = {0, 10000000};
-	int             open_retries = 1000;
 
 	if (slab_path(name, sizeof(name), sk, 1, e) == -1)
 		return -1;
@@ -669,46 +682,17 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: outq slab name too long", __func__);
 
-	for (; open_retries > 0; open_retries--) {
-		if ((dst_fd = open_wflock(dst, O_CREAT|O_WRONLY, 0600,
-		    LOCK_EX|LOCK_NB)) == -1) {
-			if (errno == EWOULDBLOCK) {
-				nanosleep(&tp, NULL);
-				continue;
-			}
-			return exlog_errf(e, EXLOG_OS, errno,
-			    "%s: open_wflock() for slab %s", __func__, dst);
-		}
-		break;
+	if ((dst_fd = open_wflock(dst, O_CREAT|O_RDWR, 0600,
+	    LOCK_EX, flock_timeout)) == -1) {
+		if (errno == EWOULDBLOCK)
+			return exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
+			    "%s: open_wflock() timed out after multiple "
+			    "retries for slab %s; this should not happen "
+			    "unless something is stuck trying to send to the "
+			    "backend.", __func__, dst);
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: open_wflock() for slab %s", __func__, dst);
 	}
-	if (open_retries == 0)
-		return exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
-		    "%s: open_wflock() timed out after multiple retries "
-		    "for slab %s; this should not happen unless something is "
-		    "stuck trying to send to the backend.", __func__, dst);
-
-	if (fstat(dst_fd, &st) == -1) {
-		exlog_errf(e, EXLOG_OS, errno, "%s: fstat", __func__);
-		goto fail;
-	}
-
-	if (st.st_size >= sizeof(dst_hdr)) {
-		if (read_x(dst_fd, &dst_hdr, sizeof(dst_hdr))
-		    < sizeof(dst_hdr)) {
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: short read on slab header", __func__);
-			goto fail;
-		}
-		if (dst_hdr.v.f.revision >= hdr->v.f.revision) {
-			exlog(LOG_INFO, NULL, "%s: slab %s has a "
-			    "revision greater or equal to the one in our "
-			    "data dir (revision %llu >= %llu)",
-			    __func__, dst, dst_hdr.v.f.revision,
-			    hdr->v.f.revision);
-			goto end;
-		}
-	}
-
 copy_again:
 	/* Make room for the header we're about to fill in. */
 	if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1) {
@@ -750,8 +734,8 @@ copy_again:
 		}
 	}
 
-	// TODO: set last_owner here
-
+	uuid_copy(dst_hdr.v.f.last_owner, instance_id);
+	dst_hdr.v.f.revision++;
 	dst_hdr.v.f.flags &= ~SLAB_DIRTY;
 
 	if (pwrite_x(dst_fd, &dst_hdr, sizeof(dst_hdr), 0) < sizeof(dst_hdr)) {
@@ -760,7 +744,6 @@ copy_again:
 		goto fail;
 	}
 	memcpy(hdr, &dst_hdr, sizeof(dst_hdr));
-end:
 	close(dst_fd);
 	return 0;
 fail:
@@ -805,12 +788,9 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		purge = 1;
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
-		hdr.v.f.revision++;
-		hdr.v.f.flags &= ~SLAB_DIRTY;
 		if (copy_outgoing_slab(fd, &m->v.unclaim.key, &hdr, e) == -1) {
 			if (exlog_err_is(e, EXLOG_MGR, EXLOG_BUSY)) {
-				exlog_zerr(e);
-				exlog(LOG_NOTICE, NULL, "%s: slab "
+				exlog(LOG_NOTICE, e, "%s: slab "
 				    "(ino=%lu / base=%lu) is "
 				    "being locked for a long time; is the "
 				    "backend responsive? Continuing anyway "
@@ -818,21 +798,22 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 				    "the scrubber will pick it up later",
 				    __func__, m->v.unclaim.key.ino,
 				    m->v.unclaim.key.base);
+				exlog_zerr(e);
+				goto end;
 			} else
 				goto fail;
 		}
 
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: short read on slab header", __func__);
+			    "%s: short write on slab header", __func__);
 			goto fail;
 		}
 	}
 
 	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 	if (slabdb_put(&m->v.unclaim.key, hdr.v.f.revision, crc,
-	    (purge) ? uuid_zero : instance_id,
-	    &hdr.v.f.last_claimed_at, e) == -1) {
+	    (purge) ? uuid_zero : instance_id, NULL, e) == -1) {
 		if (exlog_err_is(e, EXLOG_MDB, MDB_MAP_FULL))
 			m->err = EXLOG_NOSPC;
 		set_fs_error();
@@ -847,10 +828,15 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 			exlog_strerror(LOG_ERR, errno,
 			    "%s: unlink src %s", __func__, src);
 			purge = 0;
+		} else {
+			exlog(LOG_INFO, NULL, "%s: purged slab %s "
+			    "(revision=%lu, crc=%u)",
+			    __func__, src, hdr.v.f.revision, crc);
+			mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
 		}
-		exlog(LOG_INFO, NULL, "%s: purged path", __func__);
 	}
 
+end:
 	close(fd);
 
 	m->m = MGR_MSG_UNCLAIM_OK;
@@ -1040,17 +1026,12 @@ backend_put(const char *local_path, const char *backend_path,
  * The file offset at the end of the header upon return.
  */
 static int
-check_slab_header(int fd, uint32_t header_crc, uint64_t rev,
+check_slab_header(struct slab_hdr *hdr, uint32_t header_crc, uint64_t rev,
     struct exlog_err *e)
 {
-	struct slab_hdr hdr;
-	uint32_t        crc;
+	uint32_t crc;
 
-	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr))
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: short read on slab header", __func__);
-
-	if (hdr.v.f.revision != rev) {
+	if (hdr->v.f.revision != rev) {
 		/*
 		 * backend doesn't have correct (latest?) version
 		 * of slab. Are we dealing with eventual consistency?
@@ -1058,10 +1039,11 @@ check_slab_header(int fd, uint32_t header_crc, uint64_t rev,
 		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: mismatching slab revision: "
 		    "expected=%lu, slab=%lu", __func__,
-		    rev, hdr.v.f.revision);
+		    rev, hdr->v.f.revision);
 	}
 
-	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc) {
+	if ((crc = crc32_z(0L, (Bytef *)hdr,
+	    sizeof(struct slab_hdr))) != header_crc) {
 		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: mismatching header CRC: "
 		    "expected=%u, slab=%u", __func__, header_crc, crc);
@@ -1082,6 +1064,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	ssize_t         r;
 	char            buf[BUFSIZ];
 	uint32_t        crc;
+	char            u[37];
 
 	if (lseek(src_fd, 0, SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
@@ -1096,7 +1079,14 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 			    "%s: short read on slab header", __func__);
 	}
 
-	// TODO: compare last_owner and see if we know of this instance.
+	// TODO: eventually this should compare against all possible valid
+	//       instances.
+	if (uuid_compare(hdr.v.f.last_owner, instance_id) != 0) {
+		uuid_unparse(hdr.v.f.last_owner, u);
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: unknown slab owner %s; do we have a rogue instance "
+		    "writing slabs to our backend?", u);
+	}
 
 	if (hdr.v.f.revision != revision) {
 		/*
@@ -1115,10 +1105,6 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		    "expected=%u, slab=%u", __func__, header_crc, crc);
 
 write_hdr_again:
-	if (clock_gettime(CLOCK_REALTIME, &hdr.v.f.last_claimed_at) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime",
-		    __func__);
-
 	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 		if (errno == ENOSPC) {
 			exlog(LOG_ERR, NULL, "%s: ran out of space during; "
@@ -1128,7 +1114,6 @@ write_hdr_again:
 		}
 		return exlog_errf(e, EXLOG_OS, errno, "%s: write", __func__);
 	}
-	crc = crc32_z(0L, Z_NULL, 0);
 
 copy_again:
 	if (lseek(src_fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
@@ -1137,6 +1122,7 @@ copy_again:
 	if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: lseek dst_fd", __func__);
+	crc = crc32_z(0L, Z_NULL, 0);
 	while ((r = read_x(src_fd, buf, sizeof(buf)))) {
 		if (r == -1)
 			return exlog_errf(e, EXLOG_OS, errno,
@@ -1172,16 +1158,30 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	size_t          in_bytes;
 	struct slab_hdr hdr;
 	struct stat     st;
+	struct statvfs  stv;
 	uint64_t        revision;
 	uint32_t        header_crc;
 	uuid_t          owner;
 	struct timespec last_claimed;
 
-	/*
-	 * Retry open/flock() every 10ms, for 1000 times, thus 10s.
-	 */
-	struct timespec tp = {0, 10000000};
-	int             open_retries = 1000;
+	do {
+		if (statvfs(fs_config.data_dir, &stv) == -1)
+			return exlog_errf(e, EXLOG_OS, errno, "%s: statvfs",
+			    __func__);
+
+		if (stv.f_bfree < stv.f_blocks *
+		    (100 - fs_config.unclaim_purge_threshold_pct) / 100) {
+			/*
+			 * We are tight on space, we should avoid filling the
+			 * partition to prevent lmdb from breaking.
+			 */
+			exlog(LOG_WARNING, NULL, "%s: free space is below "
+			    "%lu%%, blocking on claim() for 3 seconds",
+			    __func__, fs_config.unclaim_purge_threshold_pct);
+			sleep(5);
+			continue;
+		}
+	} while(0);
 
 	if (slab_key_valid(&m->v.claim.key, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
@@ -1216,8 +1216,11 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * owns this slab. If the owner is another instance, we'll need
 	 * to relay bytes instead. For now, we just fail.
 	 */
-	if (uuid_compare(owner, instance_id) != 0)
+	if (uuid_compare(owner, instance_id) != 0) {
+		exlog_errf(e, EXLOG_MGR, EXLOG_INVAL,
+		    "%s: consensus for ownership not implemented", __func__);
 		goto fail;
+	}
 
 	/*
 	 * We compute the absolute path for the destination path. We use
@@ -1236,55 +1239,42 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		fd_flags |= O_SYNC;
 
 	/*
-	 * We loop on open instead of simply doing a blocking flock()
-	 * because the lock could be held by a unclaim which will
-	 * unlink() the file at the end. Therefore we would want to
-	 * reopen a new filehandle to ensure it is present in the dir
-	 * entry.
-	 * Note: On unclaim(), unlink() happens before close()
+	 * Note: On unclaim(), unlink() happens before close(). Here
+	 * open_wflock() will loop on open()+flock() until it can either
+	 * acquire the lock or time out. It will re-open the file on every
+	 * attempt, this way we don't end up with an fd for a file about
+	 * to be unlinked.
 	 *
-	 * We put a cap on how many retries because we could run into a
-	 * deadlock if something external to the fuse fs is trying
-	 * to grab this lock and the fs is attempting to use the only
-	 * available worker to release it. The fs itself would normally never
-	 * cause this since it has its own locking around the claimed slab
-	 * and would never claim the same slab if it already has a claim on it.
+	 * If the timeout expires, it means something external to the fuse fs
+	 * is trying to grab this lock and we potentially just avoided a
+	 * deadlock. This can easily happen if we have a single worker, then
+	 * something outside the fuse process is trying to do a claim (and the
+	 * fuse fs has a lock on it), meaning the fuse FS is now unable to
+	 * reach us to unclaim because the worker is busy processing the external
+	 * process' request.
 	 *
-	 * Note that we _never_ unlink dst during the claim process, even
-	 * if we error out. This is to ensure another process doesn't come
-	 * along, create a new file then lock it. Then we end up with
-	 * two processes each having a lock on their own instance of dst_fd,
-	 * but sharing a lock (therefore blocking) on the incoming_fd.
-	 *
-	 * TODO: We have to be sure the slabdb will not let anyone use an
-	 * incomplete download of a slab.
+	 * The fs itself would normally never cause this since it has its own
+	 * locking around the claimed slab and would never claim the same slab
+	 * if it already has a claim on it.
 	 */
-	for (; open_retries > 0; open_retries--) {
-		if ((dst_fd = open_wflock(dst, fd_flags,
-		    0600, LOCK_EX|LOCK_NB)) == -1) {
-			if (errno == EWOULDBLOCK) {
-				nanosleep(&tp, NULL);
-				continue;
-			}
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: open_wflock() for slab %s", __func__, dst);
-			goto fail;
-		}
-		break;
-	}
-	if (open_retries == 0) {
-		exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
-		    "%s: open_wflock() timed out after multiple retries "
-		    "for slab %s; this should not happen if the fs process"
-		    "is properly managing open slabs. Unless someone "
-		    "is attempting to claim this slab from another process?",
-		    __func__, dst);
-		goto fail;
+	if ((dst_fd = open_wflock(dst, fd_flags, 0600,
+	    LOCK_EX, flock_timeout)) == -1) {
+		if (errno == EWOULDBLOCK)
+			exlog_errf(e, EXLOG_MGR, EXLOG_BUSY,
+			    "%s: open_wflock() timed out after multiple "
+			    "retries for slab %s; this should not happen if "
+			    "the fs process is properly managing open slabs. "
+			    "Unless someone is attempting to claim this slab "
+			    "from another process?", __func__, dst);
+		return exlog_errf(e, EXLOG_OS, errno,
+		    "%s: open_wflock() for slab %s", __func__, dst);
 	}
 
 	if (revision == 0) {
 		/*
-		 * If revision is zero, we're dealing with a brand new slab.
+		 * If revision is zero, we're dealing with a brand new slab that
+		 * the fs did not have a change to unclaim yet. This _could_ be
+		 * due to an fs process crash.
 		 * The entry is already in the slabdb, no need to slabdb_put()
 		 * here.
 		 */
@@ -1294,12 +1284,6 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		hdr.v.f.flags = SLAB_DIRTY;
 		hdr.v.f.revision = 0;
 		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
-		if (clock_gettime(CLOCK_REALTIME,
-		    &hdr.v.f.last_claimed_at) == -1) {
-			exlog_errf(e, EXLOG_OS, errno,
-			    "%s: clock_gettime", __func__);
-			goto fail_close_dst;
-		}
 		if (write_x(dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
 			exlog_errf(e, EXLOG_OS, errno,
 			    "%s: short write on slab header", __func__);
@@ -1322,7 +1306,8 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail_close_dst;
 	}
 
-	if (st.st_size > 0) {
+	if (st.st_size >= sizeof(hdr) &&
+	    pread_x(dst_fd, &hdr, sizeof(hdr), 0) == sizeof(hdr)) {
 		/*
 		 * This is the most common case, where a slab was previously
 		 * claimed and is still present in our local disk cache.
@@ -1330,15 +1315,24 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		 * until we are confident we can remove it, we will keep it
 		 * as an extra sanity check.
 		 */
-		if (check_slab_header(dst_fd, header_crc, revision, e) == 0) {
+		if (check_slab_header(&hdr, header_crc, revision, e) == 0) {
 			goto end;
+
 		/*
 		 * Wrong rev/header_crc is fine, just proceed
 		 * with retrieving.
 		 */
 		} else if (!exlog_err_is(e, EXLOG_APP, EXLOG_INVAL))
 			goto fail_close_dst;
+
+		/*
+		 * Still log it though, since this means we're dealing with a
+		 * previous fs crash.
+		 */
+		exlog(LOG_CRIT, e,
+		    "%s: possibly dealing with a past fs crash", __func__);
 		exlog_zerr(e);
+		goto end;
 	}
 
 	/*
@@ -1351,13 +1345,18 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		    "%s: outgoing slab name too long", __func__);
 		goto fail_close_dst;
 	}
-	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0, LOCK_SH)) != -1) {
+	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0,
+	    LOCK_SH, flock_timeout)) != -1) {
 		if (copy_incoming_slab(dst_fd, outgoing_fd, header_crc,
 		    revision, e) == 0) {
 			close(outgoing_fd);
 			goto end;
 		}
+		exlog(LOG_WARNING, e, "%s: fetching slab %s from backend even "
+		    "though it was found in outgoing", __func__, name);
+		exlog_zerr(e);
 	}
+	close(outgoing_fd);
 
 	/*
 	 * At this point we need to pull it from the backend.
@@ -1366,27 +1365,6 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	    fs_config.data_dir, INCOMING_DIR, name) >= sizeof(in_path)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
 		    "%s: inq slab name too long", __func__);
-		goto fail_close_dst;
-	}
-	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) > 0) {
-		/*
-		 * Normally this shouldn't happen, but if for some reason
-		 * we failed to unlink from our incoming queue the open could
-		 * succeed. Furthermore, if the rev and CRC match, well,
-		 * use it.
-		 */
-		if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
-		    revision, e) == 0) {
-			unlink(in_path);
-			close(incoming_fd);
-			goto end;
-		}
-		exlog_strerror(LOG_ERR, errno, "%s: open_wflock", __func__);
-		close(incoming_fd);
-		exlog_zerr(e);
-	} else if (errno != ENOENT) {
-		exlog_errf(e, EXLOG_OS, errno, "%s: open_wflock() for "
-		    "incoming slab %s", __func__, in_path);
 		goto fail_close_dst;
 	}
 
@@ -1414,21 +1392,22 @@ get_again:
 	}
 	mgr_counter_add(MGR_COUNTER_BACKEND_IN_BYTES, in_bytes);
 
-	// TODO: dealock here? Something didn't unlock it somewhere
-	// I suspect many workers raced to copy this slab and stepped on each
-	// other...
-	// Do we actually need a lock on the incoming_fd since we hold one
-	// on the dst slab anyway?
-	if ((incoming_fd = open_wflock(in_path, O_RDWR, 0, LOCK_EX)) == -1) {
+	/*
+	 * We don't normally need a lock on the incoming slab, but in case
+	 * we want to scrub them at some point, it's probably a good idea.
+	 */
+	if ((incoming_fd = open_wflock(in_path, O_RDONLY, 0,
+	    LOCK_SH, flock_timeout)) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: failed to open_wflock "
 		    "after successful backend_get of %s", __func__, in_path);
 		goto fail_close_dst;
 	}
 	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
 	    revision, e) == -1) {
+		close(incoming_fd);
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_INVAL)) {
-			exlog_zerr(e);
 			exlog(LOG_ERR, e, "%s: retrying; ", __func__);
+			exlog_zerr(e);
 			sleep(5);
 			goto get_again;
 		}
@@ -1439,6 +1418,15 @@ get_again:
 	close(incoming_fd);
 
 end:
+	if (clock_gettime(CLOCK_REALTIME, &last_claimed) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
+		goto fail_close_dst;
+	}
+
+	if (slabdb_put(&m->v.claim.key, revision, header_crc, instance_id,
+	    &last_claimed, e) == -1)
+		goto fail_close_dst;
+
 	m->m = MGR_MSG_CLAIM_OK;
 	if (mgr_send(c, dst_fd, m, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
@@ -1448,8 +1436,13 @@ end:
 	return 0;
 
 fail_close_dst:
+	unlink(dst);
 	close(dst_fd);
 fail:
+	if (exlog_fail(e)) {
+		exlog(LOG_ERR, e, "%s", __func__);
+		exlog_zerr(e);
+	}
 	m->m = MGR_MSG_CLAIM_ERR;
 	if (mgr_send(c, -1, m, e) == -1)
 		exlog(LOG_ERR, e, "%s", __func__);
@@ -1706,9 +1699,13 @@ bg_flush()
 			goto fail;
 		}
 
+		/*
+		 * Has to be exclusive since we may be running multiple
+		 * flush workers.
+		 */
 		if ((fd = open_wflock(path, O_RDONLY, 0,
-		    LOCK_EX|LOCK_NB)) == -1) {
-			if (errno != EWOULDBLOCK)
+		    LOCK_EX|LOCK_NB, 0)) == -1) {
+			if (errno != EWOULDBLOCK && errno != ENOENT)
 				exlog_strerror(LOG_ERR, errno, "%s: failed "
 				    "to open_wflock(): %s", __func__, path);
 			continue;
@@ -1772,13 +1769,13 @@ scrub(const char *path)
 		return;
 	}
 
-	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB)) == -1) {
-		if (errno != EWOULDBLOCK) {
-			exlog_strerror(LOG_ERR, errno, "%s: failed "
-			    "to open_wflock(): %s", __func__, path);
-		} else {
+	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB, 0)) == -1) {
+		if (errno == EWOULDBLOCK) {
 			exlog(LOG_INFO, NULL, "%s: slab %s is already "
 			    "flock()'d; skipping", __func__, path);
+		} else {
+			exlog_strerror(LOG_ERR, errno, "%s: failed "
+			    "to open_wflock(): %s", __func__, path);
 		}
 		return;
 	}
@@ -1790,16 +1787,15 @@ scrub(const char *path)
 		goto end;
 	}
 
-	if (hdr.v.f.revision < revision) {
-		exlog(LOG_CRIT, NULL, "%s: slab %s has a revision older than "
-		    "what is in the database", __func__, path);
-		set_fs_error();
-		goto end;
-	}
-
-	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc) {
-		exlog(LOG_CRIT, NULL, "%s: slab %s has a header CRC that "
-		    "differs from the database", __func__, path);
+	if (check_slab_header(&hdr, header_crc, revision, &e) != 0) {
+		if (hdr.v.f.revision == 0) {
+			exlog(LOG_ERR, NULL, "%s: slab %s has revision 0, "
+			    "meaning it was never unclaimed yet did not have "
+			    "a lock on it. Are we dealing with a slab from a "
+			    "previous fs crash?", __func__, path);
+			return;
+		}
+		exlog(LOG_CRIT, &e, "%s: %s", __func__, path);
 		set_fs_error();
 		goto end;
 	}
@@ -1812,7 +1808,6 @@ scrub(const char *path)
 		exlog(LOG_WARNING, NULL, "%s: slab %s was dirty despite "
 		    "being unclaimed; incrementing revision and sending "
 		    "to outgoing now", __func__, path);
-		hdr.v.f.revision++;
 		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {
 			if (exlog_err_is(&e, EXLOG_MGR, EXLOG_BUSY)) {
 				exlog_zerr(&e);
@@ -1824,7 +1819,7 @@ scrub(const char *path)
 			exlog(LOG_ERR, &e, "%s", __func__);
 			goto end;
 		}
-		hdr.v.f.flags &= ~SLAB_DIRTY;
+
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 			exlog_strerror(LOG_ERR, errno,
 			    "%s: short write on slab header", __func__);
@@ -1833,7 +1828,7 @@ scrub(const char *path)
 		}
 		crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 		if (slabdb_put(&sk, hdr.v.f.revision, crc, instance_id,
-		    &hdr.v.f.last_claimed_at, &e) == -1) {
+		    NULL, &e) == -1) {
 			exlog(LOG_CRIT, &e, "%s: slabdb_put", __func__);
 			set_fs_error();
 			goto end;
@@ -1955,13 +1950,19 @@ bg_purge()
 		}
 
 		if (p - purge_entries >= purge_entries_sz) {
+			exlog(LOG_DEBUG, NULL, "%s: reallocating purge "
+			    "slab buffer from %u to %u bytes",
+			    __func__, purge_entries_sz, purge_entries_sz * 2);
 			p_resized = realloc(purge_entries,
-			    purge_entries_sz * 2);
+			    2 * purge_entries_sz * sizeof(struct purge_entry));
 			/*
 			 * No more memory. Just purge what we have for now.
 			 */
-			if (p_resized == NULL)
+			if (p_resized == NULL) {
+				exlog_strerror(LOG_ERR, errno, "%s: realloc",
+				    __func__);
 				break;
+			}
 			purge_entries_sz *= 2;
 			p = p_resized + (p - purge_entries);
 			purge_entries = p_resized;
@@ -1990,28 +1991,22 @@ bg_purge()
 		}
 
 		if ((fd = open_wflock(path, O_RDWR, 0,
-		    LOCK_EX|LOCK_NB)) == -1) {
-			if (errno != EWOULDBLOCK)
+		    LOCK_EX|LOCK_NB, 0)) == -1) {
+			if (errno != EWOULDBLOCK && errno != ENOENT)
 				exlog_strerror(LOG_ERR, errno, "%s: failed "
 				    "to open_wflock(): %s", __func__, path);
 			continue;
 		}
 
 		if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+			close(fd);
 			exlog_strerror(LOG_ERR, errno,
 			    "%s: short read on slab header", __func__);
 			set_fs_error();
 			goto fail;
 		}
 
-		if (hdr.v.f.last_claimed_at.tv_sec !=
-		    p->v.last_claimed.tv_sec ||
-		    hdr.v.f.last_claimed_at.tv_nsec !=
-		    p->v.last_claimed.tv_nsec) {
-			/*
-			 * This slab was claimed while we were sorting;
-			 * skip it.
-			 */
+		if (hdr.v.f.flags & SLAB_DIRTY) {
 			close(fd);
 			continue;
 		}
@@ -2024,20 +2019,24 @@ bg_purge()
 		}
 
 		if (slabdb_put(&p->sk, p->v.revision, p->v.header_crc,
-		    uuid_zero, &p->v.last_claimed, &e) == -1) {
+		    uuid_zero, NULL, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
 			close(fd);
 			continue;
 		}
 
-		if (unlink(path) == -1)
+		if (unlink(path) == -1) {
 			exlog_strerror(LOG_ERR, errno, "%s", __func__);
-
-		exlog(LOG_INFO, NULL, "%s: purged path", __func__);
+		} else {
+			exlog(LOG_INFO, NULL, "%s: purged slab %s "
+			    "(revision=%lu, crc=%u)", __func__, path,
+			    p->v.revision, p->v.header_crc);
+			mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
+			used_blocks -= st.st_blocks;
+		}
 
 		close(fd);
 
-		used_blocks -= st.st_blocks;
 		if (used_blocks <
 		    stv.f_blocks * fs_config.purge_threshold_pct / 100)
 			break;
@@ -2181,8 +2180,8 @@ main(int argc, char **argv)
 	int                 lsock;
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
-	int                 bgworkers = 1;
-	int                 purger_interval = 60;
+	int                 bgworkers = 4;
+	int                 purger_interval = 5;
 	int                 scrubber_interval = 3600;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
@@ -2293,11 +2292,13 @@ main(int argc, char **argv)
 	}
 
 	if (access(fs_config.data_dir, R_OK|X_OK) == -1) {
-		exlog_strerror(LOG_ERR, errno, "access: %s", fs_config.data_dir);
+		exlog_strerror(LOG_ERR, errno, "access: %s",
+		    fs_config.data_dir);
 		exit(1);
 	}
 	if (access(fs_config.mgr_exec, X_OK) == -1) {
-		exlog_strerror(LOG_ERR, errno, "access: %s", fs_config.mgr_exec);
+		exlog_strerror(LOG_ERR, errno, "access: %s",
+		    fs_config.mgr_exec);
 		exit(1);
 	}
 
@@ -2437,7 +2438,7 @@ main(int argc, char **argv)
 	}
 
 	for (n = 0; n < bgworkers; n++) {
-		bgworker("flush", &bg_flush, 60, 1);
+		bgworker("flush", &bg_flush, bgworkers, 1);
 		workers++;
 	}
 

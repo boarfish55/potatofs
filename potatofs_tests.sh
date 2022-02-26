@@ -5,6 +5,8 @@ fatal() {
 	exit 1
 }
 
+ulimit -c unlimited
+
 backend_data_path=/dev/shm/potatofs_backend
 basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 

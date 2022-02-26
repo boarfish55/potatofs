@@ -90,7 +90,8 @@ struct mgr_msg {
 		} snd_counters;
 
 		struct {
-			uint64_t c[MGR_COUNTER_LAST];
+			uint64_t c[COUNTER_LAST];
+			uint64_t mgr_c[MGR_COUNTER_LAST];
 		} rcv_counters;
 	} v;
 

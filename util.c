@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include "exlog.h"
 #include "util.h"
 
@@ -260,20 +261,42 @@ mkdir_x(const char *path, mode_t mode)
 	return 0;
 }
 
+/*
+ * If wait_seconds is 0, don't set LOCK_NB. We behave like plain open() + flock().
+ * If wait_seconds is >0, we will sleep for a maximum of this many seconds in
+ * 10ms increments until we can either grab the lock or run out of time. We try
+ * to re-open the file every time in case the previous lock holder unlink'd it.
+ */
 int
-open_wflock(const char *path, int flags, mode_t mode, int lk)
+open_wflock(const char *path, int flags, mode_t mode, int lk,
+    uint32_t wait_seconds)
 {
-	int fd;
+	int    fd, retries;
+	struct timespec tp = {0, 10000000}, req, rem;  /* 10ms */
 
-	if (flags & O_CREAT) {
-		if ((fd = open(path, flags, mode)) == -1)
+	if (wait_seconds > 0)
+		lk |= LOCK_NB;
+
+	for (retries = (wait_seconds * 1000000000) / tp.tv_nsec;
+	    retries > 0 || !wait_seconds; retries--) {
+		if (flags & O_CREAT) {
+			if ((fd = open(path, flags, mode)) == -1)
+				return -1;
+		} else if ((fd = open(path, flags)) == -1)
 			return -1;
-	} else if ((fd = open(path, flags)) == -1)
-		return -1;
 
-	if (flock(fd, lk) == -1) {
-		close(fd);
-		return -1;
+		if (flock(fd, lk) == -1) {
+			if (wait_seconds > 0 && errno == EWOULDBLOCK) {
+				memcpy(&req, &tp, sizeof(req));
+				while (nanosleep(&req, &rem) == -1)
+					memcpy(&req, &rem, sizeof(req));
+				close(fd);
+				continue;
+			}
+			close(fd);
+			return -1;
+		}
+		break;
 	}
 
 	return fd;

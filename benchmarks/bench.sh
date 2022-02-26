@@ -1,7 +1,7 @@
 #!/bin/sh
 
 name=potatofs_rw_integrity
-dir=/mnt/potatofs
+dir=/var/potatofs/mnt
 out=$(mktemp -t potatofs_rw_integrity_$(date +'%Y-%m-%d').out.XXXXXX)
 
 if ! fio --name="$name" \

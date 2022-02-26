@@ -56,7 +56,7 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		goto end;
 	}
 
-	if ((fd = open_wflock(path, O_CREAT|O_RDWR, 0600, LOCK_EX)) == -1) {
+	if ((fd = open_wflock(path, O_CREAT|O_RDWR, 0600, LOCK_EX, 0)) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: open_wflock()", __func__);
 		goto end;
@@ -133,7 +133,7 @@ fs_info_read(struct fs_info *fs_info, struct exlog_err *e)
 		goto end;
 	}
 
-	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH)) == -1) {
+	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH, 0)) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: open_wflock()", __func__);
 		goto end;
@@ -178,7 +178,7 @@ fs_info_write(const struct fs_info *fs_info, struct exlog_err *e)
 		return -1;
 	}
 
-	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX)) == -1) {
+	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX, 0)) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: open_wflock()", __func__);
 		goto end;
@@ -210,7 +210,7 @@ fs_info_inspect(struct fs_info *fs, struct exlog_err *e)
 		return exlog_errf(e, EXLOG_OS, EXLOG_NAMETOOLONG,
 		    "%s: potatofs base path too long", __func__);
 
-	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH)) == -1)
+	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH, 0)) == -1)
 		return exlog_errf(e, EXLOG_OS, errno,
 		    "%s: open_wflock()", __func__);
 
