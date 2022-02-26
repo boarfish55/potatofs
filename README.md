@@ -161,6 +161,8 @@ TODO
 * exlog (possibly renaming to xlog) needs to cleanup in how calls are made
   and also how we have to clear the error in many places. Also we should
   add a descriptive text to the contextual errors instead of just printing
-  the index.
+  the index. Also, instead of doing exlog_zerr() all over the place,
+  simply do it directly inside function args since it returns the struct
+  it just cleared. This way we ensure users already clear it.
 * Refactor de fuse ops handling as a queue so we can implement nice things
   like interrupting in flight operations, or journaling/soft updates.
