@@ -57,7 +57,7 @@ struct slab_key {
  * filesystem to avoid read on write.
  */
 struct slab_hdr {
-#define SLAB_VERSION 2
+#define SLAB_VERSION 3
 	union {
 		struct {
 			/*
