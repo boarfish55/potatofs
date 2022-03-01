@@ -25,7 +25,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <lmdb.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +32,7 @@
 #include <unistd.h>
 #include <zlib.h>
 #include "counter_names.h"
+#include "slabdb.h"
 #include "slabs.h"
 #include "fs_info.h"
 #include "inodes.h"
@@ -96,8 +96,7 @@ usage()
 	    "           counters\n"
 	    "           df\n"
 	    "           fsck\n"
-	    "           claim slab <inode> <offset> [create]\n"
-	    "           claim itbl <inode>\n"
+	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
 	    "\n"
 	    "\t-h\t\t\tPrints this help\n"
@@ -487,11 +486,15 @@ df(int argc, char **argv)
 	printf("  statvfs:\n");
 	printf("    f_bsize:   %lu\n", m.v.fs_info.stats.f_bsize);
 	printf("    f_frsize:  %lu\n", m.v.fs_info.stats.f_frsize);
+
 	printf("    f_blocks:  %lu\n", m.v.fs_info.stats.f_blocks);
 	printf("    f_bfree:   %lu\n", m.v.fs_info.stats.f_bfree);
 	printf("    f_bavail:  %lu\n", m.v.fs_info.stats.f_bavail);
+
+	printf("    f_files:   %lu\n", m.v.fs_info.stats.f_files);
+	printf("    f_ffree:   %lu\n", m.v.fs_info.stats.f_ffree);
+	printf("    f_favail:  %lu\n", m.v.fs_info.stats.f_favail);
 	/*
-	 * We don't print files free & avail, since we do not track those.
 	 * Also, fsid is currently irrelevant.
 	 */
 	printf("    f_namemax: %lu\n", m.v.fs_info.stats.f_namemax);
@@ -531,7 +534,6 @@ dump_config(int argc, char **argv)
 	printf("mgr_sock_path:               %s\n", fs_config.mgr_sock_path);
 	printf("mgr_exec:                    %s\n", fs_config.mgr_exec);
 	printf("cfg_path:                    %s\n", fs_config.cfg_path);
-	printf("mdb_map_size:                %lu\n", fs_config.mdb_map_size);
 	printf("unclaim_purge_threshold_pct: %u\n",
 	    fs_config.unclaim_purge_threshold_pct);
 	printf("purge_threshold_pct:         %u\n",
@@ -619,69 +621,38 @@ top(int argc, char **argv)
 }
 
 int
+slabdb_print(const struct slab_key *sk, const struct slabdb_val *v, void *data)
+{
+	char u[37];
+	uuid_unparse(v->owner, u);
+	printf("%s: sk=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
+	    " last_claimed=%lu.%lu\n", __func__,
+	    sk->ino, sk->base, v->revision, v->header_crc, u,
+	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
+	return 0;
+}
+
+int
 slabdb(int argc, char **argv)
 {
-	int                r;
-	MDB_env           *mdb;
-	MDB_txn           *txn;
-	MDB_dbi            dbi;
-	MDB_cursor        *cursor;
-	MDB_val            mk, mv;
-	struct slab_key   *k;
-	struct slabdb_val *v;
-	char               mdb_path[PATH_MAX];
-	char               u[37];
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct fs_info   fs_info;
 
-	if (snprintf(mdb_path, sizeof(mdb_path), "%s/%s", fs_config.data_dir,
-	    DEFAULT_MDB_NAME) >= sizeof(mdb_path)) {
-		errx(1, "%s: mdb name too long", __func__);
+	if (fs_info_inspect(&fs_info, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
 	}
 
-	if ((r = mdb_env_create(&mdb)) != 0)
-		errx(1, "mdb_env_create: %s", mdb_strerror(r));
-
-	if ((r = mdb_env_open(mdb, mdb_path, MDB_NOSUBDIR, 0644)) != 0)
-		errx(1, "mdb_env_open: %s", mdb_strerror(r));
-
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)) != 0)
-		errx(1, "%s: mdb_txn_begin: %s", __func__, mdb_strerror(r));
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi)) != 0) {
-		mdb_txn_abort(txn);
-		errx(1, "%s: mdb_dbi_open: %s", __func__, mdb_strerror(r));
+	if (slabdb_init(fs_info.instance_id, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
 	}
 
-	if ((r = mdb_cursor_open(txn, dbi, &cursor)) != 0) {
-		mdb_txn_abort(txn);
-		errx(1, "%s: mdb_cursor_open: %s", __func__, mdb_strerror(r));
+	if (slabdb_loop(&slabdb_print, NULL, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
 	}
 
-	for (r = mdb_cursor_get(cursor, &mk, &mv, MDB_FIRST);
-	    r != MDB_NOTFOUND;
-	    r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) {
-		if (r != 0) {
-			mdb_cursor_close(cursor);
-			mdb_txn_abort(txn);
-			errx(1, "%s: mdb_cursor_get: %s", __func__,
-			    mdb_strerror(r));
-		}
-		k = (struct slab_key *)mk.mv_data;
-		v = (struct slabdb_val *)mv.mv_data;
-
-		uuid_unparse(v->owner, u);
-		printf("%s: k=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
-		    " last_claimed=%lu.%lu\n", __func__,
-		    ((struct slab_key *)k)->ino,
-		    ((struct slab_key *)k)->base,
-		    ((struct slabdb_val *)v)->revision,
-		    ((struct slabdb_val *)v)->header_crc, u,
-		    ((struct slabdb_val *)v)->last_claimed.tv_sec,
-		    ((struct slabdb_val *)v)->last_claimed.tv_nsec);
-	}
-
-	mdb_cursor_close(cursor);
-	mdb_txn_abort(txn);
-	mdb_env_close(mdb);
 	return 0;
 }
 
@@ -1029,8 +1000,8 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 
 	for (; i < inode.v.f.size; i += slab_sz) {
-		if ((slab_data = slab_inspect(mgr, &sk, OSLAB_NOCREATE, &hdr,
-		    &slab_sz, &e)) == NULL) {
+		if ((slab_data = slab_inspect(mgr, slab_key(&sk, ino, i),
+		    OSLAB_NOCREATE, &hdr, &slab_sz, &e)) == NULL) {
 			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 				exlog_zerr(&e);
 				break;
@@ -1054,7 +1025,7 @@ show_dir(int argc, char **argv)
 			printf(" removed");
 		printf("\n\n");
 
-		memcpy(data + i, slab_data, slab_sz);
+		memcpy(data + i, slab_data + i, slab_sz - i);
 		free(slab_data);
 	}
 

@@ -164,7 +164,7 @@ int slab_make_dirs(struct exlog_err *);
  * Computes the path/filename of a slab based on the slab type
  * and inode (for data slabs) or base inode (for itbl slabs).
  */
-int slab_path(char *, size_t, struct slab_key *, int, struct exlog_err *);
+int slab_path(char *, size_t, const struct slab_key *, int, struct exlog_err *);
 int slab_parse_path(const char *, struct slab_key *, struct exlog_err *);
 
 /*

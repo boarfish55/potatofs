@@ -28,7 +28,7 @@ enum exlog_errcode {
 	EXLOG_NONE = 0,
 	EXLOG_APP,      /* App-level error */
 	EXLOG_OS,       /* OS-level error */
-	EXLOG_MDB       /* LMDB error */
+	EXLOG_DB        /* DB error */
 };
 
 enum exlog_cerrcode {

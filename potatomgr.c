@@ -41,27 +41,29 @@
 #include <syslog.h>
 #include <unistd.h>
 #include <jansson.h>
-#include <lmdb.h>
 #include <uuid/uuid.h>
 #include <zlib.h>
 #include "config.h"
 #include "fs_info.h"
 #include "mgr.h"
+#include "slabdb.h"
 #include "slabs.h"
 
 struct mgr_counters {
 	sem_t    sem;
 	uint64_t c[COUNTER_LAST];
 	uint64_t mgr_c[MGR_COUNTER_LAST];
-	size_t   mdb_entries;
+};
+
+struct fs_usage {
+	struct statvfs stv;
+	fsblkcnt_t     used_blocks;
 };
 
 char                *dbg_spec = NULL;
 struct timeval       socket_timeout = {60, 0};
 extern char        **environ;
-MDB_env             *mdb;
 uuid_t               instance_id;
-uuid_t               uuid_zero;
 struct mgr_counters *mgr_counters;
 int                  shutdown_requested = 0;
 const uint32_t       flock_timeout = 10;
@@ -148,319 +150,6 @@ mgr_counter_add(int c, uint64_t v)
 
 	if (sem_post(&mgr_counters->sem) == -1)
 		exlog_strerror(LOG_ERR, errno, "sem_wait");
-}
-
-static void
-mgr_counter_incr_mdb_entries()
-{
-	if (sem_wait(&mgr_counters->sem) == -1) {
-		exlog_strerror(LOG_ERR, errno, "sem_wait");
-		return;
-	}
-
-	mgr_counters->mdb_entries++;
-
-	if (sem_post(&mgr_counters->sem) == -1)
-		exlog_strerror(LOG_ERR, errno, "sem_wait");
-}
-
-/*
- * If last_claimed is NULL, we just write back the previous value.
- */
-static int
-slabdb_put(struct slab_key *sk, uint64_t revision, uint32_t header_crc,
-    uuid_t owner, const struct timespec *last_claimed, struct exlog_err *e)
-{
-	int                r;
-	MDB_txn           *txn;
-	MDB_dbi            dbi;
-	MDB_val            mk, mv;
-	MDB_cursor        *cursor;
-	struct slab_key    k;
-	struct slabdb_val  v;
-	char               u[37];
-
-	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)))
-		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
-		    __func__, mdb_strerror(r));
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
-		    __func__, mdb_strerror(r));
-		goto fail;
-	}
-
-	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_open: %s",
-		    __func__, mdb_strerror(r));
-		goto fail;
-	}
-
-	/*
-	 * We could in theory just use key, but we want to be certain
-	 * that the structure was zeroed to avoid random bytes in
-	 * the structure gaps, as that would mess up the key in the database.
-	 */
-	bzero(&k, sizeof(k));
-	k.ino = sk->ino;
-	k.base = sk->base;
-
-	mk.mv_size = sizeof(k);
-	mk.mv_data = &k;
-
-	bzero(&v, sizeof(v));
-	v.revision = revision;
-	v.header_crc = header_crc;
-	uuid_copy(v.owner, owner);
-	uuid_unparse(v.owner, u);
-	if (last_claimed)
-		memcpy(&v.last_claimed, last_claimed, sizeof(struct timespec));
-
-	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_SET_KEY)) == 0 &&
-	    memcmp(&k, mk.mv_data, sizeof(k)) == 0 &&
-	    v.revision == ((struct slabdb_val *)mv.mv_data)->revision &&
-	    v.header_crc == ((struct slabdb_val *)mv.mv_data)->header_crc &&
-	    uuid_compare(v.owner,
-	    ((struct slabdb_val *)mv.mv_data)->owner) == 0 &&
-	    (last_claimed == NULL ||
-	    memcmp(last_claimed, &((struct slabdb_val *)mv.mv_data)->last_claimed,
-	    sizeof(struct timespec)))) {
-		/* Found the key, same value; do nothing. */
-		exlog(LOG_DEBUG, NULL, "%s: no change for k=%lu/%lu, "
-		    "v=%lu/%u/%s; not writing", __func__,
-		    ((struct slab_key *)mk.mv_data)->ino,
-		    ((struct slab_key *)mk.mv_data)->base,
-		    ((struct slabdb_val *)mv.mv_data)->revision,
-		    ((struct slabdb_val *)mv.mv_data)->header_crc, u);
-		mdb_cursor_close(cursor);
-		mdb_txn_abort(txn);
-		return 0;
-	} else if (r != 0 && r != MDB_NOTFOUND) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_get: %s",
-		    __func__, mdb_strerror(r));
-		goto fail_close_cursor;
-	}
-
-	mv.mv_size = sizeof(v);
-	mv.mv_data = &v;
-
-	if ((r = mdb_cursor_put(cursor, &mk, &mv,
-	    (r == MDB_NOTFOUND) ? 0 : MDB_CURRENT))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_put: %s",
-		    __func__, mdb_strerror(r));
-		goto fail_close_cursor;
-	}
-
-	if ((r = mdb_txn_commit(txn))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
-		    __func__, mdb_strerror(r));
-		mdb_cursor_close(cursor);
-		/*
-		 * TODO: It's unclear if mdb_txn_abort() should be used when
-		 * commit fails. I've seen MDB_BAD_RSLOT when we do so.
-		 */
-		return -1;
-	}
-	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%lu/%u/%s", __func__,
-	    k.ino, k.base, v.revision, v.header_crc, u);
-	return 0;
-fail_close_cursor:
-	mdb_cursor_close(cursor);
-fail:
-	mdb_txn_abort(txn);
-	return -1;
-}
-
-/*
- * Get the revision, CRC and current owner of a slab; if the slab is not found
- * in the database (that is, it was never allocated), create an entry with
- * revision 0 to claim ownership.
- * TODO: Eventually this will involved consensus resolution as to who gets
- * ownership of the slab.
- */
-static int
-slabdb_get(struct slab_key *key, uint32_t oflags, uint64_t *revision,
-    uint32_t *header_crc, uuid_t *owner, struct timespec *last_claimed,
-    struct exlog_err *e)
-{
-	int                r;
-	MDB_txn           *txn;
-	MDB_dbi            dbi;
-	MDB_val            mk, mv;
-	struct slab_key    k;
-	struct slabdb_val  v;
-	char               u[37];
-
-	if ((r = mdb_txn_begin(mdb, NULL, 0, &txn)))
-		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
-		    __func__, mdb_strerror(r));
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
-		    __func__, mdb_strerror(r));
-		goto fail;
-	}
-
-	/*
-	 * We could in theory just use key, but we want to be certain
-	 * that the structure was zeroed to avoid random bytes in
-	 * the structure gaps, as that would mess up the key in the database.
-	 */
-	bzero(&k, sizeof(k));
-	k.ino = key->ino;
-	k.base = key->base;
-
-	mk.mv_size = sizeof(k);
-	mk.mv_data = &k;
-
-	if ((r = mdb_get(txn, dbi, &mk, &mv))) {
-		if (r != MDB_NOTFOUND || (oflags & OSLAB_NOCREATE)) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_get: %s",
-			    __func__, mdb_strerror(r));
-			goto fail;
-		}
-
-		bzero(&v, sizeof(v));
-		uuid_copy(v.owner, instance_id);
-		if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
-			exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime",
-			    __func__);
-			goto fail;
-		}
-
-		mv.mv_size = sizeof(v);
-		mv.mv_data = &v;
-
-		// TODO: consensus resolution here; determine owner of
-		// new slab.
-
-		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
-			    __func__, mdb_strerror(r));
-			goto fail;
-		}
-
-		if ((r = mdb_txn_commit(txn))) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
-			    __func__, mdb_strerror(r));
-			goto fail;
-		}
-		mgr_counter_incr_mdb_entries();
-
-		*revision = v.revision;
-		*header_crc = v.header_crc;
-		uuid_copy(*owner, v.owner);
-		memcpy(last_claimed, &v.last_claimed, sizeof(struct timespec));
-
-		goto end;
-	}
-
-	*revision = ((struct slabdb_val *)mv.mv_data)->revision;
-	*header_crc = ((struct slabdb_val *)mv.mv_data)->header_crc;
-	memcpy(last_claimed, &((struct slabdb_val *)mv.mv_data)->last_claimed,
-	    sizeof(struct timespec));
-
-	if (uuid_compare(((struct slabdb_val *)mv.mv_data)->owner,
-	    instance_id) != 0) {
-		// TODO: consensus resolution here; determine owner of
-		// existing slab
-		memcpy(&v, mv.mv_data, sizeof(v));
-		uuid_copy(v.owner, instance_id);
-		uuid_copy(*owner, instance_id);
-
-		mv.mv_size = sizeof(v);
-		mv.mv_data = &v;
-
-		uuid_unparse(v.owner, u);
-		exlog(LOG_DEBUG, NULL, "%s: changing ownership: "
-		    "k=%lu/%lu, v=%u/%lu/%s\n", __func__, k.ino, k.base,
-		    v.revision, v.header_crc, u);
-		if ((r = mdb_put(txn, dbi, &mk, &mv, 0))) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_put: %s",
-			    __func__, mdb_strerror(r));
-			goto fail;
-		}
-		if ((r = mdb_txn_commit(txn))) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_commit: %s",
-			    __func__, mdb_strerror(r));
-			goto fail;
-		}
-	} else {
-		uuid_copy(*owner, ((struct slabdb_val *)mv.mv_data)->owner);
-		mdb_txn_abort(txn);
-	}
-end:
-	uuid_unparse(*owner, u);
-	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%u/%lu/%s\n", __func__,
-	    k.ino, k.base, *revision, *header_crc, u);
-
-	return 0;
-fail:
-	mdb_txn_abort(txn);
-	return -1;
-}
-
-static int
-slabdb_loop(void(*fn)(const struct slab_key *, const struct slabdb_val *),
-    struct exlog_err *e)
-{
-	int              r;
-	MDB_txn         *txn;
-	MDB_dbi          dbi;
-	MDB_cursor      *cursor;
-	MDB_val          mk, mv;
-
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn)))
-		return exlog_errf(e, EXLOG_MDB, r, "%s: mdb_txn_begin: %s",
-		    __func__, mdb_strerror(r));
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_dbi_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		return -1;
-	}
-
-	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
-		exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		return -1;
-	}
-
-	for (r = mdb_cursor_get(cursor, &mk, &mv, MDB_FIRST);
-	    r != MDB_NOTFOUND;
-	    r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) {
-		if (r != 0) {
-			exlog_errf(e, EXLOG_MDB, r, "%s: mdb_cursor_get: %s",
-			    __func__, mdb_strerror(r));
-			mdb_cursor_close(cursor);
-			mdb_txn_abort(txn);
-			return -1;
-		}
-		fn((struct slab_key *)mk.mv_data,
-		    (struct slabdb_val *)mv.mv_data);
-	}
-
-	mdb_cursor_close(cursor);
-	mdb_txn_abort(txn);
-	return 0;
-}
-
-static size_t
-mgr_counter_get_mdb_entries()
-{
-	size_t entries;
-	if (sem_wait(&mgr_counters->sem) == -1) {
-		exlog_strerror(LOG_ERR, errno, "sem_wait");
-		return ULONG_MAX;
-	}
-
-	entries = mgr_counters->mdb_entries;
-
-	if (sem_post(&mgr_counters->sem) == -1)
-		exlog_strerror(LOG_ERR, errno, "sem_wait");
-	return entries;
 }
 
 static int
@@ -756,11 +445,11 @@ fail:
 static int
 unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 {
-	struct slab_hdr hdr;
-	char            src[PATH_MAX];
-	int             purge = 0;
-	struct statvfs  stv;
-	uint32_t        crc;
+	struct slab_hdr   hdr;
+	char              src[PATH_MAX];
+	int               purge = 0;
+	struct statvfs    stv;
+	struct slabdb_val v;
 
 	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
@@ -811,11 +500,16 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		}
 	}
 
-	crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-	if (slabdb_put(&m->v.unclaim.key, hdr.v.f.revision, crc,
-	    (purge) ? uuid_zero : instance_id, NULL, e) == -1) {
-		if (exlog_err_is(e, EXLOG_MDB, MDB_MAP_FULL))
-			m->err = EXLOG_NOSPC;
+	v.revision = hdr.v.f.revision;
+	v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+	if (purge)
+		uuid_clear(v.owner);
+	else
+		uuid_copy(v.owner, instance_id);
+
+	if (slabdb_put(&m->v.unclaim.key, &v,
+	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
+	    e) == -1) {
 		set_fs_error();
 		goto fail;
 	}
@@ -831,7 +525,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 		} else {
 			exlog(LOG_INFO, NULL, "%s: purged slab %s "
 			    "(revision=%lu, crc=%u)",
-			    __func__, src, hdr.v.f.revision, crc);
+			    __func__, src, hdr.v.f.revision, v.header_crc);
 			mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
 		}
 	}
@@ -1151,29 +845,28 @@ copy_again:
 static int
 claim(int c, struct mgr_msg *m, struct exlog_err *e)
 {
-	char            name[NAME_MAX + 1];
-	char            in_path[PATH_MAX], out_path[PATH_MAX], dst[PATH_MAX];
-	int             fd_flags = O_RDWR|O_CREAT;
-	int             dst_fd, incoming_fd, outgoing_fd;
-	size_t          in_bytes;
-	struct slab_hdr hdr;
-	struct stat     st;
-	struct statvfs  stv;
-	uint64_t        revision;
-	uint32_t        header_crc;
-	uuid_t          owner;
-	struct timespec last_claimed;
+	char              name[NAME_MAX + 1];
+	char              in_path[PATH_MAX], out_path[PATH_MAX], dst[PATH_MAX];
+	int               fd_flags = O_RDWR|O_CREAT;
+	int               dst_fd, incoming_fd, outgoing_fd;
+	size_t            in_bytes;
+	struct slab_hdr   hdr;
+	struct stat       st;
+	struct statvfs    stv;
+	struct slabdb_val v;
 
 	do {
-		if (statvfs(fs_config.data_dir, &stv) == -1)
-			return exlog_errf(e, EXLOG_OS, errno, "%s: statvfs",
+		if (statvfs(fs_config.data_dir, &stv) == -1) {
+			exlog_errf(e, EXLOG_OS, errno, "%s: statvfs",
 			    __func__);
+			goto fail;
+		}
 
 		if (stv.f_bfree < stv.f_blocks *
 		    (100 - fs_config.unclaim_purge_threshold_pct) / 100) {
 			/*
 			 * We are tight on space, we should avoid filling the
-			 * partition to prevent lmdb from breaking.
+			 * partition to prevent the slabdb from breaking.
 			 */
 			exlog(LOG_WARNING, NULL, "%s: free space is below "
 			    "%lu%%, blocking on claim() for 3 seconds",
@@ -1186,23 +879,20 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	if (slab_key_valid(&m->v.claim.key, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
 		exlog_zerr(e);
-		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 		    "%s: aborting", __func__);
+		goto fail;
 	}
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
 	 * a new entry will be allocated and returned.
 	 */
-	if (slabdb_get(&m->v.claim.key, m->v.claim.oflags, &revision,
-	    &header_crc, &owner, &last_claimed, e) == -1) {
-		if (exlog_err_is(e, EXLOG_MDB, MDB_MAP_FULL))
-			m->err = EXLOG_NOSPC;
-		else if (m->v.claim.oflags & OSLAB_NOCREATE &&
-		    exlog_err_is(e, EXLOG_MDB, MDB_NOTFOUND)) {
-			exlog_zerr(e);
+	if (slabdb_get(&m->v.claim.key, &v, m->v.claim.oflags, e) == -1) {
+		if (m->v.claim.oflags & OSLAB_NOCREATE &&
+		    exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 			m->m = MGR_MSG_CLAIM_NOENT;
-			if (mgr_send(c, -1, m, e) == -1) {
+			if (mgr_send(c, -1, m, exlog_zerr(e)) == -1) {
 				exlog(LOG_ERR, e, "%s", __func__);
 				goto fail;
 			}
@@ -1216,7 +906,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	 * owns this slab. If the owner is another instance, we'll need
 	 * to relay bytes instead. For now, we just fail.
 	 */
-	if (uuid_compare(owner, instance_id) != 0) {
+	if (uuid_compare(v.owner, instance_id) != 0) {
 		exlog_errf(e, EXLOG_MGR, EXLOG_INVAL,
 		    "%s: consensus for ownership not implemented", __func__);
 		goto fail;
@@ -1270,7 +960,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		    "%s: open_wflock() for slab %s", __func__, dst);
 	}
 
-	if (revision == 0) {
+	if (v.revision == 0) {
 		/*
 		 * If revision is zero, we're dealing with a brand new slab that
 		 * the fs did not have a change to unclaim yet. This _could_ be
@@ -1315,7 +1005,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 		 * until we are confident we can remove it, we will keep it
 		 * as an extra sanity check.
 		 */
-		if (check_slab_header(&hdr, header_crc, revision, e) == 0) {
+		if (check_slab_header(&hdr, v.header_crc, v.revision, e) == 0) {
 			goto end;
 
 		/*
@@ -1347,8 +1037,8 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	}
 	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0,
 	    LOCK_SH, flock_timeout)) != -1) {
-		if (copy_incoming_slab(dst_fd, outgoing_fd, header_crc,
-		    revision, e) == 0) {
+		if (copy_incoming_slab(dst_fd, outgoing_fd, v.header_crc,
+		    v.revision, e) == 0) {
 			close(outgoing_fd);
 			goto end;
 		}
@@ -1402,8 +1092,8 @@ get_again:
 		    "after successful backend_get of %s", __func__, in_path);
 		goto fail_close_dst;
 	}
-	if (copy_incoming_slab(dst_fd, incoming_fd, header_crc,
-	    revision, e) == -1) {
+	if (copy_incoming_slab(dst_fd, incoming_fd, v.header_crc,
+	    v.revision, e) == -1) {
 		close(incoming_fd);
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_INVAL)) {
 			exlog(LOG_ERR, e, "%s: retrying; ", __func__);
@@ -1418,13 +1108,12 @@ get_again:
 	close(incoming_fd);
 
 end:
-	if (clock_gettime(CLOCK_REALTIME, &last_claimed) == -1) {
+	uuid_copy(v.owner, instance_id);
+	if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		goto fail_close_dst;
 	}
-
-	if (slabdb_put(&m->v.claim.key, revision, header_crc, instance_id,
-	    &last_claimed, e) == -1)
+	if (slabdb_put(&m->v.claim.key, &v, SLABDB_PUT_ALL, e) == -1)
 		goto fail_close_dst;
 
 	m->m = MGR_MSG_CLAIM_OK;
@@ -1456,89 +1145,21 @@ fail:
 static int
 claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 {
-	int              r;
-	MDB_txn         *txn;
-	MDB_dbi          dbi;
-	MDB_cursor      *cursor;
-	MDB_val          mk, mv;
 	struct slab_key  sk;
 	struct mgr_msg   claim_msg;
 
 	bzero(&sk, sizeof(sk));
 	sk.base = m->v.claim_next_itbl.base;
 
-	mk.mv_size = sizeof(sk);
-	mk.mv_data = &sk;
-
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_txn_begin: %s",
-		    __func__, mdb_strerror(r));
-		goto fail;
-	}
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_dbi_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		goto fail;
-	}
-
-	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_cursor_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		goto fail;
-	}
-
-	/*
-	 * Because we work with a new cursor on every MGR_MSG_CLAIM_NEXT_ITBL
-	 * message, we need to start with MDB_SET_RANGE, compare if we the
-	 * entry we're at is greater than what we expected, and do MDB_NEXT
-	 * if it is not. Moreover, we must ensure to stop if we start looping
-	 * over inodes greater than zero, meaning we're no longer looping
-	 * over inode tables.
-	 */
-	if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_SET_RANGE))) {
-		mdb_cursor_close(cursor);
-		mdb_txn_abort(txn);
-		if (r == MDB_NOTFOUND) {
+	if (slabdb_get_next_itbl(&sk.base, exlog_zerr(e)) == -1) {
+		if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
-			if (mgr_send(c, -1, m, e) == -1)
+			if (mgr_send(c, -1, m, exlog_zerr(e)) == -1)
 				return -1;
 			return 0;
 		}
 		goto fail;
 	}
-
-	if ((r = memcmp(&sk, (struct slab_key *)mk.mv_data,
-	    sizeof(struct slab_key))) == 0) {
-		if ((r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT))) {
-			mdb_cursor_close(cursor);
-			mdb_txn_abort(txn);
-			if (r == MDB_NOTFOUND) {
-				m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
-				if (mgr_send(c, -1, m, e) == -1)
-					return -1;
-				return 0;
-			}
-			goto fail;
-		}
-	}
-
-	sk.ino = ((struct slab_key *)mk.mv_data)->ino;
-	sk.base = ((struct slab_key *)mk.mv_data)->base;
-
-	if (sk.ino > 0 || sk.base < m->v.claim_next_itbl.base) {
-		mdb_cursor_close(cursor);
-		mdb_txn_abort(txn);
-		m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
-		if (mgr_send(c, -1, m, e) == -1)
-			return -1;
-		return 0;
-	}
-
-	mdb_cursor_close(cursor);
-	mdb_txn_abort(txn);
 
 	claim_msg.m = MGR_MSG_CLAIM;
 	claim_msg.v.claim.oflags = m->v.claim_next_itbl.oflags;
@@ -1548,7 +1169,7 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 	return claim(c, &claim_msg, e);
 fail:
 	m->m = MGR_MSG_CLAIM_NEXT_ITBL_ERR;
-	mgr_send(c, -1, m, e);
+	mgr_send(c, -1, m, exlog_zerr(e));
 	return -1;
 }
 
@@ -1580,6 +1201,7 @@ bg_df()
 	off_t             bytes_total, bytes_used;
 	struct fs_info    fs_info;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	uint64_t          count;
 
 	if (fs_info_read(&fs_info, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
@@ -1611,16 +1233,21 @@ bg_df()
 	}
 	bytes_used = json_integer_value(o);
 
-	fs_info.stats.f_files = fs_config.mdb_map_size /
-	    (sizeof(struct slab_key) + sizeof(struct slabdb_val));
-	fs_info.stats.f_ffree = fs_info.stats.f_files -
-	    mgr_counter_get_mdb_entries();
-	fs_info.stats.f_favail = fs_info.stats.f_ffree;
-
 	fs_info.stats.f_blocks = bytes_total / fs_info.stats.f_bsize;
 	fs_info.stats.f_bfree = (bytes_total - bytes_used) /
 	    fs_info.stats.f_bsize;
 	fs_info.stats.f_bavail = fs_info.stats.f_bfree;
+
+	fs_info.stats.f_files = (bytes_total / fs_info.slab_size) *
+	    slab_inode_max();
+	if ((count = slabdb_count(&e)) == ULONG_MAX) {
+		exlog(LOG_ERR, &e, "%s", __func__);
+		return;
+	}
+	fs_info.stats.f_ffree = fs_info.stats.f_files -
+	    (count * slab_inode_max());
+	fs_info.stats.f_favail = fs_info.stats.f_ffree;
+
 	if (clock_gettime(CLOCK_REALTIME, &fs_info.stats_last_update) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return;
@@ -1633,9 +1260,10 @@ bg_df()
 static void
 bgworker(const char *name, void(*fn)(), int interval_secs, int run_at_exit)
 {
-	char            title[32];
-	struct timespec tp = {interval_secs, 0};
-	pid_t           pid;
+	char             title[32];
+	struct timespec  tp = {interval_secs, 0};
+	pid_t            pid;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 
 	if ((pid = fork()) == -1){
 		killpg(0, 15);
@@ -1654,6 +1282,11 @@ bgworker(const char *name, void(*fn)(), int interval_secs, int run_at_exit)
 	setproctitle("bgworker: %s", name);
 	exlog(LOG_INFO, NULL, "ready");
 
+	if (slabdb_init(instance_id, &e) == -1) {
+                exlog(LOG_ERR, &e, "%s", __func__);
+		exit(1);
+	}
+
 	while (!shutdown_requested) {
 		fn();
 		nanosleep(&tp, NULL);
@@ -1662,6 +1295,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs, int run_at_exit)
 	if (run_at_exit)
 		fn();
 	exlog(LOG_INFO, NULL, "exiting");
+	slabdb_shutdown();
 	exit(0);
 }
 
@@ -1736,23 +1370,19 @@ fail:
 static void
 scrub(const char *path)
 {
-	struct slab_hdr  hdr;
-	int              fd;
-	uint64_t         revision;
-	uint32_t         header_crc, crc;
-	uuid_t           owner;
-	struct slab_key  sk;
-	struct timespec  last_claimed;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct slab_hdr   hdr;
+	int               fd;
+	struct slab_key   sk;
+	struct slabdb_val v;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 
 	if (slab_parse_path(path, &sk, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
 		return;
 	}
 
-	if (slabdb_get(&sk, OSLAB_NOCREATE, &revision, &header_crc, &owner,
-	    &last_claimed, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_MDB, MDB_NOTFOUND)) {
+	if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
+		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
 			exlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
 			    "unlinking", __func__, path);
 			unlink(path);
@@ -1762,7 +1392,7 @@ scrub(const char *path)
 		return;
 	}
 
-	if (uuid_compare(owner, instance_id) != 0) {
+	if (uuid_compare(v.owner, instance_id) != 0) {
 		exlog(LOG_ERR, NULL, "%s: slab %s is now locally-owned; "
 		    "unlinking", __func__, path);
 		unlink(path);
@@ -1787,7 +1417,7 @@ scrub(const char *path)
 		goto end;
 	}
 
-	if (check_slab_header(&hdr, header_crc, revision, &e) != 0) {
+	if (check_slab_header(&hdr, v.header_crc, v.revision, &e) != 0) {
 		if (hdr.v.f.revision == 0) {
 			exlog(LOG_ERR, NULL, "%s: slab %s has revision 0, "
 			    "meaning it was never unclaimed yet did not have "
@@ -1826,10 +1456,14 @@ scrub(const char *path)
 			set_fs_error();
 			goto end;
 		}
-		crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-		if (slabdb_put(&sk, hdr.v.f.revision, crc, instance_id,
-		    NULL, &e) == -1) {
-			exlog(LOG_CRIT, &e, "%s: slabdb_put", __func__);
+
+		v.revision = hdr.v.f.revision;
+		v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+		uuid_copy(v.owner, instance_id);
+		if (slabdb_put(&sk, &v,
+		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
+		    &e) == -1) {
+			exlog(LOG_CRIT, &e, "%s", __func__);
 			set_fs_error();
 			goto end;
 		}
@@ -1848,203 +1482,113 @@ bg_scrubber()
 }
 
 static int
-purge_cmp(const void *a, const void *b)
+purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 {
-	const struct timespec *t1 = &((struct slabdb_val *)a)->last_claimed;
-	const struct timespec *t2 = &((struct slabdb_val *)b)->last_claimed;
+	int                fd;
+	struct fs_usage   *fs_usage = (struct fs_usage *)usage;
+	struct stat        st;
+	char               path[PATH_MAX];
+	struct slab_hdr    hdr;
+	struct slabdb_val  pv;
+	struct exlog_err   e = EXLOG_ERR_INITIALIZER;
 
-	if (t1->tv_sec < t2->tv_sec) {
-		return -1;
-	} else if (t1->tv_sec > t2->tv_sec) {
-		return 1;
-	} else {
-		if (t1->tv_nsec < t2->tv_nsec)
-			return -1;
-		else if (t1->tv_nsec > t2->tv_nsec)
-			return 1;
+	if (uuid_compare(v->owner, instance_id) != 0)
+		return 0;
+
+	if (slab_path(path, sizeof(path), sk, 0, &e) == -1) {
+		exlog(LOG_ERR, &e, "%s", __func__);
+		return 0;
 	}
+
+	if ((fd = open_wflock(path, O_RDWR, 0,
+	    LOCK_EX|LOCK_NB, 0)) == -1) {
+		if (errno != EWOULDBLOCK && errno != ENOENT)
+			exlog_strerror(LOG_ERR, errno, "%s: failed "
+			    "to open_wflock(): %s", __func__, path);
+		return 0;
+	}
+
+	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+		close(fd);
+		exlog_strerror(LOG_ERR, errno,
+		    "%s: short read on slab header", __func__);
+		set_fs_error();
+		return 0;
+	}
+
+	if (hdr.v.f.flags & SLAB_DIRTY) {
+		close(fd);
+		return 0;
+	}
+
+	if (fstat(fd, &st) == -1) {
+		close(fd);
+		exlog_strerror(LOG_ERR, errno, "%s: fstat", __func__);
+		set_fs_error();
+		return 0;
+	}
+
+	pv.revision = v->revision;
+	pv.header_crc = v->header_crc;
+	uuid_clear(pv.owner);
+	memcpy(&pv.last_claimed, &v->last_claimed, sizeof(struct timespec));
+
+	if (slabdb_put_nolock(sk, &pv, &e) == -1) {
+		exlog(LOG_ERR, &e, "%s", __func__);
+		close(fd);
+		return 0;
+	}
+
+	if (unlink(path) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s", __func__);
+		close(fd);
+		return 0;
+	} else {
+		exlog(LOG_INFO, NULL, "%s: purged slab %s "
+		    "(revision=%lu, crc=%u)", __func__, path,
+		    v->revision, v->header_crc);
+		mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
+		fs_usage->used_blocks -= st.st_blocks;
+	}
+
+	close(fd);
+
+	if (fs_usage->used_blocks <
+	    fs_usage->stv.f_blocks * fs_config.purge_threshold_pct / 100)
+		return 1;
+
 	return 0;
 }
 
 static void
 bg_purge()
 {
-	int              r, purge_n, fd;
-	MDB_txn         *txn;
-	MDB_dbi          dbi;
-	MDB_cursor      *cursor;
-	MDB_val          mk, mv;
-	struct statvfs   stv;
-	struct stat      st;
-	char             path[PATH_MAX];
-	struct slab_hdr  hdr;
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	size_t           purge_entries_sz;
-	fsblkcnt_t       used_blocks;
+	struct fs_usage  fs_usage;
 
-	struct purge_entry {
-		struct slabdb_val v;
-		struct slab_key   sk;
-	} *purge_entries, *p_resized, *p;
-
-	if (statvfs(fs_config.data_dir, &stv) == -1) {
+	if (statvfs(fs_config.data_dir, &fs_usage.stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
 		return;
 	}
 
-	if (stv.f_bfree >
-	    stv.f_blocks * (100 - fs_config.purge_threshold_pct) / 100) {
+	if (fs_usage.stv.f_bfree >
+	    fs_usage.stv.f_blocks *
+	    (100 - fs_config.purge_threshold_pct) / 100) {
 		/*
 		 * Nothing to do.
 		 */
 		return;
 	}
-	used_blocks = stv.f_blocks - stv.f_bfree;
+
+	fs_usage.used_blocks = fs_usage.stv.f_blocks - fs_usage.stv.f_bfree;
 
 	exlog(LOG_INFO, NULL, "%s: cache use is at %d%% of partition size; "
 	    "purging slabs", __func__,
-	    (stv.f_blocks - stv.f_bfree) * 100 / stv.f_blocks);
+	    (fs_usage.stv.f_blocks - fs_usage.stv.f_bfree) * 100
+	    / fs_usage.stv.f_blocks);
 
-	/*
-	 * Slabs can be smaller than their max size, but to put a limit
-	 * memory use in this function, let's just purge as many as if
-	 * they were full-sized.
-	 */
-	purge_entries_sz = stv.f_blocks * stv.f_frsize /
-	    (fs_config.slab_size + sizeof(struct slab_hdr));
-	purge_entries = calloc(purge_entries_sz, sizeof(struct purge_entry));
-	if (purge_entries == NULL) {
-		exlog_strerror(LOG_ERR, errno, "%s", __func__);
-		return;
-	}
-
-	if ((r = mdb_txn_begin(mdb, NULL, MDB_RDONLY, &txn))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_txn_begin: %s",
-		    __func__, mdb_strerror(r));
-		goto fail;
-	}
-
-	if ((r = mdb_dbi_open(txn, NULL, 0, &dbi))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_dbi_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		goto fail;
-	}
-
-	if ((r = mdb_cursor_open(txn, dbi, &cursor))) {
-		exlog(LOG_ERR, NULL, "%s: mdb_cursor_open: %s",
-		    __func__, mdb_strerror(r));
-		mdb_txn_abort(txn);
-		goto fail;
-	}
-
-	for (p = purge_entries, r = mdb_cursor_get(cursor, &mk, &mv, MDB_FIRST);
-	    r != MDB_NOTFOUND;
-	    r = mdb_cursor_get(cursor, &mk, &mv, MDB_NEXT)) {
-		if (r != 0) {
-			exlog(LOG_ERR, NULL, "%s: mdb_cursor_get: %s",
-			    __func__, mdb_strerror(r));
-			mdb_cursor_close(cursor);
-			mdb_txn_abort(txn);
-			goto fail;
-		}
-
-		if (p - purge_entries >= purge_entries_sz) {
-			exlog(LOG_DEBUG, NULL, "%s: reallocating purge "
-			    "slab buffer from %u to %u bytes",
-			    __func__, purge_entries_sz, purge_entries_sz * 2);
-			p_resized = realloc(purge_entries,
-			    2 * purge_entries_sz * sizeof(struct purge_entry));
-			/*
-			 * No more memory. Just purge what we have for now.
-			 */
-			if (p_resized == NULL) {
-				exlog_strerror(LOG_ERR, errno, "%s: realloc",
-				    __func__);
-				break;
-			}
-			purge_entries_sz *= 2;
-			p = p_resized + (p - purge_entries);
-			purge_entries = p_resized;
-		}
-
-		if (uuid_compare(((struct slabdb_val *)mv.mv_data)->owner,
-		    instance_id) != 0)
-			continue;
-
-		memcpy(&p->sk, mk.mv_data, sizeof(struct slab_key));
-		memcpy(&p->v, mv.mv_data, sizeof(struct slabdb_val));
-
-		p++;
-	}
-
-	mdb_cursor_close(cursor);
-	mdb_txn_abort(txn);
-
-	purge_n = p - purge_entries;
-	qsort(purge_entries, purge_n, sizeof(struct purge_entry), &purge_cmp);
-
-	for (p = purge_entries; purge_n > 0; purge_n--, p++) {
-		if (slab_path(path, sizeof(path), &p->sk, 0, &e) == -1) {
-			exlog(LOG_ERR, &e, "%s", __func__);
-			goto fail;
-		}
-
-		if ((fd = open_wflock(path, O_RDWR, 0,
-		    LOCK_EX|LOCK_NB, 0)) == -1) {
-			if (errno != EWOULDBLOCK && errno != ENOENT)
-				exlog_strerror(LOG_ERR, errno, "%s: failed "
-				    "to open_wflock(): %s", __func__, path);
-			continue;
-		}
-
-		if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
-			close(fd);
-			exlog_strerror(LOG_ERR, errno,
-			    "%s: short read on slab header", __func__);
-			set_fs_error();
-			goto fail;
-		}
-
-		if (hdr.v.f.flags & SLAB_DIRTY) {
-			close(fd);
-			continue;
-		}
-
-		if (fstat(fd, &st) == -1) {
-			close(fd);
-			exlog_strerror(LOG_ERR, errno, "%s: fstat", __func__);
-			set_fs_error();
-			goto fail;
-		}
-
-		if (slabdb_put(&p->sk, p->v.revision, p->v.header_crc,
-		    uuid_zero, NULL, &e) == -1) {
-			exlog(LOG_ERR, &e, "%s", __func__);
-			close(fd);
-			continue;
-		}
-
-		if (unlink(path) == -1) {
-			exlog_strerror(LOG_ERR, errno, "%s", __func__);
-		} else {
-			exlog(LOG_INFO, NULL, "%s: purged slab %s "
-			    "(revision=%lu, crc=%u)", __func__, path,
-			    p->v.revision, p->v.header_crc);
-			mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
-			used_blocks -= st.st_blocks;
-		}
-
-		close(fd);
-
-		if (used_blocks <
-		    stv.f_blocks * fs_config.purge_threshold_pct / 100)
-			break;
-	}
-
-fail:
-	free(purge_entries);
-	return;
+	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
+		exlog(LOG_ERR, &e, "%s", __func__);
 }
 
 static void
@@ -2063,6 +1607,11 @@ worker(int lsock)
 
 	setproctitle("worker");
 	exlog(LOG_INFO, NULL, "ready", __func__);
+
+	if (slabdb_init(instance_id, &e) == -1) {
+                exlog(LOG_ERR, &e, "%s", __func__);
+		exit(1);
+	}
 
 	while (!shutdown_requested) {
 		if ((c = accept(lsock, NULL, 0)) == -1) {
@@ -2145,24 +1694,9 @@ worker(int lsock)
 		}
 	}
 	close(lsock);
+	slabdb_shutdown();
 	exlog(LOG_INFO, NULL, "exiting");
 	exit(0);
-}
-
-void
-slabdb_status(const struct slab_key *k, const struct slabdb_val *v)
-{
-	char u[37];
-
-	mgr_counter_incr_mdb_entries();
-
-	uuid_unparse(v->owner, u);
-	exlog(LOG_DEBUG, NULL, "%s: found entry k=%lu/%lu, v=%lu/%u/%s",
-	    __func__,
-	    ((struct slab_key *)k)->ino,
-	    ((struct slab_key *)k)->base,
-	    ((struct slabdb_val *)v)->revision,
-	    ((struct slabdb_val *)v)->header_crc, u);
 }
 
 int
@@ -2185,9 +1719,8 @@ main(int argc, char **argv)
 	int                 scrubber_interval = 3600;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
-	char                mdb_path[PATH_MAX];
-	int                 r;
 	struct fs_info      fs_info;
+	char                u[37];
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
@@ -2307,44 +1840,10 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	uuid_clear(uuid_zero);
-
 	exlog(LOG_INFO, NULL, "%s: cache size is %llu bytes (%lu slabs)",
 	    __func__, stv.f_blocks * stv.f_frsize,
 	    stv.f_blocks * stv.f_frsize /
 	    (fs_config.slab_size + sizeof(struct slab_hdr)));
-
-	if (snprintf(mdb_path, sizeof(mdb_path), "%s/%s", fs_config.data_dir,
-            DEFAULT_MDB_NAME) >= sizeof(mdb_path)) {
-                exlog(LOG_ERR, NULL, "%s: mdb name too long", __func__);
-		exit(1);
-        }
-
-	exlog(LOG_INFO, NULL, "%s: slabdb maximum map size is %u; "
-	    "slabdb entries are %u bytes each", __func__, DEFAULT_MDB_MAPSIZE,
-	    sizeof(struct slab_key) + sizeof(struct slabdb_val));
-
-	exlog(LOG_INFO, NULL, "%s: slabdb capacity is %u entries; "
-	    "total filesystem capacity is %.2f TiB", __func__,
-	    DEFAULT_MDB_MAPSIZE /
-	    (sizeof(struct slab_key) + sizeof(struct slabdb_val)),
-	    (double)fs_config.slab_size * (DEFAULT_MDB_MAPSIZE /
-	    (sizeof(struct slab_key) + sizeof(struct slabdb_val))) /
-	    (1024ULL * 1024ULL * 1024ULL * 1024ULL));
-
-	if ((r = mdb_env_create(&mdb)))
-		errx(1, "mdb_env_create: %s", mdb_strerror(r));
-
-	if ((r = mdb_env_set_mapsize(mdb, DEFAULT_MDB_MAPSIZE)))
-		errx(1, "mdb_env_set_mapsize: %s", mdb_strerror(r));
-
-	if ((r = mdb_env_open(mdb, mdb_path, MDB_NOSUBDIR, 0644)))
-		errx(1, "mdb_env_open: %s", mdb_strerror(r));
-
-	if (slabdb_loop(&slabdb_status, &e) == -1) {
-		exlog(LOG_ERR, &e, "%s", __func__);
-		exit(1);
-	}
 
 	if (fs_info_open(&fs_info, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
@@ -2448,6 +1947,9 @@ main(int argc, char **argv)
 		exlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
+	uuid_unparse(instance_id, u);
+	exlog(LOG_NOTICE, NULL, "initialized instance %s", u);
+
 	for (n = 0; n < workers; ) {
 		if (wait(NULL) == -1) {
 			if (errno == EINTR)
@@ -2456,8 +1958,6 @@ main(int argc, char **argv)
 		}
 		n++;
 	}
-
-	mdb_env_close(mdb);
 
 	if (fs_info_read(&fs_info, &e) == -1) {
 		exlog(LOG_CRIT, &e, "%s", __func__);

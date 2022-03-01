@@ -629,7 +629,7 @@ slab_shutdown(struct exlog_err *e)
 }
 
 int
-slab_path(char *path, size_t len, struct slab_key *sk, int name_only,
+slab_path(char *path, size_t len, const struct slab_key *sk, int name_only,
     struct exlog_err *e)
 {
 	size_t l;
@@ -1177,7 +1177,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		goto fail_free_slab;
 	}
 
-	if ((r = slab_read(b, data, 0, slab_get_max_size(), e)) < *slab_sz) {
+	if ((r = slab_read(b, data, 0, *slab_sz, e)) < *slab_sz) {
 		if (r != -1)
 			exlog_errf(e, EXLOG_APP, EXLOG_SHORTIO,
 			    "%s: short read on slab; expected size from "

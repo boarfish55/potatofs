@@ -55,7 +55,7 @@ Dependencies / license (not including backends):
 - libuuid (BSD-3)
 - libfuse (LGPL-2)
 - libbsd-dev (BSD-3, BSD-2, Expat)
-- liblmdb (OpenLDAP)
+- sqlite3 (public domain)
 - zlib (zlib)
 - libjansson-dev >= 2.9 (Expat)
 
@@ -121,10 +121,6 @@ variable-sized records for filenames.
 KNOWN ISSUES
 ============
 
-* During testing under low-space situations on the cache partition I've
-  hit some corruption/deadlock issue. Though some safeguards were added, it
-  wasn't fully root caused yet and therefore it's safer to make sure space
-  is never low.
 * If the backend were to become unavailable (or the transport, i.e. Internet),
   most likely I/O operations would stall in 'D' state, with no way to
   recover until the backend is available again. Error handling in these
@@ -135,20 +131,24 @@ KNOWN ISSUES
 TODO
 ====
 
+* fsck is too slow, too many cleam/unclaim. Try to batch operations on
+  a single slab together
+* Wrap the uuid_unparse() in conditionals to avoid running that when
+  not in debug mode.
 * Make the workers and timeouts configurable in the config file
 * Add a test for unlink on large file; resulting slabs should be
   truncated.
 * Add validation in config_read, right now even if we point it at a dir
   it just silently works.
 * In low-space conditions, run flush/purge more often to free up space. The
-  problem is that is also clogs up the workers. Maybe we need an separate
+  problem is that it also clogs up the workers. Maybe we need an separate
   control socket that's used by non-workers. Would also solve the
   potatoctl claim vs. fs deadlock.
 * Don't put backend get/put args on the command line, for security reasons.
   Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
   about the fact that those leak the slab names in the ps output and it's
   better to use something other than shell scripts.
-* Add a "rm" handler in backend scritps, though mention this will only
+* Add a "rm" handler in backend scripts, though mention this will only
   be used by fsck, therefore is optional.
 * Add a "wide" option to top
 * Doublecheck that atime is working as intended, add a test
@@ -159,6 +159,8 @@ TODO
   all entries in a directory, or the size of an inode. Useful to
   to do manual claims and all.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
+* Need to doublecheck all the usage and conversions for ino_t (uint64_t)
+  and off_t (int64_t), blkcnt_t (int64_t).
 * exlog (possibly renaming to xlog) needs to cleanup in how calls are made
   and also how we have to clear the error in many places. Also we should
   add a descriptive text to the contextual errors instead of just printing

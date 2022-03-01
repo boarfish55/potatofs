@@ -14,5 +14,4 @@ backend: /usr/local/bin/backend.sh
 slab_max_age: 300
 unclaim_purge_threshold_pct: 90
 purge_threshold_pct: 60
-mdb_map_size: 67108864
 noatime: yes
