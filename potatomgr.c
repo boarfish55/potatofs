@@ -839,6 +839,17 @@ copy_again:
 		}
 	}
 
+	if (hdr.v.f.checksum != crc) {
+		/*
+		 * slab content doesn't match our checksum. Maybe
+		 * the data was corrupted on the backend?
+		 */
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: mismatching slab content checksum: "
+		    "expected=%u, slab=%u", __func__,
+		    hdr.v.f.checksum, crc);
+	}
+
 	return 0;
 }
 
