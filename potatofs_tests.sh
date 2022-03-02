@@ -63,8 +63,8 @@ echo ""
 
 echo "*** cleanup ***"
 pid=`cat $basepath/potatomgr.pid`
-kill $pid
-while kill -0 $pid 2>/dev/null; do sleep 1; done
+kill "$pid"
+while kill -0 "$pid" 2>/dev/null; do sleep 1; done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	rm -rf "$backend_data_path"

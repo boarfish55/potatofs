@@ -73,6 +73,7 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 
 		fs_info.slab_size = fs_config.slab_size;
 		uuid_generate(fs_info.instance_id);
+		fs_info.clean = 1;
 
 		fs_info.fs_info_version = FS_INFO_VERSION;
 		fs_info.stats.f_bsize = FS_BLOCK_SIZE;

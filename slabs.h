@@ -152,8 +152,9 @@ struct oslab {
 	rwlk               bytes_lock;
 
 	uint32_t           oflags;
-#define OSLAB_NOCREATE 0x00000001
-#define OSLAB_SYNC     0x00000002
+#define OSLAB_NOCREATE  0x00000001
+#define OSLAB_SYNC      0x00000002
+#define OSLAB_EPHEMERAL 0x00000004
 };
 
 int slab_configure(uint64_t, uint32_t, struct exlog_err *);

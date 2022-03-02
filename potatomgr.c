@@ -1119,11 +1119,18 @@ get_again:
 	close(incoming_fd);
 
 end:
-	uuid_copy(v.owner, instance_id);
-	if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
-		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		goto fail_close_dst;
+	if (!(m->v.claim.oflags & OSLAB_EPHEMERAL)) {
+		/*
+		 * We don't update last_claimed for "ephemeral" slabs,
+		 * since we don't mind if they get purged shortly after.
+		 */
+		if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
+			exlog_strerror(LOG_ERR, errno, "%s: clock_gettime",
+			    __func__);
+			goto fail_close_dst;
+		}
 	}
+	uuid_copy(v.owner, instance_id);
 	if (slabdb_put(&m->v.claim.key, &v, SLABDB_PUT_ALL, e) == -1)
 		goto fail_close_dst;
 
