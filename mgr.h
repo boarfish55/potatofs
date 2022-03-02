@@ -92,7 +92,7 @@ struct mgr_msg {
 };
 
 void mgr_init(const char *);
-int  mgr_connect(struct exlog_err *);
+int  mgr_connect(int, struct exlog_err *);
 int  mgr_recv(int, int *, struct mgr_msg *, struct exlog_err *);
 int  mgr_send(int, int, struct mgr_msg *, struct exlog_err *);
 

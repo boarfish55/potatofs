@@ -22,7 +22,7 @@ fs_error_set()
 	LK_UNLOCK(&fs_error.lk);
 
 again:
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog(LOG_ERR, &e, __func__);
 		return;
 	}

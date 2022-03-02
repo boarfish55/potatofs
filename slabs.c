@@ -162,7 +162,7 @@ slab_unclaim(struct oslab *b)
 	}
 
 	for (;;) {
-		if ((mgr = mgr_connect(&e)) == -1) {
+		if ((mgr = mgr_connect(1, &e)) == -1) {
 			exlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
@@ -734,7 +734,7 @@ slab_load(struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
 	if (LK_LOCK_INIT(&b->lock, e) == -1)
 		goto fail_destroy_bytes_lock;
 
-	if ((mgr = mgr_connect(e)) == -1)
+	if ((mgr = mgr_connect(1, e)) == -1)
 		goto fail_destroy_locks;
 
 	m.m = MGR_MSG_CLAIM;

@@ -1576,6 +1576,8 @@ bg_purge()
 {
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	struct fs_usage  fs_usage;
+	struct timespec  start, end;
+	time_t           delta_ns;
 
 	if (statvfs(fs_config.data_dir, &fs_usage.stv) == -1) {
 		exlog_strerror(LOG_ERR, errno, "statvfs");
@@ -1593,13 +1595,30 @@ bg_purge()
 
 	fs_usage.used_blocks = fs_usage.stv.f_blocks - fs_usage.stv.f_bfree;
 
-	exlog(LOG_INFO, NULL, "%s: cache use is at %d%% of partition size; "
+	exlog(LOG_NOTICE, NULL, "%s: cache use is at %d%% of partition size; "
 	    "purging slabs", __func__,
 	    (fs_usage.stv.f_blocks - fs_usage.stv.f_bfree) * 100
 	    / fs_usage.stv.f_blocks);
 
+	if (clock_gettime(CLOCK_REALTIME, &start) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		return;
+	}
+	// TODO: possibly quite slow, keeps the lock too long. Instead
+	// maybe just do a non-blocking read, pile up the slab keys & values
+	// in a list, then loop over those and slabdb_put() those that need
+	// an update.
 	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
 		exlog(LOG_ERR, &e, "%s", __func__);
+	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		return;
+	}
+
+	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+	    ((start.tv_sec * 1000000000) + start.tv_nsec);
+	exlog(LOG_NOTICE, NULL, "%s: purging took %u.%09u seconds",
+	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 }
 
 static void
@@ -1717,16 +1736,17 @@ main(int argc, char **argv)
 	struct              sigaction act;
 	char               *pidfile_path = MGR_DEFAULT_PIDFILE_PATH;
 	int                 foreground = 0;
-	FILE               *pid_f;
-        struct passwd      *pw;
-        struct group       *gr;
+	int                 pid_fd;
+	char                pid_line[32];
+	struct passwd      *pw;
+	struct group       *gr;
 	char               *unpriv_user = MGR_DEFAULT_UNPRIV_USER;
 	char               *unpriv_group = MGR_DEFAULT_UNPRIV_GROUP;
 	int                 lsock;
 	struct sockaddr_un  saddr;
 	int                 workers = 12, n;
-	int                 bgworkers = 4;
-	int                 purger_interval = 5;
+	int                 bgworkers = 2;
+	int                 purger_interval = 30;
 	int                 scrubber_interval = 3600;
 	struct statvfs      stv;
 	struct exlog_err    e = EXLOG_ERR_INITIALIZER;
@@ -1794,15 +1814,30 @@ main(int argc, char **argv)
 		setproctitle("main");
 	}
 
-        if ((pid_f = fopen(pidfile_path, "w")) == NULL) {
-		exlog_strerror(LOG_ERR, errno, "fopen");
+	if ((pid_fd = open(pidfile_path, O_CREAT|O_WRONLY, 0644)) == -1) {
+		exlog_strerror(LOG_ERR, errno, "open");
 		exit(1);
-        }
-        if (fprintf(pid_f, "%d\n", getpid()) == -1) {
-		exlog_strerror(LOG_ERR, errno, "fprintf");
-                exit(1);
-        }
-        fclose(pid_f);
+	}
+	if (fcntl(pid_fd, F_SETFD, FD_CLOEXEC) == -1) {
+		exlog_strerror(LOG_ERR, errno, "fcntl");
+		exit(1);
+	}
+	if (flock(pid_fd, LOCK_EX|LOCK_NB) == -1) {
+		if (errno == EWOULDBLOCK) {
+			exlog(LOG_ERR, NULL, "pid file %s is already locked; "
+			    "is another instance running?", pidfile_path);
+		} else {
+			exlog_strerror(LOG_ERR, errno, "flock");
+		}
+		exit(1);
+	}
+
+	snprintf(pid_line, sizeof(pid_line), "%d\n", getpid());
+	if (write(pid_fd, pid_line, strlen(pid_line)) == -1) {
+		exlog_strerror(LOG_ERR, errno, "write");
+		exit(1);
+	}
+	fsync(pid_fd);
 
 	if (geteuid() == 0) {
 		if ((gr = getgrnam(unpriv_group)) == NULL) {
@@ -1860,6 +1895,11 @@ main(int argc, char **argv)
 		exlog(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
+	if (fs_info.error) {
+		exlog(LOG_ERR, NULL, "filesystem has errors; aborting startup",
+		    __func__);
+		exit(1);
+	}
 	uuid_copy(instance_id, fs_info.instance_id);
 
 	if (slab_make_dirs(&e) == -1) {
@@ -1872,6 +1912,11 @@ main(int argc, char **argv)
 		exit(1);
 	}
 	unlink(fs_config.mgr_sock_path);
+
+	if (fcntl(lsock, F_SETFD, FD_CLOEXEC) == -1) {
+		exlog_strerror(LOG_ERR, errno, "fcntl");
+		exit(1);
+	}
 
 	bzero(&saddr, sizeof(saddr));
 	saddr.sun_family = AF_LOCAL;
@@ -1948,7 +1993,7 @@ main(int argc, char **argv)
 	}
 
 	for (n = 0; n < bgworkers; n++) {
-		bgworker("flush", &bg_flush, bgworkers, 1);
+		bgworker("flush", &bg_flush, 5, 1);
 		workers++;
 	}
 
@@ -1974,7 +2019,7 @@ main(int argc, char **argv)
 		exlog(LOG_CRIT, &e, "%s", __func__);
 		exit(1);
 	} else {
-		if (!fs_info.error)
+		if (fs_info.error == 0)
 			fs_info.clean = 1;
 
 		if (fs_info_write(&fs_info, &e) == -1) {

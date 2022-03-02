@@ -49,7 +49,8 @@ static int  fsck(int, char **);
 static int  top(int, char **);
 static int  dump_counters(int, char **);
 static int  dump_config(int, char **);
-static int  df(int, char **);
+static int  fs_status(int, char **);
+static int  set_clean(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *);
 static void print_inode(struct inode *, int);
@@ -68,7 +69,8 @@ struct subc {
 	{ "top", &top, 0 },
 	{ "counters", &dump_counters, 0 },
 	{ "config", &dump_config, 0 },
-	{ "df", &df, 0 },
+	{ "status", &fs_status, 0 },
+	{ "set_clean", &set_clean, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
 };
@@ -94,7 +96,8 @@ usage()
 	    "           dir   <dir inode#>\n"
 	    "           top   [delay]\n"
 	    "           counters\n"
-	    "           df\n"
+	    "           status\n"
+	    "           set_clean\n"
 	    "           fsck\n"
 	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
@@ -107,8 +110,6 @@ usage()
 extern struct counter counters[];
 extern locale_t       log_locale;
 
-struct fs_info        fs_info;
-
 void
 read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
 {
@@ -116,7 +117,7 @@ read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	struct mgr_msg   m;
 
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog_prt(&e);
 		exit(1);
 	}
@@ -363,7 +364,7 @@ fsck(int argc, char **argv)
 	size_t                n_free;
 	int                   mgr;
 
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog_prt(&e);
 		exlog_zerr(&e);
 		stats.errors++;
@@ -440,77 +441,125 @@ print_metric_header()
 }
 
 int
-df(int argc, char **argv)
+fs_status(int argc, char **argv)
 {
-	int              mgr;
-	char             u[37];
-	struct mgr_msg   m;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	double           used, total;
+	int               mgr;
+	char              u[37];
+	struct mgr_msg    m;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	double            used, total;
+	struct fs_info    fs_info;
 
-	if ((mgr = mgr_connect(&e)) == -1) {
-		exlog_prt(&e);
-		return 1;
+	mgr = mgr_connect(0, &e);
+
+	if (mgr == -1) {
+		if (errno == ECONNREFUSED) {
+			printf("WARNING: connection to mgr was refused; "
+			    "reading fs_info offline instead\n");
+			if (fs_info_read(&fs_info, &e) == -1) {
+				exlog_prt(&e);
+				return 1;
+			}
+		} else {
+			exlog_prt(&e);
+			return 1;
+		}
+	} else {
+		m.m = MGR_MSG_FS_INFO;
+
+		if (mgr_send(mgr, -1, &m, &e) == -1) {
+			exlog_prt(&e);
+			return 1;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+			exlog_prt(&e);
+			return 1;
+		}
+
+		if (m.m != MGR_MSG_FS_INFO_OK) {
+			warnx("%s: bad manager response: %d",
+			    __func__, m.m);
+			return 1;
+		}
+		memcpy(&fs_info, &m.v.fs_info, sizeof(fs_info));
 	}
 
-	m.m = MGR_MSG_FS_INFO;
+	uuid_unparse(fs_info.instance_id, u);
 
-	if (mgr_send(mgr, -1, &m, &e) == -1) {
-		exlog_prt(&e);
-		return 1;
-	}
+	printf("fs_info (%lu bytes):\n", sizeof(fs_info));
 
-	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-		exlog_prt(&e);
-		return 1;
-	}
-
-	if (m.m != MGR_MSG_FS_INFO_OK) {
-		warnx("%s: bad manager response: %d",
-		    __func__, m.m);
-		return 1;
-	}
-
-	uuid_unparse(m.v.fs_info.instance_id, u);
-
-	printf("fs_info:\n");
-
-	printf("  version:     %u\n", m.v.fs_info.fs_info_version);
+	printf("  version:     %u\n", fs_info.fs_info_version);
 	printf("  instance_id: %s\n", u);
-	printf("  slab_size:   %lu\n", m.v.fs_info.slab_size);
-	printf("  clean:       %u\n", m.v.fs_info.clean);
-	printf("  error:       %u\n", m.v.fs_info.error);
+	printf("  slab_size:   %lu\n", fs_info.slab_size);
+	printf("  clean:       %u\n", fs_info.clean);
+	printf("  error:       %u\n", fs_info.error);
 	printf("  last_update: %lu.%lu\n",
-	    m.v.fs_info.stats_last_update.tv_sec,
-	    m.v.fs_info.stats_last_update.tv_nsec);
+	    fs_info.stats_last_update.tv_sec,
+	    fs_info.stats_last_update.tv_nsec);
 	printf("  statvfs:\n");
-	printf("    f_bsize:   %lu\n", m.v.fs_info.stats.f_bsize);
-	printf("    f_frsize:  %lu\n", m.v.fs_info.stats.f_frsize);
+	printf("    f_bsize:   %lu\n", fs_info.stats.f_bsize);
+	printf("    f_frsize:  %lu\n", fs_info.stats.f_frsize);
 
-	printf("    f_blocks:  %lu\n", m.v.fs_info.stats.f_blocks);
-	printf("    f_bfree:   %lu\n", m.v.fs_info.stats.f_bfree);
-	printf("    f_bavail:  %lu\n", m.v.fs_info.stats.f_bavail);
+	printf("    f_blocks:  %lu\n", fs_info.stats.f_blocks);
+	printf("    f_bfree:   %lu\n", fs_info.stats.f_bfree);
+	printf("    f_bavail:  %lu\n", fs_info.stats.f_bavail);
 
-	printf("    f_files:   %lu\n", m.v.fs_info.stats.f_files);
-	printf("    f_ffree:   %lu\n", m.v.fs_info.stats.f_ffree);
-	printf("    f_favail:  %lu\n", m.v.fs_info.stats.f_favail);
+	printf("    f_files:   %lu\n", fs_info.stats.f_files);
+	printf("    f_ffree:   %lu\n", fs_info.stats.f_ffree);
+	printf("    f_favail:  %lu\n", fs_info.stats.f_favail);
 	/*
 	 * Also, fsid is currently irrelevant.
 	 */
-	printf("    f_namemax: %lu\n", m.v.fs_info.stats.f_namemax);
+	printf("    f_namemax: %lu\n", fs_info.stats.f_namemax);
 	printf("\n");
 
 	/*
 	 * Convert values to GiB
 	 */
-	used = (double) (m.v.fs_info.stats.f_blocks -
-	    m.v.fs_info.stats.f_bfree) *
-	    m.v.fs_info.stats.f_bsize / (2UL << 29UL);
-	total = (double) m.v.fs_info.stats.f_blocks *
-	    m.v.fs_info.stats.f_bsize / (2UL << 29UL);
+	used = (double) (fs_info.stats.f_blocks -
+	    fs_info.stats.f_bfree) *
+	    fs_info.stats.f_bsize / (2UL << 29UL);
+	total = (double) fs_info.stats.f_blocks *
+	    fs_info.stats.f_bsize / (2UL << 29UL);
 
 	printf("  Usage:       %.1f / %.1f GiB (%.1f%%)\n", used, total,
 	    used * 100.0 / total);
+
+	return 0;
+}
+
+int
+set_clean(int argc, char **argv)
+{
+	char             u[37];
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct fs_info   fs_info;
+
+	if (fs_info_read(&fs_info, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	uuid_unparse(fs_info.instance_id, u);
+
+	printf("fs_info:\n");
+	printf("  version:     %u\n", fs_info.fs_info_version);
+	printf("  instance_id: %s\n", u);
+	printf("  slab_size:   %lu\n", fs_info.slab_size);
+	printf("  clean:       %u => 1\n", fs_info.clean);
+	printf("  error:       %u => 0\n", fs_info.error);
+	printf("  last_update: %lu.%lu\n",
+	    fs_info.stats_last_update.tv_sec,
+	    fs_info.stats_last_update.tv_nsec);
+
+	fs_info.error = 0;
+	fs_info.clean = 1;
+
+	if (fs_info_write(&fs_info, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
 
 	return 0;
 }
@@ -637,6 +686,7 @@ slabdb(int argc, char **argv)
 {
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	struct fs_info   fs_info;
+	int              r;
 
 	if (fs_info_inspect(&fs_info, &e) == -1) {
 		exlog_prt(&e);
@@ -648,7 +698,9 @@ slabdb(int argc, char **argv)
 		exit(1);
 	}
 
-	if (slabdb_loop(&slabdb_print, NULL, &e) == -1) {
+	r = slabdb_loop(&slabdb_print, NULL, &e);
+	slabdb_shutdown();
+	if (r == -1) {
 		exlog_prt(&e);
 		exit(1);
 	}
@@ -685,7 +737,7 @@ claim(int argc, char **argv)
 			oflags &= ~OSLAB_NOCREATE;
 	}
 
-	if ((mgr = mgr_connect(&e)) == -1)
+	if ((mgr = mgr_connect(1, &e)) == -1)
 		goto fail;
 
 	m.m = MGR_MSG_CLAIM;
@@ -888,7 +940,7 @@ show_inode(int argc, char **argv)
 	if ((ino = strtoull(argv[0], NULL, 10)) == ULLONG_MAX)
 		errx(1, "inode provided is invalid");
 
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog_prt(&e);
 		exit(1);
 	}
@@ -970,7 +1022,7 @@ show_dir(int argc, char **argv)
 	if (ino < 1)
 		errx(1, "inode must be greater than zero");
 
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog_prt(&e);
 		exit(1);
 	}
@@ -1171,6 +1223,7 @@ main(int argc, char **argv)
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	char             *data_dir = FS_DEFAULT_DATA_PATH;
 	char              opt;
+	struct fs_info    fs_info;
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");

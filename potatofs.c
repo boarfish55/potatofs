@@ -1043,7 +1043,7 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 
 	counter_incr(COUNTER_FS_STATFS);
 
-	if ((mgr = mgr_connect(&e)) == -1) {
+	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog(LOG_ERR, &e, __func__);
 		goto fail;
 	}

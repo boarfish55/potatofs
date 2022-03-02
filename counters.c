@@ -48,7 +48,7 @@ counter_flush(void *unused)
 
 	while (!counters_shutdown) {
 		exlog_zerr(&e);
-		if ((mgr = mgr_connect(&e)) == -1) {
+		if ((mgr = mgr_connect(1, &e)) == -1) {
 			exlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}

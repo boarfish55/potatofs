@@ -131,6 +131,15 @@ KNOWN ISSUES
 TODO
 ====
 
+* bg_purge is too slow, don't hold the lock the entire time. Just get the
+  list of slabs in a list, then purge what you can.
+* potatofs should unload slabs more aggressively if space is tight,
+  otherwise the mgr cannot purge them as long as they are being held by the
+  fs.
+* Don't use exlog(LOG_DEBUG...), use exlog_dbg() instead for better
+  granularity. I.e., slabdb would be a good one.
+* Some format strings have the wrong conversion for tv_nsec, should be "l".
+* The fs should really retry claims and unclaim ops.
 * fsck is too slow, too many cleam/unclaim. Try to batch operations on
   a single slab together
 * Wrap the uuid_unparse() in conditionals to avoid running that when

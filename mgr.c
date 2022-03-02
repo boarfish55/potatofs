@@ -35,7 +35,7 @@ mgr_init(const char *path)
 }
 
 int
-mgr_connect(struct exlog_err *e)
+mgr_connect(int retry, struct exlog_err *e)
 {
 	int                 mgr;
 	struct sockaddr_un  mgr_addr;
@@ -66,6 +66,8 @@ mgr_connect(struct exlog_err *e)
 fail:
 		if (mgr != -1)
 			close(mgr);
+		if (!retry)
+			break;
 		nanosleep(&tp, NULL);
 	}
 	/* Never reached. */

@@ -62,7 +62,7 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		goto end;
 	}
 
-	if ((r = read_x(fd, &fs_info, sizeof(fs_info))) == -1) {
+	if ((r = pread_x(fd, &fs_info, sizeof(fs_info), 0)) == -1) {
 		exlog_errf(e, EXLOG_OS, errno,
 		    "%s: fs stat cannot be read", __func__);
 		goto end;
@@ -100,11 +100,12 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		goto end;
 	}
 
-	if (fs_info.clean != 0)
+	if (fs_info.clean != 1)
 		fs_info.error = 1;
 	fs_info.clean = 0;
 
-	if ((r = write_x(fd, &fs_info, sizeof(fs_info))) < sizeof(fs_info)) {
+	if ((r = pwrite_x(fd, &fs_info, sizeof(fs_info), 0))
+	    < sizeof(fs_info)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_IO,
 		    "%s: failed to write potatofs_fs_info structure; "
 		    "write() returned %d instead of %d:",

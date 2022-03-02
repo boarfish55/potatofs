@@ -6,19 +6,20 @@ fatal() {
 }
 
 basepath="/var/potatofs"
-datapath="$basepath/data"
 mountpoint="/mnt/potatofs"
+
+datapath="$basepath/data"
 binpath=$HOME/potatofs/bin
 conf="$HOME/potatofs/config"
 pidfile=$basepath/potatomgr.pid
 
 [ -d "$mountpoint" ] || fatal "mountpoint not found"
 [ -d "$basepath" ] || fatal "base dir not found"
-[ -d "$datapath" ] || fatal "data dir not found"
 [ -x $binpath/potatofs ] || fatal "potatofs is not found or executable"
-[ -x $binpath/potatoctl ] || fatal "potatofs_tests is not found or executable"
-[ -x $binpath/potatomgr ] || fatal "potatofs_tests is not found or executable"
+[ -x $binpath/potatoctl ] || fatal "potatoctl is not found or executable"
+[ -x $binpath/potatomgr ] || fatal "potatomgr is not found or executable"
 
+mkdir -p $datapath
 ulimit -n 4096
 
 case $1 in
@@ -27,9 +28,16 @@ case $1 in
 		$binpath/potatomgr -c $conf -p $pidfile
 		echo "OK."
 
-		echo -n "* fsck"
-		$binpath/potatoctl -c $conf fsck
-		echo ""
+		# TODO: we need to make sure fsck doesn't update the slabs
+		# that it downloads, and doesn't update last_claimed so that
+		# they can quickly be purged as we loop over them to
+		# compute their checksum.
+		#
+		# We also need a "fast" fsck mode that only validates inodes,
+		# so that we can leave the file slabs alone.
+		#echo -n "* fsck"
+		#$binpath/potatoctl -c $conf fsck
+		#echo ""
 
 		echo "* Mounting..."
 		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048 \
@@ -37,8 +45,12 @@ case $1 in
 		;;
 	stop)
 		fusermount -u $mountpoint
-		while pgrep potatofs >/dev/null; do sleep 1; done
-		kill `cat $pidfile`
+		# TODO: change this once we get a pid file or a control
+		# socket.
+		while pgrep -f -l "$mountpoint" >/dev/null; do sleep 1; done
+		pid=`cat $pidfile`
+		kill "$pid"
+		while kill -0 "$pid"; do sleep 1; done
 		;;
 	*)
 		echo "Usage: $(basename $0) <start|stop>"

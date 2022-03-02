@@ -110,8 +110,9 @@ struct {
 };
 
 struct {
-	sqlite3_stmt *stmt;
-	char         *sql;
+	sqlite3_stmt    *stmt;
+	char            *sql;
+	struct timespec  start;
 } qry_begin_txn = {
 	NULL,
 	"begin exclusive transaction"
@@ -505,6 +506,23 @@ fail:
 	return -1;
 }
 
+static time_t
+txn_duration()
+{
+	time_t           delta_ns;
+	struct timespec  end;
+
+	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
+		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		return ULONG_MAX;
+	}
+
+	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+	    ((qry_begin_txn.start.tv_sec * 1000000000) +
+	     qry_begin_txn.start.tv_nsec);
+	return delta_ns;
+}
+
 int
 slabdb_begin_txn(struct exlog_err *e)
 {
@@ -527,6 +545,10 @@ slabdb_begin_txn(struct exlog_err *e)
 		goto fail;
 	}
 
+	if (clock_gettime(CLOCK_REALTIME, &qry_begin_txn.start) == -1) {
+		exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime", __func__);
+		goto fail;
+	}
 	return slabdb_qry_cleanup(qry_begin_txn.stmt, e);
 fail:
 	if (slabdb_qry_cleanup(qry_begin_txn.stmt, exlog_zerr(&e2)) == -1)
@@ -539,6 +561,7 @@ slabdb_commit_txn(struct exlog_err *e)
 {
 	int              r;
 	struct exlog_err e2;
+	time_t           delta_ns;
 
 	switch ((r = sqlite3_step(qry_commit_txn.stmt))) {
 	case SQLITE_DONE:
@@ -556,8 +579,13 @@ slabdb_commit_txn(struct exlog_err *e)
 		goto fail;
 	}
 
+	delta_ns = txn_duration();
+	exlog(LOG_DEBUG, NULL, "%s: transaction held the lock for %u.%09u "
+	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
+
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
 fail:
+	// TODO: rollback?
 	if (slabdb_qry_cleanup(qry_commit_txn.stmt, exlog_zerr(&e2)) == -1)
 		exlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
@@ -568,6 +596,7 @@ slabdb_rollback_txn(struct exlog_err *e)
 {
 	int              r;
 	struct exlog_err e2;
+	time_t           delta_ns;
 
 	switch ((r = sqlite3_step(qry_rollback_txn.stmt))) {
 	case SQLITE_DONE:
@@ -584,6 +613,10 @@ slabdb_rollback_txn(struct exlog_err *e)
 		    __func__, sqlite3_errmsg(db), r);
 		goto fail;
 	}
+
+	delta_ns = txn_duration();
+	exlog(LOG_DEBUG, NULL, "%s: transaction held the lock for %u.%09u "
+	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);
 fail:
@@ -645,7 +678,9 @@ slabdb_init(uuid_t id, struct exlog_err *e)
 		return exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_open: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_busy_timeout(db, 15000))) {
+	// TODO: implement my own busy handler, with logging when we've
+	// been waiting more than X seconds.
+	if ((r = sqlite3_busy_timeout(db, 60000))) {
 		exlog_errf(e, EXLOG_DB, r,
 		    "%s: sqlite3_busy_timeout: %s", sqlite3_errmsg(db));
 		goto fail;
