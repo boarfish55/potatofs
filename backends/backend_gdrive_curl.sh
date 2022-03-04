@@ -33,6 +33,8 @@ curlrc_head=$HOME/potatofs/curlrc.head
 drive_folder="potatofs"
 passphrase="$HOME/potatofs/secret"
 
+tmpfile=$(mktemp /dev/shm/backend_gdrive_curl.XXXXXX)
+
 usage() {
 	echo "Usage: $(basename $0) -h <command>"
 	echo ""
@@ -104,9 +106,8 @@ upload_resumable() {
 		url="https://www.googleapis.com/upload/drive/v3/files/$id?uploadType=resumable"
 	fi
 
-	tmp=$(mktemp /dev/shm/backend_gdrive_curl.XXXXXX)
 	sz=$(echo -n $data | wc -c)
-	curl -K $curlrc_head -D $tmp -X $method \
+	curl -K $curlrc_head -D $tmpfile -X $method \
 		-H "Content-Type: application/json; charset=UTF-8" \
 		-H "Content-Length: $sz" \
 		-d "$data" \
@@ -114,11 +115,11 @@ upload_resumable() {
 	if [ $? -ne 0 ]; then
 		fail "curl failed with code $?"
 	fi
-	location=$(egrep -i '^location: ' $tmp | cut -d' ' -f 2)
+	location=$(egrep -i '^location: ' $tmpfile | cut -d' ' -f 2)
 	if [ -z "$location" ]; then
 		fail "curl: no location header back from gdrive"
 	fi
-	echo "url = $location" > $tmp
+	echo "url = $location" > $tmpfile
 
 	sz=$(stat -c %s $src)
 	out=$(cat $src | \
@@ -128,8 +129,10 @@ upload_resumable() {
 		-w '%{http_code}:%{size_upload}\n' \
 		--data-binary @- \
 		-H "Content-Type: application/octet-stream" \
-		-K $tmp)
-	rm $tmp
+		-K $tmpfile)
+	if [ $? -ne 0 ]; then
+		fail "gzip/openssl/curl: failed with code $? during PUT"
+	fi
 	if [ "${out%%:*}" != "200" ]; then
 		fail "curl: error ${out%%:*} during PUT"
 	fi
@@ -153,14 +156,16 @@ get_file() {
 		exit 1
 	fi
 
-	tmp=$(mktemp /dev/shm/backend_gdrive_curl.XXXXXX)
 	curl -K $curlrc_head -o - -w '%{stderr}%{json}\n' \
-		https://www.googleapis.com/drive/v3/files/$id?alt=media 2> $tmp | \
+		https://www.googleapis.com/drive/v3/files/$id?alt=media 2> $tmpfile | \
 		openssl enc -aes256 -pbkdf2 -pass file:$passphrase -d | \
 		gunzip -c > $dest
-	http_code=$(cat $tmp | jq .http_code)
-	sz=$(cat $tmp | jq .size_download)
-	rm $tmp
+	if [ $? -ne 0 ]; then
+		fail "curl: failed with code $? during GET"
+	fi
+	http_code=$(cat $tmpfile | jq .http_code)
+	sz=$(cat $tmpfile | jq .size_download)
+	rm $tmpfile
 	if [ "$http_code" != "200" ]; then
 		fail "curl: error ${out%%:*} during GET"
 	fi
@@ -188,6 +193,9 @@ do_df() {
 	j=$(curl -K $curlrc_head \
 		-G --data-urlencode "fields=storageQuota" \
 		https://www.googleapis.com/drive/v3/about)
+	if [ $? -ne 0 ]; then
+		fail "curl: failed with code $? during GET"
+	fi
 	total=$(echo $j | jq -r .storageQuota.limit)
 	used=$(echo $j | jq -r .storageQuota.usage)
 	echo "{\"status\": \"OK\", \"used_bytes\": $used, \"total_bytes\": $total}"
@@ -212,13 +220,13 @@ get_token() {
 			-d "client_id=$client_id&client_secret=$client_secret&refresh_token=$refresh_token&grant_type=refresh_token" \
 			https://oauth2.googleapis.com/token
 	fi
-	tmp=$(mktemp /dev/shm/curlrc.head.XXXXXX)
-	echo "-L" > $tmp
-	echo "-s" >> $tmp
-	echo -n "header = \"Authorization: Bearer " >> $tmp
-	cat $token_path | jq -j .access_token >> $tmp
-	echo '"' >> $tmp
-	mv $tmp $curlrc_head
+	echo "-L" > $tmpfile
+	echo "-s" >> $tmpfile
+	echo "--max-time 20" >> $tmpfile
+	echo -n "header = \"Authorization: Bearer " >> $tmpfile
+	cat $token_path | jq -j .access_token >> $tmpfile
+	echo '"' >> $tmpfile
+	cp $tmpfile $curlrc_head
 }
 
 get_folder_id() {
@@ -229,6 +237,8 @@ get_folder_id() {
 }
 
 cmd="$1"
+
+trap "rm -f $tmpfile" EXIT
 
 case $cmd in
 	df)

@@ -224,6 +224,8 @@ slab_purge(void *unused)
 {
 	struct oslab    *b, *b2;
 	struct timespec  now, t = {10, 0};
+	struct statvfs   stv;
+	int              purge;
 
 	while (!owned_slabs.do_shutdown) {
 		for (;;) {
@@ -238,15 +240,29 @@ slab_purge(void *unused)
 			continue;
 		}
 
+		purge = 0;
+		if (statvfs(fs_config.data_dir, &stv) == -1) {
+			exlog_strerror(LOG_ERR, errno, "%s: statvfs", __func__);
+		} else {
+			if (stv.f_bfree < stv.f_blocks *
+			    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
+				/*
+				 * Purge more aggressively if we're are getting
+				 * tight on space.
+				 */
+				purge = 1;
+		}
+
 		MTX_LOCK(&owned_slabs.lock);
 		b = TAILQ_FIRST(&owned_slabs.lru_head);
 		while (b != NULL) {
-			if (now.tv_sec <
-			    (b->open_since.tv_sec + owned_slabs.max_age))
+			if (!purge && (now.tv_sec <
+			    (b->open_since.tv_sec + owned_slabs.max_age)))
 				break;
 			b2 = TAILQ_NEXT(b, lru_entry);
-			exlog_dbg(EXLOG_SLAB, "%s: purging slab, "
+			exlog_dbg(EXLOG_SLAB, "%s: purging slab%s, "
 			    "ino=%lu, base=%lu", __func__,
+			    (purge) ? " (forced)" : "",
 			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);

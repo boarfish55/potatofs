@@ -46,7 +46,8 @@ if [ "$1" = "-h" ]; then
 fi
 
 do_df() {
-	df_out=$(ssh $ssh_host df -k $backend_path | tail -1)
+	df_out=$(ssh -o ConnectTimeout=5 $ssh_host df -k $backend_path | \
+		tail -1)
 	if [ $? -ne 0 ]; then
 		echo '{"status": "ERR", "msg": "df failed"}'
 		return 1
@@ -66,11 +67,12 @@ do_get() {
 		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
 		return 2
 	fi
-	if ! ssh $ssh_host test -r "$backend_path/$slab"; then
+	if ! ssh -o ConnectTimeout=5 $ssh_host \
+		test -r "$backend_path/$slab"; then
 		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such slab on backend: $slab\"}"
 		return 1
 	fi
-	scp $ssh_host:$backend_path/$slab "$local_path"
+	scp -o ConnectTimeout=5 $ssh_host:$backend_path/$slab "$local_path"
 	if [ $? -ne 0 ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to get slab: $slab\"}"
 		return 1
@@ -95,7 +97,7 @@ do_put() {
 		return 1
 	fi
 	sz=$(stat -c %s "$local_path")
-	scp "$local_path" $ssh_host:$backend_path/$slab
+	scp -o ConnectTimeout=20 "$local_path" $ssh_host:$backend_path/$slab
 	if [ $? -ne 0 ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to put slab: $slab\"}"
 		return 1

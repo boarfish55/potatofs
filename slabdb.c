@@ -233,15 +233,19 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 
 		if (slabdb_commit_txn(e) == -1)
 			goto fail;
-	} else if (((flags & SLABDB_PUT_REVISION) &&
-	    r_v.revision == v->revision) &&
+	} else if (
+	    ((flags & SLABDB_PUT_REVISION) &&
+	     r_v.revision == v->revision) &&
+
 	    ((flags & SLABDB_PUT_HEADER_CRC) &&
 	     r_v.header_crc == v->header_crc) &&
+
 	    ((flags & SLABDB_PUT_OWNER) &&
 	     uuid_compare(r_v.owner, v->owner) == 0) &&
+
 	    ((flags & SLABDB_PUT_LAST_CLAIMED) &&
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
-	     sizeof(struct timespec)))) {
+	     sizeof(struct timespec) == 0))) {
 		/* Same value, no need to update */
 		if (slabdb_rollback_txn(exlog_zerr(e)) == -1)
 			return -1;

@@ -131,17 +131,26 @@ KNOWN ISSUES
 TODO
 ====
 
-* bg_purge is too slow, don't hold the lock the entire time. Just get the
-  list of slabs in a list, then purge what you can.
-* potatofs should unload slabs more aggressively if space is tight,
-  otherwise the mgr cannot purge them as long as they are being held by the
-  fs.
+* Don't put backend get/put args on the command line, for security reasons.
+  Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
+  about the fact that those leak the slab names in the ps output and it's
+  better to use something other than shell scripts.
+* Doublecheck that atime is working as intended, add a test
+* All the fuse fs_ functions will need to handle backend timeouts gracefully
+  and bubble up a nicer error to processes. => EAGAIN
+  This will need to be returned from all the way down from backend_get()
+  and backend_put(), after a few retries keep failing. We could loop
+  forever too, but at some point we would want the user to be able to
+  gracefully shutdown the fs, such as when going losing Internet then
+  needing to shutdown their machine.
+* The fs should really retry claims and unclaim ops.
+* Set an upper bound on how long we're willing to wait for the last bg_purge
+  run.
 * Don't use exlog(LOG_DEBUG...), use exlog_dbg() instead for better
   granularity. I.e., slabdb would be a good one.
-* Some format strings have the wrong conversion for tv_nsec, should be "l".
-* The fs should really retry claims and unclaim ops.
 * fsck is too slow, too many cleam/unclaim. Try to batch operations on
   a single slab together
+* Add tests for basic claim/unclaim ops.
 * Wrap the uuid_unparse() in conditionals to avoid running that when
   not in debug mode.
 * Make the workers and timeouts configurable in the config file
@@ -153,15 +162,9 @@ TODO
   problem is that it also clogs up the workers. Maybe we need an separate
   control socket that's used by non-workers. Would also solve the
   potatoctl claim vs. fs deadlock.
-* Don't put backend get/put args on the command line, for security reasons.
-  Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
-  about the fact that those leak the slab names in the ps output and it's
-  better to use something other than shell scripts.
 * Add a "rm" handler in backend scripts, though mention this will only
   be used by fsck, therefore is optional.
 * Add a "wide" option to top
-* Doublecheck that atime is working as intended, add a test
-* Have fsck verify the slabdb too; the db must match the actual slabs.
 * Purging also needs to cleanup the backend of unreferenced slabs? Or
   maybe just fsck.
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
@@ -170,6 +173,7 @@ TODO
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
+* Some format strings have the wrong conversion for tv_nsec, should be "l".
 * exlog (possibly renaming to xlog) needs to cleanup in how calls are made
   and also how we have to clear the error in many places. Also we should
   add a descriptive text to the contextual errors instead of just printing

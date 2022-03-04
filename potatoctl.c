@@ -87,6 +87,12 @@ struct fsck_stats {
 	uint64_t errors;
 };
 
+struct slabdb_entry {
+	struct slab_key      sk;
+	struct slabdb_val    sv;
+	struct slabdb_entry *next;
+};
+
 void
 usage()
 {
@@ -672,21 +678,31 @@ top(int argc, char **argv)
 int
 slabdb_print(const struct slab_key *sk, const struct slabdb_val *v, void *data)
 {
-	char u[37];
-	uuid_unparse(v->owner, u);
-	printf("%s: sk=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
-	    " last_claimed=%lu.%lu\n", __func__,
-	    sk->ino, sk->base, v->revision, v->header_crc, u,
-	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
+	struct slabdb_entry **e = (struct slabdb_entry **)data;
+	struct slabdb_entry  *e_new;
+
+	if ((e_new = malloc(sizeof(struct slabdb_entry))) == NULL) {
+		warn("malloc");
+		slabdb_shutdown();
+		exit(1);
+	}
+
+	memcpy(&e_new->sk, sk, sizeof(struct slab_key));
+	memcpy(&e_new->sv, v, sizeof(struct slabdb_val));
+	e_new->next = *e;
+	*e = e_new;
+
 	return 0;
 }
 
 int
 slabdb(int argc, char **argv)
 {
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	struct fs_info   fs_info;
-	int              r;
+	struct exlog_err     e = EXLOG_ERR_INITIALIZER;
+	struct fs_info       fs_info;
+	int                  r;
+	struct slabdb_entry *head, *entry;
+	char                 u[37];
 
 	if (fs_info_inspect(&fs_info, &e) == -1) {
 		exlog_prt(&e);
@@ -698,12 +714,24 @@ slabdb(int argc, char **argv)
 		exit(1);
 	}
 
-	r = slabdb_loop(&slabdb_print, NULL, &e);
-	slabdb_shutdown();
+	r = slabdb_loop(&slabdb_print, &head, &e);
 	if (r == -1) {
+		slabdb_shutdown();
 		exlog_prt(&e);
 		exit(1);
 	}
+
+	for (entry = head; entry != NULL; entry = entry->next) {
+		uuid_unparse(entry->sv.owner, u);
+		printf("%s: sk=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
+		    " last_claimed=%lu.%lu\n", __func__,
+		    entry->sk.ino, entry->sk.base,
+		    entry->sv.revision, entry->sv.header_crc, u,
+		    entry->sv.last_claimed.tv_sec,
+		    entry->sv.last_claimed.tv_nsec);
+	}
+
+	slabdb_shutdown();
 
 	return 0;
 }

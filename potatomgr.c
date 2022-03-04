@@ -296,10 +296,17 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 			    "%s: poll", __func__);
 
 		if (poll_r == 0) {
-			exlog(LOG_ERR, NULL, "%s: command timed out after %d "
-			    "seconds; aborting",
-			    __func__, BACKEND_TIMEOUT_SECONDS);
+			exlog(LOG_ERR, NULL, "%s: child %d stalled; "
+			    "killing it now", __func__, pid);
 			kill(pid, 9);
+			close(p_out[0]);
+			close(p_err[0]);
+			if (waitpid(pid, wstatus, 0) == -1)
+				exlog_strerror(LOG_ERR, errno,
+				    "%s: waitpid", __func__);
+			return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+			    "%s: command timed out after %d seconds; aborting",
+			    __func__, BACKEND_TIMEOUT_SECONDS);
 		}
 
 		while (nfds-- > 0) {
@@ -1082,6 +1089,12 @@ get_again:
 			    "retrying", __func__, name);
 			sleep(5);
 			goto get_again;
+		} else if (exlog_err_is(e, EXLOG_APP, EXLOG_EXEC)) {
+			exlog(LOG_ERR, e, "%s: backend script failed, "
+			    "will retry; reason: %s", __func__);
+			exlog_zerr(e);
+			sleep(5);
+			goto get_again;
 		} else if (exlog_err_is(e, EXLOG_OS, ENOSPC)) {
 			exlog_zerr(e);
 			exlog(LOG_ERR, NULL, "%s: ran out of space during "
@@ -1233,7 +1246,8 @@ bg_df()
 	}
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
-		exlog(LOG_ERR, NULL, "%s: %s", __func__, jerr.text);
+		exlog(LOG_ERR, NULL, "%s: failed but will retry; "
+		    "JSON was invalid: %s", __func__, jerr.text);
 		return;
 	}
 
@@ -1364,7 +1378,8 @@ bg_flush()
 		}
 
 		if (backend_put(path, basename(path), &out_bytes, &e) == -1) {
-			exlog(LOG_ERR, &e, "%s", __func__);
+			exlog(LOG_ERR, &e, "%s: failed but will retry; "
+			    "reason: ", __func__);
 			close(fd);
 			continue;
 		}
@@ -1380,6 +1395,11 @@ bg_flush()
 		if (close(fd) == -1)
 			exlog_strerror(LOG_ERR, errno, "%s: close %s",
 			    __func__, path);
+
+		// TODO: Maybe don't try to sync every single slab
+		// if we have shutdown_requested. We don't want to hold
+		// the user hostage forever. Though this should be
+		// configurable.
 	}
 fail:
 	closedir(dir);
@@ -1611,10 +1631,6 @@ bg_purge()
 		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
 		return;
 	}
-	// TODO: possibly quite slow, keeps the lock too long. Instead
-	// maybe just do a non-blocking read, pile up the slab keys & values
-	// in a list, then loop over those and slabdb_put() those that need
-	// an update.
 	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
 		exlog(LOG_ERR, &e, "%s", __func__);
 	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
