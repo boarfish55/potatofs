@@ -56,11 +56,12 @@ enum exlog_cerrcode {
 	                       slab manager */
 };
 
-#define EXLOG_INODE 0x0001
-#define EXLOG_SLAB  0x0002
-#define EXLOG_LOCK  0x0004
-#define EXLOG_OP    0x0008
-#define EXLOG_OF    0x0010
+#define EXLOG_INODE   0x0001
+#define EXLOG_SLAB    0x0002
+#define EXLOG_LOCK    0x0004
+#define EXLOG_OP      0x0008
+#define EXLOG_OF      0x0010
+#define EXLOG_SLABDB  0x0020
 
 typedef uint16_t exlog_mask_t;
 
@@ -110,5 +111,6 @@ void exlog_dbg(exlog_mask_t, const char *, ...);
 void exlog(int, const struct exlog_err *, const char *, ...);
 void exlog_strerror(int, int, const char *, ...);
 void exlog_prt(const struct exlog_err *);
+int  exlog_prepend(struct exlog_err *, const char *);
 
 #endif

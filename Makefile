@@ -1,7 +1,5 @@
-VERSION=0.1
 DEPDIR := .deps
-CFLAGS := -DVERSION=\"$(VERSION)\" \
-	-DFUSE_USE_VERSION=26 \
+CFLAGS := -DFUSE_USE_VERSION=26 \
 	$(shell pkg-config --cflags fuse uuid libbsd-overlay)
 LDFLAGS := $(shell pkg-config --libs fuse uuid 'jansson >= 2.9' \
 	libbsd-overlay sqlite3 zlib)

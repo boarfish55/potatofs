@@ -32,6 +32,8 @@ curlrc_head=$HOME/potatofs/curlrc.head
 # an extra lookup.
 drive_folder="potatofs"
 passphrase="$HOME/potatofs/secret"
+upload_rate="1500k"
+download_rate="40m"
 
 tmpfile=$(mktemp /dev/shm/backend_gdrive_curl.XXXXXX)
 
@@ -125,8 +127,8 @@ upload_resumable() {
 	out=$(cat $src | \
 		gzip -c | \
 		openssl enc -aes256 -pbkdf2 -pass file:$passphrase -e | \
-		curl -K $curlrc_head -X PUT -o /dev/null \
-		-w '%{http_code}:%{size_upload}\n' \
+		curl -K $curlrc_head -X PUT --limit-rate $upload_rate \
+		-o /dev/null -w '%{http_code}:%{size_upload}\n' \
 		--data-binary @- \
 		-H "Content-Type: application/octet-stream" \
 		-K $tmpfile)
@@ -157,6 +159,7 @@ get_file() {
 	fi
 
 	curl -K $curlrc_head -o - -w '%{stderr}%{json}\n' \
+		--limit-rate $download_rate \
 		https://www.googleapis.com/drive/v3/files/$id?alt=media 2> $tmpfile | \
 		openssl enc -aes256 -pbkdf2 -pass file:$passphrase -d | \
 		gunzip -c > $dest

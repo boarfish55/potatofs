@@ -45,14 +45,17 @@ static int  claim(int, char **);
 static int  show_slab(int, char **);
 static int  show_dir(int, char **);
 static int  show_inode(int, char **);
+static int  inode_tables(int, char **);
 static int  fsck(int, char **);
 static int  top(int, char **);
 static int  dump_counters(int, char **);
 static int  dump_config(int, char **);
 static int  fs_status(int, char **);
+static int  do_shutdown(int, char **);
 static int  set_clean(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *);
+static int  write_dir(int, char *, struct inode *, off_t);
 static void print_inode(struct inode *, int);
 static void print_slab_hdr(struct slab_hdr *);
 
@@ -70,10 +73,15 @@ struct subc {
 	{ "counters", &dump_counters, 0 },
 	{ "config", &dump_config, 0 },
 	{ "status", &fs_status, 0 },
+	{ "shutdown", &do_shutdown, 0 },
 	{ "set_clean", &set_clean, 0 },
+	{ "inode_tables", &inode_tables, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
 };
+
+int fsck_verbose = 1;
+int fsck_fix = 0;
 
 const char *clean_warning = (
     "WARNING: filesystem not marked clean!!!\n"
@@ -103,8 +111,9 @@ usage()
 	    "           top   [delay]\n"
 	    "           counters\n"
 	    "           status\n"
+	    "           shutdown\n"   // TODO: add grace_period arg
 	    "           set_clean\n"
-	    "           fsck\n"
+	    "           fsck  [quiet]\n"
 	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
 	    "\n"
@@ -115,6 +124,21 @@ usage()
 
 extern struct counter counters[];
 extern locale_t       log_locale;
+
+static void
+fsck_printf(const char *fmt, ...)
+{
+	va_list ap;
+	char    fsck_fmt[LINE_MAX];
+
+	if (!fsck_verbose)
+		return;
+
+	snprintf(fsck_fmt, sizeof(fsck_fmt), "fsck: %s\n", fmt);
+	va_start(ap, fmt);
+	vprintf(fsck_fmt, ap);
+	va_end(ap);
+}
 
 void
 read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
@@ -171,12 +195,58 @@ valid_inode(int mgr, ino_t ino)
 }
 
 int
+clear_dir_entry(struct dir_entry *start, struct dir_entry *de, size_t *sz,
+    struct exlog_err *e)
+{
+	off_t            offset = 0, prev_off = 0;
+	struct dir_entry r_de, prev_used;
+	ino_t            ino = de->inode;
+
+	bzero(&prev_used, sizeof(prev_used));
+
+	for (;;) {
+		memcpy(&r_de, ((char *)start) + offset,
+		    sizeof(struct dir_entry));
+
+		if (strcmp(r_de.name, de->name) == 0)
+			break;
+
+		if (r_de.next == 0)
+			goto noent;
+
+		memcpy(&prev_used, &r_de, sizeof(prev_used));
+		prev_off = offset;
+		offset = r_de.next;
+	}
+
+	prev_used.next = r_de.next;
+
+	memcpy(((char *)start) + prev_off, &prev_used, sizeof(prev_used));
+
+	if (prev_used.next == 0) {
+		*sz = prev_off + sizeof(prev_used);
+	} else {
+		bzero(((char *)start) + offset, sizeof(struct dir_entry));
+	}
+
+	fsck_printf("    FIX: cleared dir entry: %lu", ino);
+	return 0;
+noent:
+	return exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
+	    "%s: no such dirent", __func__);
+}
+
+int
 fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
     struct fsck_stats *stats)
 {
 	struct dir_entry *de;
 	char             *dir;
+	size_t            dir_sz;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	int               dirty = 0;
 
+	fsck_printf("  inode: %lu", ino);
 	if (unallocated) {
 		if (inode == NULL) {
 			return 0;
@@ -187,6 +257,12 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			return -1;
 		}
 	} else {
+		// TODO: pile up allocated inodes in a data structure
+		// so we can look them up when we scan directories. As we
+		// find them linked somewhere, we can remove them from the
+		// data structure. Anything left in that structure at the
+		// end means it's not linked anywhere.
+
 		if (inode == NULL) {
 			warnx("missing inode %lu; bitmap says it's allocated, "
 			    "but inode table ends at a lower offset", ino);
@@ -205,19 +281,33 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	if (!(inode->v.f.mode & S_IFDIR))
 		return 0;
 
+	fsck_printf("  inode:   => dir");
 	stats->n_dirs++;
 
 	if (load_dir(mgr, &dir, inode) == -1) {
 		stats->errors++;
 		return -1;
 	}
+	dir_sz = inode->v.f.size;
 
 	for (de = (struct dir_entry *)dir;
-	    (char *)de < (dir + inode->v.f.size); de++) {
+	    (char *)de < (dir + dir_sz); de++) {
 		if (de->inode > 0) {
+			fsck_printf("    dirent: %lu (%s)",
+			    de->inode, de->name);
 			stats->n_dirents++;
-			if (!valid_inode(mgr, ino))
+			if (!valid_inode(mgr, de->inode)) {
 				stats->errors++;
+
+				if (fsck_fix) {
+					if (clear_dir_entry(
+					    (struct dir_entry *)dir, de,
+					    &dir_sz, exlog_zerr(&e)) == -1)
+						exlog_prt(&e);
+					else
+						dirty = 1;
+				}
+			}
 		}
 		if (de->next > 0 && de->next <= ((char *)de - dir)) {
 			/*
@@ -231,6 +321,12 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			    ino, de->name, (char *)de - dir);
 		}
 	}
+
+	if (dirty && write_dir(mgr, dir, inode, dir_sz) == -1) {
+		stats->errors++;
+		return -1;
+	}
+
 	free(dir);
 	return 0;
 }
@@ -281,6 +377,7 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 	struct inode   *itbl = NULL;
 	int             fd;
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 	m.v.claim_next_itbl.base = b->hdr.v.f.key.base;
 	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
@@ -297,9 +394,11 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,
-		    "%s: bad manager response: %d", __func__, m.m);
+		    "%s: bad manager response: %d", __func__, m.err);
 		return NULL;
 	}
+
+	fsck_printf("itbl: %lu/%lu", m.v.claim.key.ino, m.v.claim.key.base);
 
 	b->fd = fd;
 
@@ -359,16 +458,26 @@ end:
 int
 fsck(int argc, char **argv)
 {
-	ino_t                 ino;
-	int                   slab_end = 0, is_free;
-	struct inode         *inode, *itbl;
-	struct oslab          b;
-	struct slab_itbl_hdr *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(&b);
-	off_t                 itbl_sz;
-	struct exlog_err      e = EXLOG_ERR_INITIALIZER;
-	struct fsck_stats     stats = {0, 0, 0, 0};
-	size_t                n_free;
-	int                   mgr;
+	ino_t                  ino;
+	int                    slab_end = 0, is_free;
+	struct inode          *inode, *itbl;
+	struct oslab           b;
+	struct slab_itbl_hdr  *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(&b);
+	off_t                  itbl_sz;
+	struct exlog_err       e = EXLOG_ERR_INITIALIZER;
+	struct fsck_stats      stats = {0, 0, 0, 0};
+	size_t                 n_free;
+	int                    mgr;
+	char                 **arg;
+
+	fsck_verbose = 1;
+
+	for (arg = argv; *arg != NULL; arg++) {
+		if (strcmp(*arg, "quiet") == 0)
+			fsck_verbose = 0;
+		else if (strcmp(*arg, "fix") == 0)
+			fsck_fix = 1;
+	}
 
 	if ((mgr = mgr_connect(1, &e)) == -1) {
 		exlog_prt(&e);
@@ -438,12 +547,116 @@ end:
 	return (stats.errors) ? 1 : 0;
 }
 
+int
+inode_tables(int argc, char **argv)
+{
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	int              mgr;
+	struct mgr_msg   m;
+	off_t            base = 0;
+	struct slab_key  sk;
+	int              fd;
+	uuid_t           u;
+	int              r;
+
+	uuid_clear(u);
+	if (slabdb_init(u, &e) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	while ((r = slabdb_get_next_itbl(&base, &e)) != -1) {
+		printf("slabdb_get_next_itbl: found base %lu\n", base);
+	}
+
+	slabdb_shutdown();
+
+	if ((mgr = mgr_connect(0, &e)) == -1) {
+		exlog_prt(&e);
+		exit(1);
+	}
+
+	base = 0;
+	for (;;) {
+		m.m = MGR_MSG_CLAIM_NEXT_ITBL;
+		m.v.claim_next_itbl.base = base;
+		m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
+		if (mgr_send(mgr, -1, &m, &e) == -1) {
+			exlog_prt(&e);
+			exit(1);
+		}
+
+		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+			exlog_prt(&e);
+			exit(1);
+		}
+
+		if (m.m == MGR_MSG_CLAIM_NEXT_ITBL_END) {
+			break;
+		} else if (m.m != MGR_MSG_CLAIM_OK) {
+			errx(1, "%s: bad manager response: %d", __func__, m.m);
+		}
+		memcpy(&sk, &m.v.claim.key, sizeof(sk));
+		base = sk.base;
+
+		fsck_printf("itbl: %lu/%lu", sk.ino, sk.base);
+
+		m.m = MGR_MSG_UNCLAIM;
+		memcpy(&m.v.unclaim.key, &sk, sizeof(struct slab_key));
+		if (mgr_send(mgr, fd, &m, &e) != -1 &&
+		    mgr_recv(mgr, NULL, &m, &e) != -1 &&
+		    m.m != MGR_MSG_UNCLAIM_OK) {
+			errx(1, "%s: bad manager response: %d", __func__, m.m);
+		}
+		close(fd);
+	}
+	close(mgr);
+	return 0;
+}
+
 void
 print_metric_header()
 {
 	printf("%10s %10s %10s %10s %10s %10s %10s\n",
 	    "read/s", "read MB/s", "write/s", "write MB/s",
 	    "be-r MB/s", "be-w MB/s", "errors");
+}
+
+int
+do_shutdown(int argc, char **argv)
+{
+	int              mgr;
+	struct mgr_msg   m;
+	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+
+	if ((mgr = mgr_connect(0, &e)) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	m.m = MGR_MSG_SHUTDOWN;
+	// TODO: unused at the moment
+	m.v.shutdown.grace_period = 0;
+
+	if (mgr_send(mgr, -1, &m, &e) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+		exlog_prt(&e);
+		return 1;
+	}
+
+	if (m.m != MGR_MSG_SHUTDOWN_OK) {
+		warnx("%s: bad manager response: %d",
+		    __func__, m.m);
+		return 1;
+	}
+
+	printf("%s: shutdown signal sent\n", __func__);
+	close(mgr);
+	return 0;
 }
 
 int
@@ -455,6 +668,9 @@ fs_status(int argc, char **argv)
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	double            used, total;
 	struct fs_info    fs_info;
+	struct statvfs    stv;
+	char              mgr_line[80];
+	int               exit_code = 0;
 
 	mgr = mgr_connect(0, &e);
 
@@ -466,12 +682,14 @@ fs_status(int argc, char **argv)
 				exlog_prt(&e);
 				return 1;
 			}
+			exit_code = 2;
 		} else {
 			exlog_prt(&e);
 			return 1;
 		}
+		snprintf(mgr_line, sizeof(mgr_line), "not running");
 	} else {
-		m.m = MGR_MSG_FS_INFO;
+		m.m = MGR_MSG_INFO;
 
 		if (mgr_send(mgr, -1, &m, &e) == -1) {
 			exlog_prt(&e);
@@ -483,17 +701,24 @@ fs_status(int argc, char **argv)
 			return 1;
 		}
 
-		if (m.m != MGR_MSG_FS_INFO_OK) {
+		close(mgr);
+
+		if (m.m != MGR_MSG_INFO_OK) {
 			warnx("%s: bad manager response: %d",
 			    __func__, m.m);
 			return 1;
 		}
-		memcpy(&fs_info, &m.v.fs_info, sizeof(fs_info));
+		memcpy(&fs_info, &m.v.info.fs_info, sizeof(fs_info));
+
+		snprintf(mgr_line, sizeof(mgr_line),
+		    "running with PID %d (version %s)", m.v.info.mgr_pid,
+		    m.v.info.version_string);
 	}
 
-	uuid_unparse(fs_info.instance_id, u);
+	printf("%s: %s\n", MGR_PROGNAME, mgr_line);
 
-	printf("fs_info (%lu bytes):\n", sizeof(fs_info));
+	uuid_unparse(fs_info.instance_id, u);
+	printf("\nfs_info (%lu bytes):\n", sizeof(fs_info));
 
 	printf("  version:     %u\n", fs_info.fs_info_version);
 	printf("  instance_id: %s\n", u);
@@ -529,10 +754,19 @@ fs_status(int argc, char **argv)
 	total = (double) fs_info.stats.f_blocks *
 	    fs_info.stats.f_bsize / (2UL << 29UL);
 
-	printf("  Usage:       %.1f / %.1f GiB (%.1f%%)\n", used, total,
+	printf("Backend usage: %.1f / %.1f GiB (%.1f%%)\n", used, total,
 	    used * 100.0 / total);
 
-	return 0;
+	if (statvfs(fs_config.data_dir, &stv) == -1)
+		err(1, "statvfs");
+	used = (double) (stv.f_blocks - stv.f_bfree) *
+	    stv.f_bsize / (2UL << 29UL);
+	total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
+
+	printf("  Cache usage: %.1f / %.1f GiB (%.1f%%)\n", used, total,
+	    used * 100.0 / total);
+
+	return exit_code;
 }
 
 int
@@ -819,6 +1053,202 @@ fail:
 	exit(1);
 }
 
+int
+write_dir(int mgr, char *data, struct inode *inode, off_t new_size)
+{
+	ssize_t           r, wsize;
+	int               fd;
+	struct mgr_msg    m;
+	struct oslab      b;
+	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	off_t             old_size, offset;
+
+	old_size = inode->v.f.size;
+
+	if (new_size < inode_max_inline_b()) {
+		memcpy(inode_data(inode), data, new_size);
+		bzero(inode_data(inode) + new_size,
+		    inode_max_inline_b() - new_size);
+		offset = new_size;
+	} else {
+		memcpy(inode_data(inode), data, inode_max_inline_b());
+		offset = inode_max_inline_b();
+	}
+
+	inode->v.f.size = new_size;
+	inode->v.f.blocks = new_size / 512 + 1;
+
+	while (offset <= old_size && old_size > inode_max_inline_b()) {
+		bzero(&m, sizeof(m));
+		m.m = MGR_MSG_CLAIM;
+		slab_key(&m.v.claim.key, inode->v.f.inode, offset);
+		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+
+		if (mgr_send(mgr, -1, &m, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (m.m == MGR_MSG_CLAIM_NOENT) {
+			continue;
+		} else if (m.m != MGR_MSG_CLAIM_OK) {
+			warnx("failed to claim slab for inode %lu "
+			    "at offset %lu: resp=%d", inode->v.f.inode,
+			    offset, m.m);
+			goto fail;
+		}
+
+		bzero(&b, sizeof(b));
+		b.fd = fd;
+		b.dirty = 1;
+		b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+
+		if (slab_read_hdr(&b, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (b.hdr.v.f.slab_version != SLAB_VERSION) {
+			warnx("unrecognized data format version: %u",
+			    b.hdr.v.f.slab_version);
+			goto fail;
+		}
+
+		if (verify_checksum(b.fd, &b.hdr, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (offset < new_size) {
+			if (new_size - offset > slab_get_max_size() -
+			    (offset % slab_get_max_size()))
+				wsize = slab_get_max_size() -
+				    (offset % slab_get_max_size());
+			else
+				wsize = new_size - offset;
+			if ((r = slab_write(&b, data + offset,
+			    offset % slab_get_max_size(), wsize, &e)) == -1) {
+				exlog_prt(&e);
+				goto fail;
+			}
+			offset += r;
+			if (slab_truncate(&b,
+			    offset % slab_get_max_size(), &e) == -1) {
+				exlog_prt(&e);
+				goto fail;
+			}
+		} else {
+			if (slab_unlink(&b, &e) == -1) {
+				exlog_prt(&e);
+				goto fail;
+			}
+		}
+		offset += slab_get_max_size() -
+		    (offset % slab_get_max_size());
+
+		m.m = MGR_MSG_UNCLAIM;
+		memcpy(&m.v.unclaim.key, &b.hdr.v.f.key,
+		    sizeof(struct slab_key));
+		if (mgr_send(mgr, b.fd, &m, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+			exlog_prt(&e);
+			goto fail;
+		}
+
+		if (m.m != MGR_MSG_UNCLAIM_OK) {
+			warnx("%s: bad manager response: %d", __func__, m.m);
+			goto fail;
+		}
+
+		close(b.fd);
+	}
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_CLAIM;
+	slab_key(&m.v.claim.key, 0, inode->v.f.inode);
+	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+
+	if (mgr_send(mgr, -1, &m, &e) == -1) {
+		exlog_prt(&e);
+		return -1;
+	}
+
+	if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+		exlog_prt(&e);
+		return -1;
+	}
+
+	if (m.m != MGR_MSG_CLAIM_OK) {
+		warnx("failed to claim slab for inode %lu "
+		    "at offset %lu: resp=%d", inode->v.f.inode, offset, m.m);
+		return -1;
+	}
+
+	bzero(&b, sizeof(b));
+	b.fd = fd;
+	b.dirty = 1;
+	b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+
+	if (slab_read_hdr(&b, &e) == -1) {
+		exlog_prt(&e);
+		goto fail;
+	}
+
+	if (b.hdr.v.f.slab_version != SLAB_VERSION) {
+		warnx("unrecognized data format version: %u",
+		    b.hdr.v.f.slab_version);
+		goto fail;
+	}
+
+	if (verify_checksum(b.fd, &b.hdr, &e) == -1) {
+		exlog_prt(&e);
+		goto fail;
+	}
+
+	if ((r = slab_write(&b, inode,
+	    (inode->v.f.inode - b.hdr.v.f.key.base) * sizeof(struct inode),
+	    sizeof(struct inode), &e)) == -1) {
+		exlog_prt(&e);
+		goto fail;
+	}
+	if (r < sizeof(struct inode))
+		exlog(LOG_ERR, NULL, "%s: short write on inode table",
+		    __func__);
+
+	m.m = MGR_MSG_UNCLAIM;
+	memcpy(&m.v.unclaim.key, &b.hdr.v.f.key,
+	    sizeof(struct slab_key));
+	if (mgr_send(mgr, b.fd, &m, &e) == -1) {
+		exlog_prt(&e);
+		goto fail;
+	}
+
+	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+		exlog_prt(&e);
+		goto fail;
+	}
+
+	if (m.m != MGR_MSG_UNCLAIM_OK) {
+		warnx("%s: bad manager response: %d", __func__, m.m);
+		goto fail;
+	}
+
+	close(b.fd);
+	return 0;
+fail:
+	close(b.fd);
+	return -1;
+}
+
 /*
  * Load all of a directory inode's data from
  * all slabs tied to that inode.
@@ -860,6 +1290,7 @@ load_dir(int mgr, char **data, struct inode *inode)
 		}
 
 		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
+			exlog_prepend(&e, __func__);
 			exlog_prt(&e);
 			goto fail;
 		}
@@ -916,6 +1347,7 @@ load_dir(int mgr, char **data, struct inode *inode)
 		}
 
 		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+			exlog_prepend(&e, __func__);
 			exlog_prt(&e);
 			goto fail_free_slab;
 		}

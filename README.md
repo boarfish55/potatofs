@@ -131,6 +131,9 @@ KNOWN ISSUES
 TODO
 ====
 
+* Add a format field for dirinodes; they need to be optimized to locate
+  free slots. This is way too slow on large directories.
+* Add a test to try out the last possible inode, 2^63
 * Don't put backend get/put args on the command line, for security reasons.
   Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
   about the fact that those leak the slab names in the ps output and it's

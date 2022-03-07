@@ -57,7 +57,7 @@ static struct {
 	TAILQ_HEAD(slab_itbl, oslab) itbl_head;
 
 	pthread_mutex_t lock;
-	uint64_t        max_open;
+	rlim_t          max_open;
 	int             do_shutdown;
 
 	/*
@@ -65,7 +65,7 @@ static struct {
 	 * be closed by the background "flusher" threads, or on the next
 	 * forget for that slab.
 	 */
-	uint32_t        max_age;
+	time_t          max_age;
 } owned_slabs = {
 	SPLAY_INITIALIZER(&owned_slabs.head),
 	TAILQ_HEAD_INITIALIZER(owned_slabs.lru_head),
@@ -418,7 +418,7 @@ slab_make_dirs(struct exlog_err *e)
 }
 
 int
-slab_configure(uint64_t max_open, uint32_t max_age, struct exlog_err *e)
+slab_configure(rlim_t max_open, time_t max_age, struct exlog_err *e)
 {
 	int            r;
 	pthread_attr_t attr;
@@ -482,11 +482,10 @@ slab_configure(uint64_t max_open, uint32_t max_age, struct exlog_err *e)
  * An inode lock must never be acquired while holding the itbl lock.
  */
 struct oslab *
-slab_load_itbl(ino_t ino, rwlk_flags lkf, struct exlog_err *e)
+slab_load_itbl(const struct slab_key *sk, rwlk_flags lkf, struct exlog_err *e)
 {
 	struct oslab         *b;
 	struct slab_itbl_hdr *ihdr;
-	struct slab_key       sk;
 
 	if (!(lkf & (LK_LOCK_RD|LK_LOCK_RW))) {
 		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
@@ -494,7 +493,7 @@ slab_load_itbl(ino_t ino, rwlk_flags lkf, struct exlog_err *e)
 		return NULL;
 	}
 
-	if ((b = slab_load(slab_key(&sk, 0, ino), OSLAB_SYNC, e)) == NULL)
+	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL)
 		return NULL;
 
 	ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
@@ -570,35 +569,45 @@ slab_itbl_dealloc(struct oslab *b, ino_t ino)
 	ihdr->n_free++;
 }
 
-size_t
+off_t
 slab_get_max_size()
 {
 	return fs_config.slab_size;
 }
 
-size_t
+ino_t
 slab_inode_max()
 {
 	return fs_config.slab_size / sizeof(struct inode);
 }
 
 struct slab_key *
-slab_key(struct slab_key *sk, ino_t ino, off_t offset)
+slab_key(struct slab_key *sk, ino_t ino, off_t base)
 {
 	bzero(sk, sizeof(struct slab_key));
 	if (ino == 0) {
-		sk->base = (offset - 1) - ((offset - 1) % slab_inode_max()) + 1;
+		sk->base = (base - 1) - ((base - 1) % slab_inode_max()) + 1;
 	} else {
 		sk->ino = ino;
-		sk->base = offset - (offset % slab_get_max_size());
+		sk->base = base - (base % slab_get_max_size());
 	}
 	return sk;
 }
 
 int
-slab_key_valid(struct slab_key *sk, struct exlog_err *e)
+slab_key_valid(const struct slab_key *sk, struct exlog_err *e)
 {
+	if (sk->base > SLAB_KEY_MAX || sk->base < 0)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: base %ld is out of range", __func__, sk->base);
+	if (sk->ino > SLAB_KEY_MAX)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: ino %lu is out of range", __func__, sk->ino);
 	if (sk->ino == 0) {
+		if (sk->base < 1)
+			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+			    "%s: base is less than 1 for an inode table",
+			    __func__);
 		if ((sk->base - 1) % slab_inode_max() != 0)
 			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 			    "%s: inode table has base %lu that does not fall "
@@ -650,12 +659,14 @@ slab_path(char *path, size_t len, const struct slab_key *sk, int name_only,
 {
 	size_t l;
 
+	if (slab_key_valid(sk, e) == -1)
+		return -1;
 	if (name_only) {
 		if (sk->ino == 0) {
-			l = snprintf(path, len, "%s%020lu", ITBL_PREFIX,
+			l = snprintf(path, len, "%s%020ld", ITBL_PREFIX,
 			    sk->base);
 		} else {
-			l = snprintf(path, len, "%s%020lu-%020lu",
+			l = snprintf(path, len, "%s%020lu-%020ld",
 			    SLAB_PREFIX, sk->ino, sk->base);
 		}
 	} else {
@@ -664,7 +675,7 @@ slab_path(char *path, size_t len, const struct slab_key *sk, int name_only,
 			    fs_config.data_dir, ITBL_DIR, ITBL_PREFIX,
 			    sk->base);
 		} else {
-			l = snprintf(path, len, "%s/%02lx/%s%020lu-%020lu",
+			l = snprintf(path, len, "%s/%02lx/%s%020lu-%020ld",
 			    fs_config.data_dir, sk->ino % SLAB_DIRS,
 			    SLAB_PREFIX, sk->ino, sk->base);
 		}
@@ -677,36 +688,39 @@ slab_path(char *path, size_t len, const struct slab_key *sk, int name_only,
 }
 
 int
-slab_parse_path(const char *path, struct slab_key *key, struct exlog_err *e)
+slab_parse_path(const char *path, struct slab_key *sk, struct exlog_err *e)
 {
 	char p[PATH_MAX];
 
-	bzero(key, sizeof(struct slab_key));
+	bzero(sk, sizeof(struct slab_key));
 	strlcpy(p, path, sizeof(p));
 	if (strncmp(basename(p), ITBL_PREFIX, 1) == 0) {
-		key->ino = 0;
-		if (sscanf(basename(p), ITBL_PREFIX "%020lu",
-		    &key->base) < 1)
+		sk->ino = 0;
+		if (sscanf(basename(p), ITBL_PREFIX "%020ld",
+		    &sk->base) < 1)
 			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 			    "%s: unparseable itbl slab name %s",
 			    __func__, path);
 	} else {
-		if (sscanf(basename(p), SLAB_PREFIX "%020lu-%020lu",
-		    &key->ino, &key->base) < 2)
+		if (sscanf(basename(p), SLAB_PREFIX "%020lu-%020ld",
+		    &sk->ino, &sk->base) < 2)
 			return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
 			    "%s: unparseable slab name %s", __func__, path);
 	}
-	return slab_key_valid(key, e);
+	return slab_key_valid(sk, e);
 }
 
 struct oslab *
-slab_load(struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
+slab_load(const struct slab_key *sk, uint32_t oflags, struct exlog_err *e)
 {
 	struct oslab    *b, needle;
 	struct oslab    *purged;
 	struct timespec  t = {5, 0};
 	int              mgr = -1;
 	struct mgr_msg   m;
+
+	if (slab_key_valid(sk, e) == -1)
+		return NULL;
 
 	memcpy(&needle.hdr.v.f.key, sk, sizeof(struct slab_key));
 
@@ -907,8 +921,8 @@ slab_forget(struct oslab *b, struct exlog_err *e)
 	return exlog_fail(e);
 }
 
-size_t
-slab_itbls(ino_t *bases, size_t n, struct exlog_err *e)
+ssize_t
+slab_itbls(off_t *bases, size_t n, struct exlog_err *e)
 {
 	struct oslab         *b;
 	size_t                i = 0, j;
@@ -916,8 +930,12 @@ slab_itbls(ino_t *bases, size_t n, struct exlog_err *e)
 	DIR                  *itbl_dir;
 	char                  path[PATH_MAX];
 	struct dirent        *de;
-	ino_t                 base;
 	int                   found;
+	struct slab_key       sk;
+
+	if (n > SSIZE_MAX)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: n is too large", __func__);
 
 	MTX_LOCK(&owned_slabs.lock);
 	TAILQ_FOREACH(b, &owned_slabs.itbl_head, itbl_entry) {
@@ -947,20 +965,23 @@ slab_itbls(ino_t *bases, size_t n, struct exlog_err *e)
 	if ((itbl_dir = opendir(path)) == NULL)
 		return exlog_errf(e, EXLOG_OS, errno, "opendir");
 	while (i < n && (de = readdir(itbl_dir))) {
-		if (sscanf(de->d_name,
-		    ITBL_PREFIX "%020lu", &base) != 1)
+		if (slab_parse_path(de->d_name, &sk, e) == -1) {
+			exlog(LOG_ERR, e, "%s: an unrecognized file was "
+			    "found in the itbl dir: %s; skipping", __func__,
+			    de->d_name);
 			continue;
+		}
 
 		/* Check if we have this base in our results already */
 		found = 0;
 		for (j = 0; j < i; j++) {
-			if (bases[j] == base) {
+			if (bases[j] == sk.base) {
 				found = 1;
 				break;
 			}
 		}
 		if (!found)
-			bases[i++] = base;
+			bases[i++] = sk.base;
 	}
 	closedir(itbl_dir);
 
@@ -972,6 +993,10 @@ slab_write(struct oslab *b, const void *buf, off_t offset,
     size_t count, struct exlog_err *e)
 {
 	ssize_t w;
+
+	if (count > SSIZE_MAX)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: count (%lu) cannot exceed SSIZE_MAX", __func__, count);
 
 	if (slab_set_dirty_hdr(b, e) == -1)
 		return -1;
@@ -987,6 +1012,10 @@ slab_read(struct oslab *b, void *buf, off_t offset,
     size_t count, struct exlog_err *e)
 {
 	ssize_t r;
+
+	if (count > SSIZE_MAX)
+		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		    "%s: count (%lu) cannot exceed SSIZE_MAX", __func__, count);
 
 	offset += sizeof(b->hdr);
 	if ((r = pread_x(b->fd, buf, count, offset)) == -1)
@@ -1147,11 +1176,15 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = oflags;
 
-	if (mgr_send(mgr, -1, &m, e) == -1)
+	if (mgr_send(mgr, -1, &m, e) == -1) {
+		exlog_prepend(e, __func__);
 		return NULL;
+	}
 
-	if (mgr_recv(mgr, &fd, &m, e) == -1)
+	if (mgr_recv(mgr, &fd, &m, e) == -1) {
+		exlog_prepend(e, __func__);
 		return NULL;
+	}
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
@@ -1181,12 +1214,16 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 
 	b->fd = fd;
 
-	if (slab_read_hdr(b, e) == -1)
+	if (slab_read_hdr(b, e) == -1) {
+		exlog_prepend(e, __func__);
 		goto fail_free_slab;
+	}
 	memcpy(hdr, &b->hdr, sizeof(struct slab_hdr));
 
-	if ((*slab_sz = slab_size(b, e)) == ULONG_MAX)
+	if ((*slab_sz = slab_size(b, e)) == ULONG_MAX) {
+		exlog_prepend(e, __func__);
 		goto fail_free_slab;
+	}
 
 	if ((data = malloc(*slab_sz)) == NULL) {
 		exlog_errf(e, EXLOG_OS, errno, "%s: malloc", __func__);
@@ -1199,16 +1236,21 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 			    "%s: short read on slab; expected size from "
 			    "fstat() is %lu, slab_read() returned %lu",
 			    __func__, *slab_sz, r);
+		exlog_prepend(e, __func__);
 		goto fail_free_data;
 	}
 
 	m.m = MGR_MSG_UNCLAIM;
 	memcpy(&m.v.unclaim.key, sk, sizeof(struct slab_key));
-	if (mgr_send(mgr, b->fd, &m, e) == -1)
+	if (mgr_send(mgr, b->fd, &m, e) == -1) {
+		exlog_prepend(e, __func__);
 		goto fail_free_data;
+	}
 
-	if (mgr_recv(mgr, NULL, &m, e) == -1)
+	if (mgr_recv(mgr, NULL, &m, e) == -1) {
+		exlog_prepend(e, __func__);
 		goto fail_free_data;
+	}
 
 	if (m.m != MGR_MSG_UNCLAIM_OK) {
 		exlog_errf(e, EXLOG_APP, EXLOG_MGR,

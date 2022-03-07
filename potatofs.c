@@ -245,7 +245,7 @@ static int
 fs_ro_on_errors(fuse_req_t req, const char *fn)
 {
 	if (fs_error_is_set()) {
-		check_fuse_reply(fuse_reply_err(req, EPERM), fn, __func__);
+		check_fuse_reply(fuse_reply_err(req, EROFS), fn, __func__);
 		return -1;
 	}
 	return 0;
@@ -916,7 +916,6 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
 	struct oinode    *parent_oi, *oi = NULL;
 	struct dir_entry  de;
-	int               unlink_status;
 	int               r_sent = 0;
 
 	if (strlen(name) > FS_NAME_MAX) {
@@ -971,7 +970,7 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 		}
 	}
 
-	if ((unlink_status = di_unlink(parent_oi, &de, &e)) == -1) {
+	if ((di_unlink(parent_oi, &de, &e)) == -1) {
 		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
@@ -1048,7 +1047,7 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 		goto fail;
 	}
 
-	m.m = MGR_MSG_FS_INFO;
+	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
 		goto fail;
@@ -1061,13 +1060,13 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 
 	close(mgr);
 
-	if (m.m != MGR_MSG_FS_INFO_OK) {
+	if (m.m != MGR_MSG_INFO_OK) {
 		exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 		    __func__, m.m);
 		goto fail;
 	}
 
-	FUSE_REPLY(&r_sent, fuse_reply_statfs(req, &m.v.fs_info.stats));
+	FUSE_REPLY(&r_sent, fuse_reply_statfs(req, &m.v.info.fs_info.stats));
 	return;
 fail:
 	if (mgr != -1)
@@ -1251,12 +1250,13 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	    0, &inode, NULL, 0, &e);
 	if (status == -1) {
 		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NAMETOOLONG))
-			FUSE_REPLY(&r_sent,
-			    fuse_reply_err(req, ENAMETOOLONG));
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
 		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_EXIST))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EEXIST));
 		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
+		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOSPC))
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOSPC));
 		else
 			FS_ERR(&r_sent, req, &e);
 		goto unlock;
@@ -1490,6 +1490,8 @@ fs_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EEXIST));
 		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
+		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOSPC))
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOSPC));
 		else
 			FS_ERR(&r_sent, req, &e);
 		goto unlock;

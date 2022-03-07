@@ -35,6 +35,7 @@ struct fs_config fs_config = {
 	FS_DEFAULT_DATA_PATH,        /* data_path */
 	0,                           /* disable atime if 1 */
 	MGR_DEFAULT_SOCKET_PATH,     /* manager socket path */
+	MGR_DEFAULT_PIDFILE_PATH,    /* PID file path of manager */
 	MGR_DEFAULT_BACKEND_EXEC,    /* manager backend executable */
 	DEFAULT_CONFIG_PATH,         /* config path */
 	DEFAULT_UNCLAIM_PURGE_PCT,   /* unclaim_purge_threshold_pct */
@@ -88,6 +89,10 @@ config_read()
 			fs_config.mgr_sock_path = strdup(v);
 			if (fs_config.mgr_sock_path == NULL)
 				err(1, "mgr_sock_path");
+		} else if (strcmp(p, "pidfile_path") == 0) {
+			fs_config.pidfile_path = strdup(v);
+			if (fs_config.pidfile_path == NULL)
+				err(1, "pidfile_path");
 		} else if (strcmp(p, "backend") == 0) {
 			fs_config.mgr_exec = strdup(v);
 			if (fs_config.mgr_exec == NULL)

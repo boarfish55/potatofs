@@ -71,8 +71,7 @@ const uint32_t       flock_timeout = 10;
 static void
 usage()
 {
-	fprintf(stderr, "Usage: " MGR_PROGNAME
-	    " [-fhv] [-d level] [-c config] [-p pidfile]\n");
+	fprintf(stderr, "Usage: " MGR_PROGNAME " [options]\n");
 	fprintf(stderr,
 	    "\t-h\t\tPrints this help\n"
 	    "\t-v\t\tPrints version\n"
@@ -81,7 +80,6 @@ usage()
 	    "\t-W <workers>\tHow many background workers to spawn\n"
 	    "\t-f\t\tRun in the foreground, do not fork\n"
 	    "\t-c <path>\tPath to configuration\n"
-	    "\t-p <path>\tPID file path\n"
 	    "\t-T <timeout>\tUnix socket timeout\n"
 	    "\t-S <seconds>\tHow often to trigger the scrub worker; "
 	    "0 disables\n"
@@ -458,12 +456,8 @@ unclaim(int c, struct mgr_msg *m, int fd, struct exlog_err *e)
 	struct statvfs    stv;
 	struct slabdb_val v;
 
-	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
-		exlog(LOG_ERR, e, "%s", __func__);
-		exlog_zerr(e);
-		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: aborting", __func__);
-	}
+	if (slab_key_valid(&m->v.unclaim.key, e) == -1)
+		goto fail;
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
 		exlog_errf(e, EXLOG_OS, errno,
@@ -638,11 +632,8 @@ backend_get(const char *local_path, const char *backend_path,
 
 	*in_bytes = json_integer_value(o);
 
-	if (json_object_clear(j) == -1) {
-		exlog_errf(e, EXLOG_APP, EXLOG_JSON,
-		    "%s: failed to clear JSON", __func__);
-		goto fail;
-	}
+	if (json_object_clear(j) == -1)
+		exlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
 
 	return 0;
 fail:
@@ -689,8 +680,9 @@ backend_put(const char *local_path, const char *backend_path,
 	}
 
 	if ((o = json_object_get(j, "status")) == NULL) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"status\" missing from JSON", __func__);
+		goto fail;
 	}
 
 	if (strcmp(json_string_value(o), "OK") != 0) {
@@ -698,8 +690,9 @@ backend_put(const char *local_path, const char *backend_path,
 			return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 			    "%s: \"msg\" missing from JSON", __func__);
 		}
-		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"put\" failed: %s", __func__, json_string_value(o));
+		goto fail;
 	}
 
 	if (WEXITSTATUS(wstatus) == 1)
@@ -707,17 +700,21 @@ backend_put(const char *local_path, const char *backend_path,
 		    "%s: \"put\" exit 1; no message available", __func__);
 
 	if ((o = json_object_get(j, "out_bytes")) == NULL) {
-		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
+		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 		    "%s: \"in_bytes\" missing from JSON", __func__);
+		goto fail;
 	}
 
 	*out_bytes = json_integer_value(o);
 
 	if (json_object_clear(j) == -1)
-		exlog_errf(e, EXLOG_APP, EXLOG_JSON,
-		    "%s: failed to clear JSON", __func__);
+		exlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
 
 	return 0;
+fail:
+	if (json_object_clear(j) == -1)
+		exlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
+	return -1;
 }
 
 /*
@@ -872,6 +869,7 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 	struct stat       st;
 	struct statvfs    stv;
 	struct slabdb_val v;
+	struct fs_info    fs_info;
 
 	do {
 		if (statvfs(fs_config.data_dir, &stv) == -1) {
@@ -974,11 +972,22 @@ claim(int c, struct mgr_msg *m, struct exlog_err *e)
 			    "the fs process is properly managing open slabs. "
 			    "Unless someone is attempting to claim this slab "
 			    "from another process?", __func__, dst);
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock() for slab %s", __func__, dst);
+		else
+			exlog_errf(e, EXLOG_OS, errno,
+			    "%s: open_wflock() for slab %s", __func__, dst);
+		goto fail;
 	}
 
 	if (v.revision == 0) {
+		if (fs_info_read(&fs_info, e) == -1)
+			goto fail;
+
+		if (fs_info.stats.f_bfree < fs_info.stats.f_blocks / 100) {
+			exlog_errf(e, EXLOG_APP, EXLOG_NOSPC,
+			    "%s: backend is at 99%% capacity", __func__);
+			goto fail;
+		}
+
 		/*
 		 * If revision is zero, we're dealing with a brand new slab that
 		 * the fs did not have a change to unclaim yet. This _could_ be
@@ -1150,6 +1159,7 @@ end:
 	m->m = MGR_MSG_CLAIM_OK;
 	if (mgr_send(c, dst_fd, m, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
+		close(dst_fd);
 		return -1;
 	}
 	close(dst_fd);
@@ -1160,6 +1170,8 @@ fail_close_dst:
 	close(dst_fd);
 fail:
 	if (exlog_fail(e)) {
+		exlog_prepend(e, __func__);
+		m->err = e->err;
 		exlog(LOG_ERR, e, "%s", __func__);
 		exlog_zerr(e);
 	}
@@ -1176,13 +1188,12 @@ fail:
 static int
 claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 {
-	struct slab_key  sk;
-	struct mgr_msg   claim_msg;
+	off_t          base;
+	struct mgr_msg claim_msg;
 
-	bzero(&sk, sizeof(sk));
-	sk.base = m->v.claim_next_itbl.base;
+	base = m->v.claim_next_itbl.base;
 
-	if (slabdb_get_next_itbl(&sk.base, exlog_zerr(e)) == -1) {
+	if (slabdb_get_next_itbl(&base, exlog_zerr(e)) == -1) {
 		if (exlog_err_is(e, EXLOG_APP, EXLOG_NOENT)) {
 			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
 			if (mgr_send(c, -1, m, exlog_zerr(e)) == -1)
@@ -1192,10 +1203,11 @@ claim_next_itbls(int c, struct mgr_msg *m, struct exlog_err *e)
 		goto fail;
 	}
 
+	bzero(&claim_msg, sizeof(claim_msg));
 	claim_msg.m = MGR_MSG_CLAIM;
 	claim_msg.v.claim.oflags = m->v.claim_next_itbl.oflags;
-	claim_msg.v.claim.key.ino = sk.ino;
-	claim_msg.v.claim.key.base = sk.base;
+	claim_msg.v.claim.key.ino = 0;
+	claim_msg.v.claim.key.base = base;
 
 	return claim(c, &claim_msg, e);
 fail:
@@ -1205,13 +1217,42 @@ fail:
 }
 
 static int
-df(int c, struct mgr_msg *m, struct exlog_err *e)
+do_shutdown(int c, struct mgr_msg *m, struct exlog_err *e)
 {
-	if (fs_info_read(&m->v.fs_info, e) == -1) {
+	pid_t p;
+
+	if ((p = getppid()) > 1) {
+		if (kill(p, 15) == -1) {
+			exlog_strerror(LOG_ERR, errno, "%s: kill", __func__);
+			m->m = MGR_MSG_SHUTDOWN_ERR;
+		} else {
+			m->m = MGR_MSG_SHUTDOWN_OK;
+		}
+	} else {
+		m->m = MGR_MSG_SHUTDOWN_ERR;
+	}
+
+	if (mgr_send(c, -1, m, e) == -1)
+		return -1;
+	return 0;
+}
+
+static int
+info(int c, struct mgr_msg *m, struct exlog_err *e)
+{
+	pid_t mgr_pid;
+	if (fs_info_read(&m->v.info.fs_info, e) == -1) {
 		exlog(LOG_ERR, e, "%s", __func__);
-		m->m = MGR_MSG_FS_INFO_ERR;
-	} else
-		m->m = MGR_MSG_FS_INFO_OK;
+		m->m = MGR_MSG_INFO_ERR;
+	} else {
+		m->m = MGR_MSG_INFO_OK;
+		if ((mgr_pid = getppid()) > 1)
+			m->v.info.mgr_pid = mgr_pid;
+		else
+			m->v.info.mgr_pid = -1;
+		strlcpy(m->v.info.version_string, VERSION,
+		    sizeof(m->v.info.version_string));
+	}
 
 	exlog_zerr(e);
 
@@ -1232,7 +1273,7 @@ bg_df()
 	off_t             bytes_total, bytes_used;
 	struct fs_info    fs_info;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	uint64_t          count;
+	ssize_t           count;
 
 	if (fs_info_read(&fs_info, &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
@@ -1254,14 +1295,14 @@ bg_df()
 	if ((o = json_object_get(j, "total_bytes")) == NULL) {
 		exlog(LOG_ERR, NULL, "%s: \"total_bytes\" missing from JSON",
 		    __func__);
-		return;
+		goto clear;
 	}
 	bytes_total = json_integer_value(o);
 
 	if ((o = json_object_get(j, "used_bytes")) == NULL) {
 		exlog(LOG_ERR, NULL, "%s: \"used_bytes\" missing from JSON",
 		    __func__);
-		return;
+		goto clear;
 	}
 	bytes_used = json_integer_value(o);
 
@@ -1272,9 +1313,9 @@ bg_df()
 
 	fs_info.stats.f_files = (bytes_total / fs_info.slab_size) *
 	    slab_inode_max();
-	if ((count = slabdb_count(&e)) == ULONG_MAX) {
+	if ((count = slabdb_count(&e)) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
-		return;
+		goto clear;
 	}
 	fs_info.stats.f_ffree = fs_info.stats.f_files -
 	    (count * slab_inode_max());
@@ -1282,11 +1323,14 @@ bg_df()
 
 	if (clock_gettime(CLOCK_REALTIME, &fs_info.stats_last_update) == -1) {
 		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return;
+		goto clear;
 	}
 
 	if (fs_info_write(&fs_info, &e) == -1)
 		exlog(LOG_ERR, &e, "%s", __func__);
+clear:
+	if (json_object_clear(j) == -1)
+		exlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
 }
 
 static void
@@ -1399,7 +1443,10 @@ bg_flush()
 		// TODO: Maybe don't try to sync every single slab
 		// if we have shutdown_requested. We don't want to hold
 		// the user hostage forever. Though this should be
-		// configurable.
+		// configurable. We should use the grace_period sent by
+		// potatoctl.
+		if (shutdown_requested)
+			break;
 	}
 fail:
 	closedir(dir);
@@ -1710,8 +1757,11 @@ worker(int lsock)
 			case MGR_MSG_UNCLAIM:
 				unclaim(c, &m, fd, &e);
 				break;
-			case MGR_MSG_FS_INFO:
-				df(c, &m, &e);
+			case MGR_MSG_INFO:
+				info(c, &m, &e);
+				break;
+			case MGR_MSG_SHUTDOWN:
+				do_shutdown(c, &m, &e);
 				break;
 			case MGR_MSG_SET_FS_ERROR:
 				if (set_fs_error() == -1)
@@ -1757,7 +1807,6 @@ main(int argc, char **argv)
 {
 	char                opt;
 	struct              sigaction act;
-	char               *pidfile_path = MGR_DEFAULT_PIDFILE_PATH;
 	int                 foreground = 0;
 	int                 pid_fd;
 	char                pid_line[32];
@@ -1805,10 +1854,6 @@ main(int argc, char **argv)
 				    == NULL)
 					err(1, "strdup");
 				break;
-			case 'p':
-				if ((pidfile_path = strdup(optarg)) == NULL)
-					err(1, "strdup");
-				break;
 			case 'T':
 				socket_timeout.tv_sec = atoi(optarg);
 				break;
@@ -1837,7 +1882,8 @@ main(int argc, char **argv)
 		setproctitle("main");
 	}
 
-	if ((pid_fd = open(pidfile_path, O_CREAT|O_WRONLY, 0644)) == -1) {
+	if ((pid_fd = open(fs_config.pidfile_path,
+	    O_CREAT|O_WRONLY, 0644)) == -1) {
 		exlog_strerror(LOG_ERR, errno, "open");
 		exit(1);
 	}
@@ -1848,7 +1894,8 @@ main(int argc, char **argv)
 	if (flock(pid_fd, LOCK_EX|LOCK_NB) == -1) {
 		if (errno == EWOULDBLOCK) {
 			exlog(LOG_ERR, NULL, "pid file %s is already locked; "
-			    "is another instance running?", pidfile_path);
+			    "is another instance running?",
+			    fs_config.pidfile_path);
 		} else {
 			exlog_strerror(LOG_ERR, errno, "flock");
 		}

@@ -141,6 +141,7 @@ mgr_send(int mgr, int fd, struct mgr_msg *m, struct exlog_err *e)
 	iov[0].iov_len = sizeof(struct mgr_msg);
 
 	bzero(&msg, sizeof(msg));
+	bzero(&cmsgbuf, sizeof(cmsgbuf));
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
 	if (fd >= 0) {

@@ -42,9 +42,13 @@ struct mgr_msg {
 		MGR_MSG_SET_FS_ERROR_OK,
 		MGR_MSG_SET_FS_ERROR_ERR,
 
-		MGR_MSG_FS_INFO,
-		MGR_MSG_FS_INFO_OK,
-		MGR_MSG_FS_INFO_ERR,
+		MGR_MSG_INFO,
+		MGR_MSG_INFO_OK,
+		MGR_MSG_INFO_ERR,
+
+		MGR_MSG_SHUTDOWN,
+		MGR_MSG_SHUTDOWN_OK,
+		MGR_MSG_SHUTDOWN_ERR,
 
 		MGR_MSG_SND_COUNTERS,
 		MGR_MSG_SND_COUNTERS_OK,
@@ -70,7 +74,12 @@ struct mgr_msg {
 			struct slab_key key;
 		} unclaim;
 
-		struct fs_info fs_info;
+		struct {
+			pid_t          mgr_pid;
+			char           version_string[16];
+			struct fs_info fs_info;
+		} info;
+
 		uint8_t        fs_error;
 
 		struct {
@@ -86,6 +95,10 @@ struct mgr_msg {
 			uint64_t c[COUNTER_LAST];
 			uint64_t mgr_c[MGR_COUNTER_LAST];
 		} rcv_counters;
+
+		struct {
+			time_t grace_period;
+		} shutdown;
 	} v;
 
 	int err;

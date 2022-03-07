@@ -24,8 +24,9 @@
 #include <sys/resource.h>
 #include <stdint.h>
 
-#define PROGNAME     "PotatoFS"
+#define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
+#define VERSION      "0.2"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -105,6 +106,7 @@ struct fs_config {
 	const char *data_dir;
 	int         noatime;
 	const char *mgr_sock_path;
+	const char *pidfile_path;
 	const char *mgr_exec;
 	const char *cfg_path;
 	uint32_t    unclaim_purge_threshold_pct;

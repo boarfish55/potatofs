@@ -25,7 +25,7 @@ ulimit -n 4096
 case $1 in
 	start)
 		echo -n "* Starting potatomgr..."
-		$binpath/potatomgr -c $conf -p $pidfile
+		$binpath/potatomgr -c $conf
 		echo "OK."
 
 		# TODO: we need to make sure fsck doesn't update the slabs
@@ -35,22 +35,32 @@ case $1 in
 		#
 		# We also need a "fast" fsck mode that only validates inodes,
 		# so that we can leave the file slabs alone.
-		#echo -n "* fsck"
-		#$binpath/potatoctl -c $conf fsck
-		#echo ""
+		echo -n "* fsck"
+		$binpath/potatoctl -c $conf fsck quiet || exit 1
+		echo ""
 
 		echo "* Mounting..."
 		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048 \
 			$mountpoint
 		;;
 	stop)
+		echo -n "* Starting potatofs/potatomgr..."
 		fusermount -u $mountpoint
-		# TODO: change this once we get a pid file or a control
-		# socket.
-		while pgrep -f -l "$mountpoint" >/dev/null; do sleep 1; done
+		while pgrep -f -l "$mountpoint" >/dev/null; do
+			echo -n "."
+			sleep 1
+		done
 		pid=`cat $pidfile`
-		kill "$pid"
+		$binpath/potatoctl -c $conf shutdown
+		while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
+			echo -n "."
+			sleep 1
+		done
+		# TODO: we still need this since the 'status' command above
+		# will not be able to use workers, which at this point
+		# will be down.
 		while kill -0 "$pid"; do sleep 1; done
+		echo "OK."
 		;;
 	*)
 		echo "Usage: $(basename $0) <start|stop>"

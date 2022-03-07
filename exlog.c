@@ -36,6 +36,7 @@ const struct module_dbg_map_entry module_dbg_map[] = {
 	{ "locks",     EXLOG_LOCK },
 	{ "ops",       EXLOG_OP },
 	{ "openfiles", EXLOG_OF },
+	{ "sladb",     EXLOG_SLABDB },
 	{ "all",       0xFFFF },
 	{ "",          0x0000 }
 };
@@ -220,4 +221,19 @@ exlog_prt(const struct exlog_err *e)
 		    strerror_l(e->err, log_locale));
 	else
 		warnx("[err=%d, c_err=%d]: %s", e->layer, e->err, e->msg);
+}
+
+int
+exlog_prepend(struct exlog_err *e, const char *prefix)
+{
+	char msg[LINE_MAX];
+
+	if (e == NULL)
+		return 0;
+
+	strlcpy(msg, e->msg, sizeof(msg));
+	if (snprintf(e->msg, sizeof(e->msg), "%s: %s", prefix, msg) >=
+	    sizeof(e->msg))
+		e->msg[sizeof(e->msg) - 2] = '*';
+	return exlog_fail(e);
 }

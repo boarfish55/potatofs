@@ -299,5 +299,7 @@ open_wflock(const char *path, int flags, mode_t mode, int lk,
 		break;
 	}
 
+	if (wait_seconds > 0 && retries == 0)
+		return -1;
 	return fd;
 }

@@ -7,12 +7,13 @@ fatal() {
 
 ulimit -c unlimited
 
-backend_data_path=/dev/shm/potatofs_backend
+backend_data_path="$(mktemp -d /dev/shm/potatofs_backend.XXXXXX)"
 basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 
 [ -x ./potatofs ] || fatal "potatofs is not found or executable"
 [ -x ./potatofs_tests ] || fatal "potatofs_tests is not found or executable"
 [ -d "$basepath" ] || fatal "temp dir not found"
+[ -d "$backend_data_path" ] || fatal "backend temp dir not found"
 
 cp backends/backend_cp.sh "$basepath/backend"
 
@@ -25,7 +26,8 @@ conf="$basepath/conf"
 # purger process in the potatomgr invocation.
 cat > "$conf" << EOF
 data_dir: $datapath
-mgr_socket_path: $datapath/potatomgr.sock
+mgr_socket_path: $basepath/potatomgr.sock
+pidfile_path: $basepath/potatomgr.pid
 backend: $basepath/backend
 slab_max_age: 60
 unclaim_purge_threshold_pct: 100
@@ -36,7 +38,7 @@ EOF
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
-./potatomgr -c "$conf" -w 1 -W 1 -S 0 -P 0 -p "$basepath/potatomgr.pid"
+./potatomgr -c "$conf" -w 1 -W 1 -S 0 -P 0
 ./potatofs -f -o cfg_path="$conf" "$mountpoint" &
 for i in 1 2 3 4 5; do
 	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then
@@ -58,13 +60,14 @@ wait
 echo ""
 
 echo "*** fsck ***"
-./potatoctl -c "$conf" fsck
+./potatoctl -c "$conf" fsck quiet
 echo ""
 
 echo "*** cleanup ***"
-pid=`cat $basepath/potatomgr.pid`
-kill "$pid"
-while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+./potatoctl -c "$conf" shutdown
+while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
+	sleep 1
+done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	rm -rf "$backend_data_path"

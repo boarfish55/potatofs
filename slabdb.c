@@ -24,6 +24,15 @@
 #include <uuid/uuid.h>
 #include "slabdb.h"
 
+/*
+ * ATTENTION: sqlite3 does not technically support unsigned int64, only
+ * the signed int64. However, we still store uint64 in many of the fields.
+ * This is fine with type casting as long as we don't expect sqlite to be
+ * able to successfully perform comparisons on the larger values in those
+ * columns. Therefore, many case must be taken when writing queries that
+ * deal with those columns.
+ */
+
 static uuid_t   instance_id;
 static sqlite3 *db;
 
@@ -176,14 +185,15 @@ slabdb_put_nolock(const struct slab_key *sk, struct slabdb_val *v,
 	    (r = sqlite3_bind_int64(qry_put.stmt,
 	    qry_put.i_last_claimed_nsec, v->last_claimed.tv_nsec))) {
 		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_int64: %s", __func__, sqlite3_errmsg(db));
+		    "%s: sqlite3_bind_int/int64: %s", __func__,
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_bind_blob(qry_put.stmt, qry_put.i_owner, v->owner,
 	    sizeof(uuid_t), SQLITE_STATIC))) {
 		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_int64: %s", __func__, sqlite3_errmsg(db));
+		    "%s: sqlite3_bind_blob: %s", __func__, sqlite3_errmsg(db));
 		goto fail;
 	}
 
@@ -297,9 +307,9 @@ slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
 		    qry_get.o_revision);
 		v->header_crc = (uint32_t)sqlite3_column_int(qry_get.stmt,
 		    qry_get.o_header_crc);
-		v->last_claimed.tv_sec = (uint64_t)sqlite3_column_int64(
+		v->last_claimed.tv_sec = sqlite3_column_int64(
 		    qry_get.stmt, qry_get.o_last_claimed_sec);
-		v->last_claimed.tv_nsec = (uint64_t)sqlite3_column_int64(
+		v->last_claimed.tv_nsec = sqlite3_column_int64(
 		    qry_get.stmt, qry_get.o_last_claimed_nsec);
 
 		if (sqlite3_column_bytes(qry_get.stmt, qry_get.o_owner) == 0)
@@ -371,7 +381,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		// TODO: consensus resolution can happen here...
 		if (uuid_compare(v->owner, instance_id) != 0) {
 			uuid_unparse(v->owner, u);
-			exlog(LOG_DEBUG, NULL, "%s: changing ownership for "
+			exlog_dbg(EXLOG_SLABDB, "%s: changing ownership for "
 			    "sk=%lu/%lu; previous=%s", __func__, sk->ino,
 			    sk->base, u);
 			uuid_copy(v->owner, instance_id);
@@ -384,7 +394,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 	}
 
 	uuid_unparse(v->owner, u);
-	exlog(LOG_DEBUG, NULL, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
+	exlog_dbg(EXLOG_SLABDB, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
 	    __func__,
 	    sk->ino, sk->base, v->revision, v->header_crc, u,
 	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
@@ -411,7 +421,7 @@ slabdb_get_next_itbl(off_t *base, struct exlog_err *e)
 
 	switch ((r = sqlite3_step(qry_get_next_itbl.stmt))) {
 	case SQLITE_ROW:
-		*base = (uint64_t)sqlite3_column_int64(qry_get_next_itbl.stmt,
+		*base = sqlite3_column_int64(qry_get_next_itbl.stmt,
 		    qry_get_next_itbl.o_base);
 		break;
 	case SQLITE_DONE:
@@ -460,16 +470,16 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 		case SQLITE_ROW:
 			sk.ino = (ino_t)sqlite3_column_int64(qry_loop_lru.stmt,
 				qry_loop_lru.o_ino);
-			sk.base = (off_t)sqlite3_column_int64(qry_loop_lru.stmt,
+			sk.base = sqlite3_column_int64(qry_loop_lru.stmt,
 				qry_loop_lru.o_base);
 			v.revision = (uint64_t)sqlite3_column_int64(
 			    qry_loop_lru.stmt, qry_loop_lru.o_revision);
 			v.header_crc = (uint32_t)sqlite3_column_int(
 			    qry_loop_lru.stmt, qry_loop_lru.o_header_crc);
-			v.last_claimed.tv_sec = (uint64_t)sqlite3_column_int64(
+			v.last_claimed.tv_sec = sqlite3_column_int64(
 			    qry_loop_lru.stmt,
 			    qry_loop_lru.o_last_claimed_sec);
-			v.last_claimed.tv_nsec = (uint64_t)sqlite3_column_int64(
+			v.last_claimed.tv_nsec = sqlite3_column_int64(
 			    qry_loop_lru.stmt,
 			    qry_loop_lru.o_last_claimed_nsec);
 
@@ -584,7 +594,7 @@ slabdb_commit_txn(struct exlog_err *e)
 	}
 
 	delta_ns = txn_duration();
-	exlog(LOG_DEBUG, NULL, "%s: transaction held the lock for %u.%09u "
+	exlog_dbg(EXLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
@@ -619,7 +629,7 @@ slabdb_rollback_txn(struct exlog_err *e)
 	}
 
 	delta_ns = txn_duration();
-	exlog(LOG_DEBUG, NULL, "%s: transaction held the lock for %u.%09u "
+	exlog_dbg(EXLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);
@@ -629,16 +639,16 @@ fail:
 	return -1;
 }
 
-uint64_t
+ssize_t
 slabdb_count(struct exlog_err *e)
 {
 	int              r;
 	struct exlog_err e2;
-	uint64_t         count;
+	ssize_t          count;
 
 	switch ((r = sqlite3_step(qry_count.stmt))) {
 	case SQLITE_ROW:
-		count = (uint64_t)sqlite3_column_int64(qry_count.stmt, 0);
+		count = sqlite3_column_int(qry_count.stmt, 0);
 		break;
 	case SQLITE_DONE:
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,

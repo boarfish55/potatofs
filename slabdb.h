@@ -53,9 +53,9 @@ int slabdb_get_next_itbl(off_t *, struct exlog_err *);
 int slabdb_loop(int(*)(const struct slab_key *, const struct slabdb_val *,
         void *), void *, struct exlog_err *);
 
-int      slabdb_begin_txn(struct exlog_err *);
-int      slabdb_commit_txn(struct exlog_err *);
-int      slabdb_rollback_txn(struct exlog_err *);
-uint64_t slabdb_count(struct exlog_err *);
+int     slabdb_begin_txn(struct exlog_err *);
+int     slabdb_commit_txn(struct exlog_err *);
+int     slabdb_rollback_txn(struct exlog_err *);
+ssize_t slabdb_count(struct exlog_err *);
 
 #endif

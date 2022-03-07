@@ -38,7 +38,7 @@ static struct oinodes {
 	 * that it would be at zero until a dir_entry is created.
 	 */
 	SPLAY_HEAD(ino_tree, oinode) head;
-	pthread_mutex_t                      lock;
+	pthread_mutex_t              lock;
 } open_inodes = {
 	SPLAY_INITIALIZER(&open_inodes.head),
         PTHREAD_MUTEX_INITIALIZER
@@ -83,22 +83,24 @@ slab_at(struct oinode *oi, off_t offset, uint32_t oflags, struct exlog_err *e)
 static struct oslab *
 alloc_inode(ino_t *inode, struct exlog_err *e)
 {
-	ino_t         i, ino = 0, max_ino = 0;
-	struct oslab *b;
-	ino_t         bases[16];
-	size_t        n_bases, n;
+	ino_t            i, ino = 0, max_ino = 0;
+	struct oslab    *b;
+	off_t            bases[16];
+	ssize_t          n_bases, n;
+	struct slab_key  sk;
 
 	/*
 	 * Even though by the time we loop over it that itbl
 	 * could be gone, it's somewhat unlikely. Worst cast it will
 	 * be a bit slower to allocate that particular inode.
 	 */
-	n_bases = slab_itbls(bases, sizeof(bases) / sizeof(ino_t), e);
+	n_bases = slab_itbls(bases, sizeof(bases) / sizeof(off_t), e);
 	if (n_bases == -1)
 		return NULL;
 
 	for (n = 0; n < n_bases; n++) {
-		if ((b = slab_load_itbl(bases[n], LK_LOCK_RW, e)) == NULL)
+		if ((b = slab_load_itbl(slab_key(&sk, 0, bases[n]),
+		    LK_LOCK_RW, e)) == NULL)
 			return NULL;
 		ino = slab_itbl_find_unallocated(b);
 		if (ino > 0) {
@@ -117,8 +119,9 @@ alloc_inode(ino_t *inode, struct exlog_err *e)
 	/*
 	 * If we still haven't found a free inode, scan from the max.
 	 */
-	for (i = max_ino; i < ULONG_MAX; i += slab_inode_max()) {
-		if ((b = slab_load_itbl(i, LK_LOCK_RW, e)) == NULL)
+	for (i = max_ino; i < SLAB_KEY_MAX; i += slab_inode_max()) {
+		if ((b = slab_load_itbl(slab_key(&sk, 0, i),
+		    LK_LOCK_RW, e)) == NULL)
 			return NULL;
 
 		ino = slab_itbl_find_unallocated(b);
@@ -132,7 +135,7 @@ alloc_inode(ino_t *inode, struct exlog_err *e)
 			return NULL;
 	}
 
-	exlog_errf(e, EXLOG_APP, EXLOG_RES, "%s: unable to locate free "
+	exlog_errf(e, EXLOG_APP, EXLOG_NOSPC, "%s: unable to locate free "
 	    "inode; we looped up to base %lu", __func__, i);
 	return NULL;
 }
@@ -157,14 +160,15 @@ inode_max_inline_b()
 int
 inode_dealloc(ino_t ino, struct exlog_err *e)
 {
-	struct oslab         *b;
-	struct exlog_err      e_close_tbl = EXLOG_ERR_INITIALIZER;
+	struct oslab     *b;
+	struct exlog_err  e_close_tbl = EXLOG_ERR_INITIALIZER;
+	struct slab_key   sk;
 
-	b = slab_load_itbl(ino, LK_LOCK_RW, e);
+	b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, e);
 	if (b == NULL)
 		return -1;
 
-	exlog_dbg(EXLOG_INODE, "deallocating inode %lu", ino);
+	exlog_dbg(EXLOG_INODE, "%s: deallocating inode %lu", __func__, ino);
 
 	slab_itbl_dealloc(b, ino);
 
@@ -203,10 +207,10 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 {
 	LK_WRLOCK(&oi->bytes_lock);
 
-	if (written > ULLONG_MAX - offset) {
+	if (written > LONG_MAX - offset) {
 		LK_UNLOCK(&oi->bytes_lock);
 		return exlog_errf(e, EXLOG_APP, EXLOG_OVERFLOW,
-		    "%s: inode max size overflow: %lu", __func__,
+		    "%s: inode size overflow: %lu", __func__,
 		    oi->ino.v.f.inode);
 	}
 
@@ -223,11 +227,12 @@ int
 inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
     struct inode *dst, struct exlog_err *e)
 {
-	struct timespec       tp;
-	struct inode          inode;
-	struct oslab         *b;
-	ssize_t               r, w;
-	struct exlog_err      e_close_tbl = EXLOG_ERR_INITIALIZER;
+	struct timespec   tp;
+	struct inode      inode;
+	struct oslab     *b;
+	ssize_t           r, w;
+	struct exlog_err  e_close_tbl = EXLOG_ERR_INITIALIZER;
+	struct slab_key   sk;
 
 	/*
 	 * If ino == 0 (that is, the caller expects us to pick an inode),
@@ -237,7 +242,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	if (ino == 0)
 		b = alloc_inode(&ino, e);
 	else
-		b = slab_load_itbl(ino, LK_LOCK_RW, e);
+		b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, e);
 
 	if (b == NULL)
 		return -1;
@@ -609,11 +614,12 @@ inode_isdir(struct oinode *oi)
 struct oinode *
 inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 {
-	int                   r;
-	struct oinode        *oi;
-	struct oinode         needle;
-	struct oslab         *b = NULL;
-	struct exlog_err      e_close_itbl = EXLOG_ERR_INITIALIZER;
+	int               r;
+	struct oinode     *oi;
+	struct oinode     needle;
+	struct oslab     *b = NULL;
+	struct exlog_err  e_close_itbl = EXLOG_ERR_INITIALIZER;
+	struct slab_key   sk;
 
 	/* 
 	 * Need exclusive in case we need to load from disk and insert
@@ -633,7 +639,7 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 		return oi;
 	}
 
-	if ((b = slab_load_itbl(ino, LK_LOCK_RD, e)) == NULL)
+	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RD, e)) == NULL)
 		goto end;
 
 	if (slab_itbl_is_free(b, ino)) {
@@ -724,8 +730,8 @@ inode_unload(struct oinode *oi, struct exlog_err *e)
 	ino = oi->ino.v.f.inode;
 
 	oi->refcnt--;
-	exlog_dbg(EXLOG_INODE, "inode %d refcnt %d nlookup %d",
-	    ino, oi->refcnt, oi->nlookup);
+	exlog_dbg(EXLOG_INODE, "%s: inode %d refcnt %d nlookup %d",
+	    __func__, ino, oi->refcnt, oi->nlookup);
 
 	if (oi->nlookup == 0) {
 		bzero(&needle, sizeof(needle));
@@ -821,10 +827,11 @@ inode_sync(struct oinode *oi, struct exlog_err *e)
 int
 inode_flush(struct oinode *oi, int data_only, struct exlog_err *e)
 {
-	struct oslab         *b;
-	ssize_t               s;
-	ino_t                 ino;
-	off_t                 sz_off;
+	struct oslab    *b;
+	ssize_t          s;
+	ino_t            ino;
+	off_t            sz_off;
+	struct slab_key  sk;
 
 	LK_WRLOCK(&oi->bytes_lock);
 	if (!oi->dirty && !oi->bytes_dirty) {
@@ -834,7 +841,7 @@ inode_flush(struct oinode *oi, int data_only, struct exlog_err *e)
 
 	ino = oi->ino.v.f.inode;
 
-	if ((b = slab_load_itbl(ino, LK_LOCK_RW, e)) == NULL)
+	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, e)) == NULL)
 		return -1;
 
 	if (data_only) {
@@ -903,6 +910,15 @@ inode_shutdown()
 
 		/* As per FUSE, nlookup becomes zero implicitly at unmount. */
 		if (oi->ino.v.f.nlink == 0) {
+			exlog(LOG_INFO, NULL, "%s: ino=%lu had nlink=0 but "
+			    "was still in-memory due to nlookup=%lu; "
+			    "deallocating now", __func__, oi->ino.v.f.inode,
+			    oi->nlookup);
+
+			exlog(LOG_ERR, NULL, "forcibly freeing inode %lu "
+			    "(nlookup=%lu, refcnt=%lu); lazy umount?",
+			    oi->ino.v.f.inode, oi->nlookup, oi->refcnt);
+
 			if (inode_dealloc(inode_ino(oi), &e) == -1)
 				exlog(LOG_ERR, &e, __func__);
 			/*
@@ -1292,7 +1308,7 @@ inode_inspect(int mgr, ino_t ino, struct inode *inode, struct exlog_err *e)
 
 	if ((data = slab_inspect(mgr, slab_key(&sk, 0, ino),
 	    OSLAB_NOCREATE|OSLAB_EPHEMERAL, &b.hdr, &data_sz, e)) == NULL)
-		return -1;
+		return exlog_prepend(e, __func__);
 
 	if (slab_itbl_is_free(&b, ino)) {
 		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,

@@ -29,6 +29,15 @@
 #include "slabs.h"
 #include "util.h"
 
+/*
+ * Both inode numbers and slab offsets are limited to LONG_MAX. Part of
+ * this is that we use an off_t to determine the base of a slab key, which
+ * is used both in the context of inodes and file offsets. Also, sqlite
+ * cannot deal with 64-bit unsigned integers so we cap our slab keys
+ * at this value.
+ */
+#define SLAB_KEY_MAX LONG_MAX
+
 struct slab_key {
 	/*
 	 * Used in structures that index slabs, as the key to be
@@ -73,7 +82,7 @@ struct slab_hdr {
 			/*
 			 * Because at startup multiple instance of potatofs
 			 * have to decide who has ownership of a given slab,
-			 * whoever has the most recent revision wins. If
+			 * whoever has the most highest revision wins. If
 			 * a revision is incremented beyond UULONG_MAX, it
 			 * should end up being zero, and special action must
 			 * be taken to ensure all other instances purge theirs,
@@ -157,7 +166,7 @@ struct oslab {
 #define OSLAB_EPHEMERAL 0x00000004
 };
 
-int slab_configure(uint64_t, uint32_t, struct exlog_err *);
+int slab_configure(rlim_t, time_t, struct exlog_err *);
 int slab_shutdown(struct exlog_err *);
 int slab_make_dirs(struct exlog_err *);
 
@@ -187,19 +196,20 @@ int slab_parse_path(const char *, struct slab_key *, struct exlog_err *);
  * periodically disowned, at which point the underlying file descriptor is
  * closed.
  */
-struct oslab *slab_load(struct slab_key *, uint32_t, struct exlog_err *);
+struct oslab *slab_load(const struct slab_key *, uint32_t, struct exlog_err *);
 int           slab_forget(struct oslab *, struct exlog_err *);
 
 /*
  * Similar to the above, but specifically used to load inode tables.
  */
-struct oslab *slab_load_itbl(ino_t, rwlk_flags, struct exlog_err *);
+struct oslab *slab_load_itbl(const struct slab_key *, rwlk_flags,
+                  struct exlog_err *);
 int           slab_close_itbl(struct oslab *, struct exlog_err *);
 
 /*
  * Return n inode table bases, which is provided by the caller.
  */
-size_t        slab_itbls(ino_t *, size_t, struct exlog_err *);
+ssize_t       slab_itbls(off_t *, size_t, struct exlog_err *);
 
 /* Must be called while the slab bytes_lock is held */
 int   slab_itbl_is_free(struct oslab *, ino_t);
@@ -245,14 +255,14 @@ void    slab_set_dirty(struct oslab *);
 off_t   slab_size(struct oslab *, struct exlog_err *);
 
 /* Returns the maximum size of a slab in bytes, minus the header. */
-size_t  slab_get_max_size();
+off_t   slab_get_max_size();
 
 /* Returns how many inodes at most can be contained in a slab. */
 size_t  slab_inode_max();
 
 /* Populates a slab_key from inode/offset/flags */
 struct slab_key *slab_key(struct slab_key *, ino_t, off_t);
-int              slab_key_valid(struct slab_key *, struct exlog_err *);
+int              slab_key_valid(const struct slab_key *, struct exlog_err *);
 
 /* Loop over all local slabs and perform a function. */
 int     slab_loop_files(void (*)(const char *), struct exlog_err *);
