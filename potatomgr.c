@@ -205,18 +205,20 @@ static int
 mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
     char *stderr, size_t stderr_len, struct exlog_err *e)
 {
-	pid_t         pid;
-	int           p_out[2];
-	int           p_err[2];
-	struct pollfd fds[2];
-	int           stdout_closed = 0;
-	int           stderr_closed = 0;
-	int           nfds;
-	ssize_t       r;
-	int           poll_r;
-	size_t        stdout_r, stderr_r;
-	char *const  *a;
-	char        **argv2, **a2;
+	pid_t             pid, wpid;
+	int               p_out[2];
+	int               p_err[2];
+	struct pollfd     fds[2];
+	int               stdout_closed = 0;
+	int               stderr_closed = 0;
+	int               nfds;
+	ssize_t           r;
+	int               poll_r;
+	size_t            stdout_r, stderr_r;
+	char *const      *a;
+	char            **argv2, **a2;
+	struct timespec   tp;
+	int               i;
 
 	for (a = argv; *a != NULL; a++)
 		/* Counting args */;
@@ -301,14 +303,20 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 			close(p_err[0]);
 			stdout[stdout_r] = '\0';
 			stderr[stderr_r] = '\0';
-			// TODO: nanosleep, loop a few times ...
-			// Then we should probably have something in the
-			// worker loop to do waitpid(-1 ...) to clean up
-			// zombies.
-			sleep(2);
-			if (waitpid(pid, wstatus, WNOHANG) == -1)
-				exlog_strerror(LOG_ERR, errno,
-				    "%s: waitpid", __func__);
+			for (i = 1, wpid = 0; i < 4 && wpid == 0; i++) {
+				tp.tv_sec = 0;
+				tp.tv_nsec = i * 10000000;
+				nanosleep(&tp, NULL);
+				if ((wpid = waitpid(pid, NULL, WNOHANG)) == -1)
+					exlog_strerror(LOG_ERR, errno,
+					    "%s: waitpid", __func__);
+			}
+			if (wpid == 0)
+				exlog(LOG_ERR, NULL,
+				    "%s: waitpid: child not waitable, we "
+				    "probably have a zombie around now",
+				    __func__);
+			*wstatus = 137;
 			return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
 			    "%s: command timed out after %d seconds; aborting",
 			    __func__, BACKEND_TIMEOUT_SECONDS);
