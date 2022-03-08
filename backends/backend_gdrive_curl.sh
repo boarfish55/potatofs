@@ -152,6 +152,11 @@ get_file() {
 		fail_cmd
 	fi
 
+	if [ ! -z "$inode" -a ! -z "$base" ]; then
+		logger -i -t potatofs-backend -p user.info \
+			"get: starting download for inode $inode / base $base"
+	fi
+
 	id=$(find_file $parent "$name.crypt")
 	if [ -z "$id" ]; then
 		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such file\"}"
@@ -175,7 +180,7 @@ get_file() {
 	echo "{\"status\": \"OK\", \"in_bytes\": $sz}"
 	if [ ! -z "$inode" -a ! -z "$base" ]; then
 		logger -i -t potatofs-backend -p user.info \
-			"getting inode $inode / base $base"
+			"get: finished getting inode $inode / base $base"
 	fi
 }
 

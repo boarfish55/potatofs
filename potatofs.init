@@ -40,7 +40,7 @@ case $1 in
 		echo ""
 
 		echo "* Mounting..."
-		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048 \
+		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048,dbg=inodes \
 			$mountpoint
 		;;
 	stop)

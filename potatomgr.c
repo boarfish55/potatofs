@@ -299,7 +299,14 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 			kill(pid, 9);
 			close(p_out[0]);
 			close(p_err[0]);
-			if (waitpid(pid, wstatus, 0) == -1)
+			stdout[stdout_r] = '\0';
+			stderr[stderr_r] = '\0';
+			// TODO: nanosleep, loop a few times ...
+			// Then we should probably have something in the
+			// worker loop to do waitpid(-1 ...) to clean up
+			// zombies.
+			sleep(2);
+			if (waitpid(pid, wstatus, WNOHANG) == -1)
 				exlog_strerror(LOG_ERR, errno,
 				    "%s: waitpid", __func__);
 			return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
@@ -1497,7 +1504,8 @@ scrub(const char *path)
 
 	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
 		exlog_strerror(LOG_ERR, errno,
-		    "%s: short read on slab header", __func__);
+		    "%s: short read on slab header for %s",
+		    __func__, path);
 		set_fs_error();
 		goto end;
 	}
@@ -1730,10 +1738,17 @@ worker(int lsock)
 			}
 		}
 
+		if (fcntl(c, F_SETFD, FD_CLOEXEC) == -1) {
+			exlog_strerror(LOG_ERR, errno, "fcntl");
+			close(c);
+			continue;
+		}
+
 		if (setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout,
 		    sizeof(socket_timeout)) == -1) {
 			exlog(LOG_ERR, &e, "%s", __func__);
 			exlog_zerr(&e);
+			close(c);
 			continue;
 		}
 

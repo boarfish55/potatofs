@@ -555,10 +555,17 @@ inode_nlookup(struct oinode *oi, int nlookup_incr)
 	unsigned long prev;
 
 	prev = oi->nlookup;
-	oi->nlookup += nlookup_incr;
+
+	if (nlookup_incr < 0 && abs(nlookup_incr) > oi->nlookup) {
+		exlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
+		    "ino=%lu (%p); tried to decrement nlookup %lu by %d",
+		    __func__, oi->ino.v.f.inode, oi, prev, nlookup_incr);
+		oi->nlookup = 0;
+	} else
+		oi->nlookup += nlookup_incr;
 
 	exlog_dbg(EXLOG_INODE, "%s: ino=%lu (%p) nlookup: %lu => %lu",
-	    __func__, oi->ino.v.f.inode, oi, prev, prev + nlookup_incr);
+	    __func__, oi->ino.v.f.inode, oi, prev, oi->nlookup);
 
 	return oi->nlookup;
 }
@@ -633,8 +640,9 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	needle.ino.v.f.inode = ino;
 	if ((oi = SPLAY_FIND(ino_tree, &open_inodes.head, &needle)) != NULL) {
 		oi->refcnt++;
-		exlog_dbg(EXLOG_INODE, "inode %d refcnt %d nlookup %d",
-		    ino, oi->refcnt, oi->nlookup);
+		exlog_dbg(EXLOG_INODE, "%s: found inode in-memory: "
+		    "inode %lu refcnt %llu nlookup %lu",
+		    __func__, ino, oi->refcnt, oi->nlookup);
 		MTX_UNLOCK(&open_inodes.lock);
 		return oi;
 	}
@@ -662,8 +670,8 @@ inode_load(ino_t ino, uint32_t oflags, struct exlog_err *e)
 	oi->bytes_dirty = 0;
 	oi->refcnt = 1;
 	oi->oflags = oflags;
-	exlog_dbg(EXLOG_INODE, "inode %d refcnt %d nlookup %d",
-	    ino, oi->refcnt, oi->nlookup);
+	exlog_dbg(EXLOG_INODE, "%s: loaded inode %lu refcnt %llu nlookup %lu",
+	    __func__, ino, oi->refcnt, oi->nlookup);
 
 	r = slab_read(b, &oi->ino,
 	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
@@ -703,7 +711,6 @@ fail_close_itbl:
 		exlog(LOG_ERR, &e_close_itbl, __func__);
 end:
 	MTX_UNLOCK(&open_inodes.lock);
-	exlog_dbg(EXLOG_INODE, "%s: ino=%lu (%p)", __func__, ino, oi);
 	return oi;
 }
 
@@ -715,8 +722,8 @@ end:
  *
  * Therefore, this function is in charge the doing the following things:
  *   - Remove the inode from the memory structure if both the refcnt
- *     and nlookup fall to zero (refcnt should normally never get to zero
- *     if nlookup > 0).
+ *     and nlookup fall to zero (nlookup should normally never get to zero
+ *     if refcnt > 0).
  *   - Deallocate the inode if nlink == 0, as well as the above conditions.
  */
 int
@@ -730,7 +737,7 @@ inode_unload(struct oinode *oi, struct exlog_err *e)
 	ino = oi->ino.v.f.inode;
 
 	oi->refcnt--;
-	exlog_dbg(EXLOG_INODE, "%s: inode %d refcnt %d nlookup %d",
+	exlog_dbg(EXLOG_INODE, "%s: inode %lu refcnt %llu nlookup %lu",
 	    __func__, ino, oi->refcnt, oi->nlookup);
 
 	if (oi->nlookup == 0) {
@@ -761,7 +768,6 @@ inode_unload(struct oinode *oi, struct exlog_err *e)
 		}
 	}
 end:
-	exlog_dbg(EXLOG_INODE, "%s: ino=%lu (%p)", __func__, ino, oi);
 	MTX_UNLOCK(&open_inodes.lock);
 	return exlog_fail(e);
 }
@@ -841,6 +847,9 @@ inode_flush(struct oinode *oi, int data_only, struct exlog_err *e)
 
 	ino = oi->ino.v.f.inode;
 
+	exlog_dbg(EXLOG_INODE, "%s: ino=%lu (%p); data_only=%d",
+	    __func__, ino, oi, data_only);
+
 	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, e)) == NULL)
 		return -1;
 
@@ -881,7 +890,6 @@ inode_flush(struct oinode *oi, int data_only, struct exlog_err *e)
 		goto end;
 	}
 
-	exlog_dbg(EXLOG_INODE, "inode_flush: ino=%lu (%p)", ino, oi);
 end:
 	slab_close_itbl(b, e);
 	// TODO: save to lost & found ?
@@ -903,21 +911,18 @@ inode_shutdown()
 
 		if (oi->refcnt > 0)
 			exlog(LOG_ERR, NULL, "forcibly freeing inode %lu "
-			    "(nlookup=%lu, refcnt=%lu); lazy umount?",
-			    oi->ino.v.f.inode, oi->nlookup, oi->refcnt);
+			    "with refcnt > 0 (nlookup=%lu, refcnt=%llu); "
+			    "lazy umount?", oi->ino.v.f.inode,
+			    oi->nlookup, oi->refcnt);
 
 		SPLAY_REMOVE(ino_tree, &open_inodes.head, oi);
 
 		/* As per FUSE, nlookup becomes zero implicitly at unmount. */
 		if (oi->ino.v.f.nlink == 0) {
-			exlog(LOG_INFO, NULL, "%s: ino=%lu had nlink=0 but "
+			exlog(LOG_ERR, NULL, "%s: ino=%lu had nlink=0 but "
 			    "was still in-memory due to nlookup=%lu; "
 			    "deallocating now", __func__, oi->ino.v.f.inode,
 			    oi->nlookup);
-
-			exlog(LOG_ERR, NULL, "forcibly freeing inode %lu "
-			    "(nlookup=%lu, refcnt=%lu); lazy umount?",
-			    oi->ino.v.f.inode, oi->nlookup, oi->refcnt);
 
 			if (inode_dealloc(inode_ino(oi), &e) == -1)
 				exlog(LOG_ERR, &e, __func__);

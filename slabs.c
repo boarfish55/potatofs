@@ -965,10 +965,13 @@ slab_itbls(off_t *bases, size_t n, struct exlog_err *e)
 	if ((itbl_dir = opendir(path)) == NULL)
 		return exlog_errf(e, EXLOG_OS, errno, "opendir");
 	while (i < n && (de = readdir(itbl_dir))) {
+		if (de->d_name[0] == '.')
+			continue;
 		if (slab_parse_path(de->d_name, &sk, e) == -1) {
 			exlog(LOG_ERR, e, "%s: an unrecognized file was "
 			    "found in the itbl dir: %s; skipping", __func__,
 			    de->d_name);
+			exlog_zerr(e);
 			continue;
 		}
 
