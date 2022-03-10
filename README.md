@@ -127,6 +127,14 @@ KNOWN ISSUES
   situations is questionable at best and needs to be reviewed. We can't
   properly interrupt I/O ops in flight at this time.
 
+  This includes cases where we need to truncate slabs present only on the
+  backend. This would happen at FS shutdown where we download the slabs
+  in question and truncate them before unloading the inode structures.
+  If the backend is unavailable, this will be lost and the slabs will
+  never be truncated. We probably need to keep a log of pending truncations
+  and resume when the backend is up again. The scrubber could probably
+  handle this if it could access that information somewhere (slabdb?)
+
 
 TODO
 ====
@@ -154,8 +162,6 @@ TODO
 * fsck is too slow, too many cleam/unclaim. Try to batch operations on
   a single slab together
 * Add tests for basic claim/unclaim ops.
-* Wrap the uuid_unparse() in conditionals to avoid running that when
-  not in debug mode.
 * Make the workers and timeouts configurable in the config file
 * Add a test for unlink on large file; resulting slabs should be
   truncated.

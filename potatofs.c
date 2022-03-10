@@ -803,6 +803,9 @@ fs_forget(fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 {
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 
+	exlog_dbg(EXLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
+	    __func__, req, ino, -nlookup);
+
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_FORGET);
 	if (inode_nlookup_ino(ino, -nlookup, &e) == -1)
@@ -822,8 +825,10 @@ fs_forget_multi(fuse_req_t req, size_t count,
 	counter_incr(COUNTER_FS_FORGET_MULTI);
 
 	for (i = 0; i < count; i++) {
-		if (inode_nlookup_ino(forgets->ino,
-		    -forgets->nlookup, &e) == -1)
+		exlog_dbg(EXLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
+		    __func__, req, forgets[i].ino, -forgets[i].nlookup);
+		if (inode_nlookup_ino(forgets[i].ino,
+		    -forgets[i].nlookup, &e) == -1)
 			exlog(LOG_ERR, &e, __func__);
 	}
 	fuse_reply_none(req);
@@ -840,6 +845,8 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	struct oinode           *oi = NULL, *parent_oi;
 	int                      r_sent = 0;
 
+	exlog_dbg(EXLOG_OP, "%s: req=%p, parent_ino=%lu, name=%s",
+	    __func__, req, parent, name);
 	counter_incr(COUNTER_FS_LOOKUP);
 	LK_RDLOCK(&fs_tree_lock);
 

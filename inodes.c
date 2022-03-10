@@ -590,7 +590,13 @@ inode_nlookup_ino(ino_t ino, int nlookup_incr, struct exlog_err *e)
 nlink_t
 inode_nlink(struct oinode *oi, int incr)
 {
-	oi->ino.v.f.nlink += incr;
+	if (incr < 0 && abs(incr) > oi->ino.v.f.nlink) {
+		exlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
+		    "ino=%lu (%p); tried to decrement nlink %ld by %d",
+		    __func__, oi->ino.v.f.inode, oi, oi->ino.v.f.nlink, incr);
+		oi->ino.v.f.nlink = 0;
+	} else
+		oi->ino.v.f.nlink += incr;
 	oi->dirty = 1;
 	return oi->ino.v.f.nlink;
 }
