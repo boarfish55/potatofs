@@ -139,13 +139,7 @@ KNOWN ISSUES
 TODO
 ====
 
-* Add a format field for dirinodes; they need to be optimized to locate
-  free slots. This is way too slow on large directories.
 * Add a test to try out the last possible inode, 2^63
-* Don't put backend get/put args on the command line, for security reasons.
-  Pass to stdin in JSON instead (one line). Add warning in backend cp/scp
-  about the fact that those leak the slab names in the ps output and it's
-  better to use something other than shell scripts.
 * Doublecheck that atime is working as intended, add a test
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. => EAGAIN
@@ -179,6 +173,8 @@ TODO
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
   all entries in a directory, or the size of an inode. Useful to
   to do manual claims and all.
+* Add a format field for dirinodes; they need to be optimized to locate
+  free slots. This is way too slow on large directories.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).

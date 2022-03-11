@@ -25,20 +25,29 @@ usage() {
 	echo ""
 	echo "       $(basename $0) df"
 	echo ""
-	echo "           Output is <used bytes> / <total available bytes>"
+	echo "           Output is a JSON string with the following format:"
 	echo ""
-	echo "       $(basename $0) get <slab name> <local path> <inode> <base>"
+	echo "           {\"status\": \"OK\", "
+	echo "            \"used_bytes\": <bytes used on backend>, "
+	echo "            \"total_bytes\": <total backend capacity in bytes>}"
 	echo ""
-	echo "           <slab name> is the file name, local path is the"
-	echo "           absolute path of the slab file. <inode> and <base> "
-	echo "           are provided for informational purposes."
+	echo "       $(basename $0) <get|put>"
 	echo ""
-	echo "       $(basename $0) put <local name> <slab name>"
+	echo "           This will read a JSON string from STDIN. It should "
+	echo "           follow this form:"
 	echo ""
-	echo "           <slab name> is the file name, local path is the"
-	echo "           absolute path of the slab file."
+	echo "           {\"backend_name\": \"<slab name>\","
+	echo "            \"local_path\": \"<local slab path>\","
+	echo "            \"inode\": <inode number>,"
+	echo "            \"base\": <slab base>}"
+	echo ""
+	echo "           The commands get and put a slab from / to the "
+	echo "           backend respectively."
+	echo "           <backend_name> is the file name to be used on the backend,"
+	echo "           <local_path> is the absolute path of the slab file on the cache "
+	echo "           partition. <inode> and <base> are provided for informational "
+	echo "           purposes."
 }
-
 
 if [ "$1" = "-h" ]; then
 	usage
@@ -59,10 +68,12 @@ do_df() {
 }
 
 do_get() {
-	slab=$1
-	local_path=$2
-	inode=$3
-	base=$4
+	read json
+	slab=$(echo $json | jq -r .backend_name)
+	local_path=$(echo $json | jq -r .local_path)
+	inode=$(echo $json | jq -r .inode)
+	base=$(echo $json | jq -r .base)
+
 	if [ -z "$slab" -o -z "$local_path" ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
 		return 2
@@ -86,8 +97,12 @@ do_get() {
 }
 
 do_put() {
-	local_path=$1
-	slab=$2
+	read json
+	slab=$(echo $json | jq -r .backend_name)
+	local_path=$(echo $json | jq -r .local_path)
+	inode=$(echo $json | jq -r .inode)
+	base=$(echo $json | jq -r .base)
+
 	if [ -z "$slab" -o -z "$local_path" ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"bad invocation\"}"
 		return 2
@@ -103,6 +118,10 @@ do_put() {
 		return 1
 	fi
 	echo "{\"status\": \"OK\", \"out_bytes\": $sz}"
+	if [ ! -z "$inode" -a ! -z "$base" ]; then
+		logger -i -t potatofs-backend -p user.info \
+			"putting inode $inode / base $base"
+	fi
 }
 
 case $1 in
@@ -110,10 +129,10 @@ case $1 in
 		do_df
 		;;
 	get)
-		do_get $2 $3 $4 $5
+		do_get
 		;;
 	put)
-		do_put $2 $3
+		do_put
 		;;
 	*)
 		usage

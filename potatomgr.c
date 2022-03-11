@@ -202,72 +202,93 @@ fail:
 }
 
 static int
-mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
-    char *stderr, size_t stderr_len, struct exlog_err *e)
+mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
+    char *stdout, size_t stdout_len, char *stderr, size_t stderr_len,
+    struct exlog_err *e)
 {
-	pid_t             pid, wpid;
-	int               p_out[2];
-	int               p_err[2];
-	struct pollfd     fds[2];
-	int               stdout_closed = 0;
-	int               stderr_closed = 0;
-	int               nfds;
-	ssize_t           r;
-	int               poll_r;
-	size_t            stdout_r, stderr_r;
-	char *const      *a;
-	char            **argv2, **a2;
-	struct timespec   tp;
-	int               i;
+	pid_t            pid, wpid;
+	int              p_in[2];
+	int              p_out[2];
+	int              p_err[2];
+	struct pollfd    fds[3];
+	int              stdin_closed = 0;
+	int              stdout_closed = 0;
+	int              stderr_closed = 0;
+	int              nfds, i;
+	ssize_t          r;
+	int              poll_r;
+	size_t           stdout_r, stderr_r, stdin_w;
+	struct timespec  tp;
 
-	for (a = argv; *a != NULL; a++)
-		/* Counting args */;
-
-	if ((argv2 = calloc((a - argv) + 2, sizeof(char *))) == NULL)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: calloc", __func__);
-
-	if ((argv2[0] = strdup(fs_config.mgr_exec)) == NULL)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: strdup", __func__);
-
-	for (a = argv, a2 = argv2 + 1; *a != NULL; a++, a2++)
-		*a2 = *a;
-
-	if (pipe(p_out) == -1)
+	if (pipe(p_in) == -1)
 		return exlog_errf(e, EXLOG_OS, errno, "%s: pipe", __func__);
-	if (pipe(p_err) == -1)
+
+	if (pipe(p_out) == -1) {
+		close(p_in[0]);
+		close(p_in[1]);
 		return exlog_errf(e, EXLOG_OS, errno, "%s: pipe", __func__);
+	}
+
+	if (pipe(p_err) == -1) {
+		close(p_in[0]);
+		close(p_in[1]);
+		close(p_out[0]);
+		close(p_out[1]);
+		return exlog_errf(e, EXLOG_OS, errno, "%s: pipe", __func__);
+	}
 
 	if ((pid = fork()) == -1) {
-		return exlog_errf(e, EXLOG_OS, errno, "%s: fork", __func__);
+		exlog_errf(e, EXLOG_OS, errno, "%s: fork", __func__);
+		close(p_in[0]);
+		close(p_in[1]);
+		close(p_out[0]);
+		close(p_out[1]);
+		close(p_err[0]);
+		close(p_err[1]);
+		return -1;
 	} else if (pid == 0) {
+		close(p_in[1]);
 		close(p_out[0]);
 		close(p_err[0]);
+		if (p_in[0] != STDIN_FILENO) {
+			if (dup2(p_in[0], STDIN_FILENO) == -1) {
+				exlog_errf(e, EXLOG_OS, errno, "%s: dup2",
+				    __func__);
+				exit(1);
+			}
+			close(p_in[0]);
+		}
 		if (p_out[1] != STDOUT_FILENO) {
-			if (dup2(p_out[1], STDOUT_FILENO) == -1)
-				return exlog_errf(e, EXLOG_OS, errno,
-				    "%s: dup2", __func__);
+			if (dup2(p_out[1], STDOUT_FILENO) == -1) {
+				exlog_errf(e, EXLOG_OS, errno, "%s: dup2",
+				    __func__);
+				exit(1);
+			}
 			close(p_out[1]);
 		}
-		if (p_err[1] != STDOUT_FILENO) {
-			if (dup2(p_err[1], STDERR_FILENO) == -1)
-				return exlog_errf(e, EXLOG_OS, errno,
-				    "%s: dup2", __func__);
+		if (p_err[1] != STDERR_FILENO) {
+			if (dup2(p_err[1], STDERR_FILENO) == -1) {
+				exlog_errf(e, EXLOG_OS, errno, "%s: dup2",
+				    __func__);
+				exit(1);
+			}
 			close(p_err[1]);
 		}
 
-		chdir(fs_config.data_dir);
-
-		if (execv(fs_config.mgr_exec, argv2) == -1) {
-			close(p_out[1]);
-			close(p_err[1]);
-			return exlog_errf(e, EXLOG_OS, errno, "%s: execv",
+		if (chdir("/") == -1) {
+			exlog_errf(e, EXLOG_OS, errno, "%s: chdir",
 			    __func__);
+			exit(1);
+		}
+
+		if (execv(argv[0], argv) == -1) {
+			exlog_errf(e, EXLOG_OS, errno, "%s: execv: %s",
+			    __func__, argv[0]);
+			exit(1);
 		}
 	}
 
-	free(argv2[0]);
-	free(argv2);
-
+	close(p_in[0]);
 	close(p_out[1]);
 	close(p_err[1]);
 
@@ -277,10 +298,15 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 	stdout_len--;
 	stderr_len--;
 
+	stdin_w = 0;
 	stdout_r = 0;
 	stderr_r = 0;
-	while (!stdout_closed || !stderr_closed) {
+	while (!stdin_closed || !stdout_closed || !stderr_closed) {
 		nfds = 0;
+		if (!stdin_closed) {
+			fds[nfds].fd = p_in[1];
+			fds[nfds++].events = POLLOUT;
+		}
 		if (!stdout_closed) {
 			fds[nfds].fd = p_out[0];
 			fds[nfds++].events = POLLIN;
@@ -291,14 +317,20 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 		}
 
 		if ((poll_r = poll(fds, nfds,
-		    BACKEND_TIMEOUT_SECONDS * 1000)) == -1)
-			return exlog_errf(e, EXLOG_OS, errno,
-			    "%s: poll", __func__);
+		    BACKEND_TIMEOUT_SECONDS * 1000)) == -1) {
+			exlog_errf(e, EXLOG_OS, errno, "%s: poll", __func__);
+			close(p_in[1]);
+			close(p_out[0]);
+			close(p_err[0]);
+			return -1;
+		}
 
 		if (poll_r == 0) {
-			exlog(LOG_ERR, NULL, "%s: child %d stalled; "
-			    "killing it now", __func__, pid);
+			exlog(LOG_ERR, NULL,
+			    "%s: child %d stalled; killing it now",
+			    __func__, pid);
 			kill(pid, 9);
+			close(p_in[1]);
 			close(p_out[0]);
 			close(p_err[0]);
 			stdout[stdout_r] = '\0';
@@ -307,9 +339,12 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 				tp.tv_sec = 0;
 				tp.tv_nsec = i * 10000000;
 				nanosleep(&tp, NULL);
-				if ((wpid = waitpid(pid, NULL, WNOHANG)) == -1)
-					exlog_strerror(LOG_ERR, errno,
+				if ((wpid = waitpid(pid, NULL,
+				    WNOHANG)) == -1) {
+					exlog_errf(e, EXLOG_OS, errno,
 					    "%s: waitpid", __func__);
+					return -1;
+				}
 			}
 			if (wpid == 0)
 				exlog(LOG_ERR, NULL,
@@ -317,27 +352,45 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 				    "probably have a zombie around now",
 				    __func__);
 			*wstatus = 137;
-			return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
-			    "%s: command timed out after %d seconds; aborting",
-			    __func__, BACKEND_TIMEOUT_SECONDS);
+			return exlog_errf(e, EXLOG_OS, EXLOG_EXEC,
+			    "%s: command timed out after %d seconds; "
+			    "aborting", __func__, BACKEND_TIMEOUT_SECONDS);
 		}
 
 		while (nfds-- > 0) {
 			if (fds[nfds].revents & POLLERR) {
-				if (fds[nfds].fd == p_out[0])
+				if (fds[nfds].fd == p_in[1]) {
+					stdin_closed = 1;
+				} else if (fds[nfds].fd == p_out[0]) {
 					stdout_closed = 1;
-				else
+				} else if (fds[nfds].fd ==  p_err[0]) {
 					stderr_closed = 1;
-				exlog(LOG_ERR, NULL, "%s: file descriptor %d "
+				}
+				exlog(LOG_ERR, NULL,"%s: file descriptor %d "
 				    "closed unexpectedly", __func__,
 				    fds[nfds].fd);
 				continue;
 			}
 
-			if (!(fds[nfds].revents & (POLLIN|POLLHUP)))
+			if (!(fds[nfds].revents & (POLLIN|POLLOUT|POLLHUP)))
 				continue;
 
-			if (fds[nfds].fd == p_out[0]) {
+			if (fds[nfds].fd == p_in[1]) {
+				r = write(p_in[1], stdin + stdin_w,
+				    stdin_len - stdin_w);
+				if (r == -1) {
+					exlog_strerror(LOG_ERR, errno,
+					    "%s: write", __func__);
+					stdin_closed = 1;
+					close(p_in[1]);
+				} else {
+					stdin_w += r;
+					if (stdin_w == stdin_len) {
+						stdin_closed = 1;
+						close(p_in[1]);
+					}
+				}
+			} else if (fds[nfds].fd == p_out[0]) {
 				r = read(p_out[0], stdout + stdout_r,
 				    stdout_len - stdout_r);
 				if (r > 0) {
@@ -346,7 +399,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 					stdout_closed = 1;
 					close(p_out[0]);
 				}
-			} else {
+			} else if (fds[nfds].fd == p_err[0]) {
 				r = read(p_err[0], stderr + stderr_r,
 				    stderr_len - stderr_r);
 				if (r > 0) {
@@ -357,15 +410,17 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdout, size_t stdout_len,
 				}
 			}
 			if (r == -1)
-				exlog_strerror(LOG_ERR, errno,
+				exlog_errf(e, EXLOG_OS, errno,
 				    "%s: file descriptor %d error",
 				    __func__, fds[nfds].fd);
 		}
 	}
 	stdout[stdout_r] = '\0';
 	stderr[stderr_r] = '\0';
-	if (waitpid(pid, wstatus, 0) == -1)
-		return exlog_errf(e, EXLOG_OS, errno, "%s: waitpid", __func__);
+	if (waitpid(pid, wstatus, 0) == -1) {
+		exlog_errf(e, EXLOG_OS, errno,"%s: waitpid", __func__);
+		return -1;
+	}
 
 	return 0;
 }
@@ -560,32 +615,31 @@ fail:
 }
 
 static int
-backend_get(const char *local_path, const char *backend_path,
+backend_get(const char *local_path, const char *backend_name,
     size_t *in_bytes, struct slab_key *sk, struct exlog_err *e)
 {
-	char            *args[6];
-	int              wstatus;
-	char             stdout[1024], stderr[1024];
-	json_t          *j = NULL, *o;
-	json_error_t     jerr;
-	char             str_ino[21];
-	char             str_base[21];
+	char         *args[] = {(char *)fs_config.mgr_exec, "get", NULL};
+	int           wstatus;
+	char          stdout[1024], stderr[1024];
+	json_t       *j = NULL, *o;
+	json_error_t  jerr;
+	size_t        len;
+	char          stdin[LINE_MAX];
 
-	snprintf(str_ino, sizeof(str_ino), "%020lu", sk->ino);
-	snprintf(str_base, sizeof(str_base), "%020lu", sk->base);
+	len = snprintf(stdin, sizeof(stdin),
+	    "{\"backend_name\": \"%s\", "
+	    "\"local_path\": \"%s\", "
+	    "\"inode\": %lu, "
+	    "\"base\": %ld}",
+	    backend_name, local_path, sk->ino, sk->base);
 
-	args[0] = "get";
-	args[1] = (char *)backend_path;
-	args[2] = (char *)local_path;
-	args[3] = str_ino;
-	args[4] = str_base;
-	args[5] = NULL;
+	if (len >= sizeof(stdin))
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: incoming JSON too long", __func__);
 
-	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
-	    stderr, sizeof(stderr), e) == -1)
-		goto fail;
-
-	exlog_zerr(e);
+	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
+	    sizeof(stdout), stderr, sizeof(stderr), e) == -1)
+		return -1;
 
 	if (WEXITSTATUS(wstatus) > 2) {
 		exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
@@ -659,25 +713,31 @@ fail:
 }
 
 static int
-backend_put(const char *local_path, const char *backend_path,
-    size_t *out_bytes, struct exlog_err *e)
+backend_put(const char *local_path, const char *backend_name,
+    size_t *out_bytes, const struct slab_key *sk, struct exlog_err *e)
 {
-	char         *args[4];
+	char         *args[] = {(char *)fs_config.mgr_exec, "put", NULL};
 	int           wstatus;
 	char          stdout[1024], stderr[1024];
 	json_t       *j, *o;
 	json_error_t  jerr;
+	char          stdin[LINE_MAX];
+	size_t        len;
 
-	args[0] = "put";
-	args[1] = (char *)local_path;
-	args[2] = (char *)backend_path;
-	args[3] = NULL;
+	len = snprintf(stdin, sizeof(stdin),
+	    "{\"local_path\": \"%s\", "
+	    "\"backend_name\": \"%s\", "
+	    "\"inode\": %lu, "
+	    "\"base\": %ld}",
+	    local_path, backend_name, sk->ino, sk->base);
 
-	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
-	    stderr, sizeof(stderr), e) == -1)
+	if (len >= sizeof(stdin))
+		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		    "%s: outgoing JSON too long", __func__);
+
+	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
+	    sizeof(stdout), stderr, sizeof(stderr), e) == -1)
 		return -1;
-
-	exlog_zerr(e);
 
 	if (WEXITSTATUS(wstatus) > 2)
 		return exlog_errf(e, EXLOG_APP, EXLOG_EXEC,
@@ -1284,7 +1344,7 @@ bg_df()
 	char              stdout[1024], stderr[1024];
 	json_t           *j, *o;
 	json_error_t      jerr;
-	char             *args[] = {"df", NULL};
+	char             *args[] = {(char *)fs_config.mgr_exec, "df", NULL};
 	off_t             bytes_total, bytes_used;
 	struct fs_info    fs_info;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
@@ -1295,7 +1355,7 @@ bg_df()
 		return;
 	}
 
-	if (mgr_spawn(args, &wstatus, stdout, sizeof(stdout),
+	if (mgr_spawn(args, &wstatus, NULL, 0, stdout, sizeof(stdout),
 	    stderr, sizeof(stderr), &e) == -1) {
 		exlog(LOG_ERR, &e, "%s", __func__);
 		return;
@@ -1399,6 +1459,7 @@ bg_flush()
 	size_t            out_bytes;
 	int               fd;
 	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct slab_key   sk;
 
 	if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
 	    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path)) {
@@ -1436,7 +1497,12 @@ bg_flush()
 			continue;
 		}
 
-		if (backend_put(path, basename(path), &out_bytes, &e) == -1) {
+		if (slab_parse_path(path, &sk, &e) == -1) {
+			exlog(LOG_ERR, &e, "%s", __func__);
+			continue;
+		}
+
+		if (backend_put(path, basename(path), &out_bytes, &sk, &e) == -1) {
 			exlog(LOG_ERR, &e, "%s: failed but will retry; "
 			    "reason: ", __func__);
 			close(fd);

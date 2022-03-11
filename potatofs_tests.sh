@@ -7,13 +7,13 @@ fatal() {
 
 ulimit -c unlimited
 
-backend_data_path="$(mktemp -d /dev/shm/potatofs_backend.XXXXXX)"
+export BACKEND_DATA_PATH="$(mktemp -d /dev/shm/potatofs_backend.XXXXXX)"
 basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 
 [ -x ./potatofs ] || fatal "potatofs is not found or executable"
 [ -x ./potatofs_tests ] || fatal "potatofs_tests is not found or executable"
 [ -d "$basepath" ] || fatal "temp dir not found"
-[ -d "$backend_data_path" ] || fatal "backend temp dir not found"
+[ -d "$BACKEND_DATA_PATH" ] || fatal "backend temp dir not found"
 
 cp backends/backend_cp.sh "$basepath/backend"
 
@@ -70,7 +70,7 @@ while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
 done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
-	rm -rf "$backend_data_path"
+	rm -rf "$BACKEND_DATA_PATH"
 	echo "Done."
 else
 	echo "Encountered errors; not cleaning data dir at $basepath"
