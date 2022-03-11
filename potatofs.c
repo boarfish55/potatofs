@@ -272,6 +272,9 @@ fs_set_time(struct oinode *oi, uint32_t what)
 	struct exlog_err e = EXLOG_ERR_INITIALIZER;
 	struct stat      st;
 
+	if (fs_error_is_set())
+		return;
+
 	if (what == INODE_ATTR_ATIME && fs_config.noatime)
 		return;
 
