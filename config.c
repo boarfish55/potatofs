@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <unistd.h>
 #include "config.h"
 
 struct fs_config fs_config = {
@@ -52,6 +53,8 @@ config_read()
 
 	const char *p, *v;
 
+	if (access(fs_config.cfg_path, F_OK|R_OK) == -1)
+		err(1, "%s", fs_config.cfg_path);
 	if ((cfg = fopen(fs_config.cfg_path, "r")) == NULL)
 		err(1, "%s", fs_config.cfg_path);
 
