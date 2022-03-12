@@ -24,17 +24,17 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include "exlog.h"
+#include "xlog.h"
 #include "util.h"
 
 void
 lk_lock(rwlk *lock, rwlk_flags flags, const char *lockname,
     const char *file, int line)
 {
-	struct exlog_err e;
-	int              r;
+	struct xerr e;
+	int         r;
 
-	exlog_dbg(EXLOG_LOCK, "locking %p (%s, flags=%u) at %s:%d",
+	xlog_dbg(XLOG_LOCK, "locking %p (%s, flags=%u) at %s:%d",
 	    lock, lockname, flags, file, line);
 
 	if (flags & LK_LOCK_RW) {
@@ -42,9 +42,8 @@ lk_lock(rwlk *lock, rwlk_flags flags, const char *lockname,
 	} else if (flags & LK_LOCK_RD) {
 		r = pthread_rwlock_rdlock(lock);
 	} else {
-		exlog_errf(&e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: neither read or write lock specified: %d",
-		    __func__, flags);
+		xerrf(&e, XLOG_APP, XLOG_INVAL,
+		    "neither read or write lock specified: %d", flags);
 		goto fail;
 	}
 
@@ -54,14 +53,14 @@ lk_lock(rwlk *lock, rwlk_flags flags, const char *lockname,
 		 * if the number of readers overflows the integer used
 		 * by the lock.
 		 */
-		exlog_errf(&e, EXLOG_OS, r,
+		xerrf(&e, XLOG_ERRNO, r,
 		    "failed to acquire lock: flags=%d, %s:%d",
 		    flags, file, line);
 		goto fail;
 	}
 	return;
 fail:
-	exlog(LOG_ERR, &e, __func__);
+	xlog(LOG_ERR, &e, __func__);
 	abort();
 }
 
@@ -81,10 +80,10 @@ void
 lk_unlock(rwlk *lock, const char *lockname, const char *file, int line)
 {
 	int r;
-	exlog_dbg(EXLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
+	xlog_dbg(XLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
 	    lockname, file, line);
 	if ((r = pthread_rwlock_unlock(lock)) != 0) {
-		exlog_strerror(LOG_CRIT, r,
+		xlog_strerror(LOG_CRIT, r,
 		    "failed to release lock: %s:%d", file, line);
 		abort();
 	}
@@ -94,10 +93,10 @@ void
 mtx_lock(pthread_mutex_t *lock, const char *lockname, const char *file,
     int line)
 {
-	int              r;
-	struct exlog_err e;
+	int         r;
+	struct xerr e;
 
-	exlog_dbg(EXLOG_LOCK, "locking %p (%s, flags=%u) at %s:%d",
+	xlog_dbg(XLOG_LOCK, "locking %p (%s, flags=%u) at %s:%d",
 	    lock, lockname, file, line);
 
 	if ((r = pthread_mutex_lock(lock)) != 0) {
@@ -106,9 +105,9 @@ mtx_lock(pthread_mutex_t *lock, const char *lockname, const char *file,
 		 * if the number of readers overflows the integer used
 		 * by the lock.
 		 */
-		exlog_errf(&e, EXLOG_OS, r,
-		    "failed to acquire mutex: %s:%d", file, line);
-		exlog(LOG_ERR, &e, __func__);
+		xerrf(&e, XLOG_ERRNO, r, "pthread_mutex_lock: %s:%d",
+		    file, line);
+		xlog(LOG_ERR, &e, __func__);
 		abort();
 	}
 }
@@ -119,10 +118,10 @@ mtx_unlock(pthread_mutex_t *lock, const char *lockname, const char *file,
 {
 	int r;
 
-	exlog_dbg(EXLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
+	xlog_dbg(XLOG_LOCK, "unlocking %p (%s) at %s:%d", lock,
 	    lockname, file, line);
 	if ((r = pthread_mutex_unlock(lock)) != 0) {
-		exlog_strerror(LOG_CRIT, r,
+		xlog_strerror(LOG_CRIT, r,
 		    "failed to release lock: %s:%d", file, line);
 		abort();
 	}
@@ -130,27 +129,25 @@ mtx_unlock(pthread_mutex_t *lock, const char *lockname, const char *file,
 
 int
 lk_init(rwlk *lock, const char *lockname, const char *file,
-    int line, struct exlog_err *e)
+    int line, struct xerr *e)
 {
 	int                  r;
 	pthread_rwlockattr_t a;
 
-	exlog_dbg(EXLOG_LOCK, "initializing lock %p (%s) at %s:%d",
+	xlog_dbg(XLOG_LOCK, "initializing lock %p (%s) at %s:%d",
 	    lock, lockname, file, line);
 
 	if ((r = pthread_rwlockattr_init(&a)) != 0)
-		return exlog_errf(e, EXLOG_OS, r,
-		    "failed to initialize rwlock attributes");
+		return XERRF(e, XLOG_ERRNO, r, "pthread_rwlockattr_init");
 
 	if ((r = pthread_rwlockattr_setpshared(&a,
 	    PTHREAD_PROCESS_SHARED)) != 0)
-		return exlog_errf(e, EXLOG_OS, r,
+		return XERRF(e, XLOG_ERRNO, r,
 		    "failed to set attribute PTHREAD_PROCESS_SHARED "
 		    "while initializing lock");
 
 	if ((r = pthread_rwlock_init(lock, &a)) != 0)
-		return exlog_errf(e, EXLOG_OS, r,
-		    "failed to initialize rwlock");
+		return XERRF(e, XLOG_ERRNO, r, "pthread_rwlock_init");
 
 	return 0;
 }
@@ -160,10 +157,10 @@ lk_destroy(rwlk *lock, const char *lockname, const char *file, int line)
 {
 	int r;
 
-	exlog_dbg(EXLOG_LOCK, "destroying lock %p (%s) at %s:%d",
+	xlog_dbg(XLOG_LOCK, "destroying lock %p (%s) at %s:%d",
 	    lock, lockname, file, line);
 	if ((r = pthread_rwlock_destroy(lock)) != 0) {
-		exlog_strerror(LOG_ERR, r,
+		xlog_strerror(LOG_ERR, r,
 		    "failed to destroy lock: %s:%d", file, line);
 		abort();
 	}

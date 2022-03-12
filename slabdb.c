@@ -154,25 +154,24 @@ struct {
 };
 
 static int
-slabdb_qry_cleanup(sqlite3_stmt *stmt, struct exlog_err *e)
+slabdb_qry_cleanup(sqlite3_stmt *stmt, struct xerr *e)
 {
 	int r;
 	if ((r = sqlite3_reset(stmt)))
-		return exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_reset: %s", __func__, sqlite3_errmsg(db));
+		return XERRF(e, XLOG_DB, r,
+		    "sqlite3_reset: %s", sqlite3_errmsg(db));
 	if ((r = sqlite3_clear_bindings(stmt)))
-		return exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_clear_bindings: %s (%d)", __func__,
-		    sqlite3_errmsg(db), r);
+		return XERRF(e, XLOG_DB, r,
+		    "sqlite3_clear_bindings: %s (%d)", sqlite3_errmsg(db), r);
 	return 0;
 }
 
 int
 slabdb_put_nolock(const struct slab_key *sk, struct slabdb_val *v,
-    struct exlog_err *e)
+    struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
+	int         r;
+	struct xerr e2;
 
 	if ((r = sqlite3_bind_int64(qry_put.stmt, qry_put.i_ino, sk->ino)) ||
 	    (r = sqlite3_bind_int64(qry_put.stmt, qry_put.i_base, sk->base)) ||
@@ -184,16 +183,15 @@ slabdb_put_nolock(const struct slab_key *sk, struct slabdb_val *v,
 	    qry_put.i_last_claimed_sec, v->last_claimed.tv_sec)) ||
 	    (r = sqlite3_bind_int64(qry_put.stmt,
 	    qry_put.i_last_claimed_nsec, v->last_claimed.tv_nsec))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_int/int64: %s", __func__,
-		    sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r,
+		    "sqlite3_bind_int/int64: %s", sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_bind_blob(qry_put.stmt, qry_put.i_owner, v->owner,
 	    sizeof(uuid_t), SQLITE_STATIC))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_blob: %s", __func__, sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_bind_blob: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
@@ -202,21 +200,20 @@ slabdb_put_nolock(const struct slab_key *sk, struct slabdb_val *v,
 		/* Nothing */
 		break;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s",
-		    __func__, sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	return slabdb_qry_cleanup(qry_put.stmt, e);
 fail:
-	if (slabdb_qry_cleanup(qry_put.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_put.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
@@ -225,19 +222,19 @@ fail:
  */
 int
 slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
-    struct exlog_err *e)
+    struct xerr *e)
 {
-	struct exlog_err  e2;
+	struct xerr       e2;
 	struct slabdb_val r_v;
 
 	if (slabdb_begin_txn(e) == -1)
 		goto fail;
 
 	if (slabdb_get_nolock(sk, &r_v, e) == -1) {
-		if (!exlog_err_is(e, EXLOG_APP, EXLOG_NOENT))
+		if (!xerr_is(e, XLOG_APP, XLOG_NOENT))
 			goto fail;
 
-		exlog_zerr(e);
+		xerrz(e);
 		if (slabdb_put_nolock(sk, v, e) == -1)
 			goto fail;
 
@@ -257,7 +254,7 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
 	     sizeof(struct timespec) == 0))) {
 		/* Same value, no need to update */
-		if (slabdb_rollback_txn(exlog_zerr(e)) == -1)
+		if (slabdb_rollback_txn(xerrz(e)) == -1)
 			return -1;
 	} else {
 		if (!(flags & SLABDB_PUT_REVISION))
@@ -282,22 +279,22 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 
 	return 0;
 fail:
-	if (slabdb_rollback_txn(exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_rollback_txn(xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 int
 slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
-    struct exlog_err *e)
+    struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
+	int         r;
+	struct xerr e2;
 
 	if ((r = sqlite3_bind_int64(qry_get.stmt, qry_get.i_ino, sk->ino)) ||
 	    (r = sqlite3_bind_int64(qry_get.stmt, qry_get.i_base, sk->base))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_int64: %s", __func__, sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_bind_int64: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
@@ -319,26 +316,25 @@ slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
 			    sqlite3_column_blob(qry_get.stmt, qry_get.o_owner));
 		break;
 	case SQLITE_DONE:
-		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
-		    "%s: sqlite3_step: slab not found, sk=%lu/%lu",
-		    __func__, sk->ino, sk->base);
+		XERRF(e, XLOG_APP, XLOG_NOENT,
+		    "sqlite3_step: slab not found, sk=%lu/%lu",
+		    sk->ino, sk->base);
 		goto fail;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
 	return slabdb_qry_cleanup(qry_get.stmt, e);
 fail:
-	if (slabdb_qry_cleanup(qry_get.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_get.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
@@ -351,26 +347,25 @@ fail:
  */
 int
 slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
-    struct exlog_err *e)
+    struct xerr *e)
 {
-	char             u[37];
-	struct exlog_err e2;
+	char        u[37];
+	struct xerr e2;
 
 	if (slabdb_begin_txn(e) == -1)
 		return -1;
 
 	if (slabdb_get_nolock(sk, v, e) == -1) {
-		if (!exlog_err_is(e, EXLOG_APP, EXLOG_NOENT) ||
+		if (!xerr_is(e, XLOG_APP, XLOG_NOENT) ||
 		    (oflags & OSLAB_NOCREATE))
 			goto fail;
 
-		exlog_zerr(e);
+		xerrz(e);
 		v->revision = 0;
 		v->header_crc = 0L;
 		uuid_copy(v->owner, instance_id);
 		if (clock_gettime(CLOCK_REALTIME, &v->last_claimed) == -1) {
-			exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime",
-			    __func__);
+			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
 			goto fail;
 		}
 		if (slabdb_put_nolock(sk, v, e) == -1)
@@ -381,7 +376,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		// TODO: consensus resolution can happen here...
 		if (uuid_compare(v->owner, instance_id) != 0) {
 			uuid_unparse(v->owner, u);
-			exlog_dbg(EXLOG_SLABDB, "%s: changing ownership for "
+			xlog_dbg(XLOG_SLABDB, "%s: changing ownership for "
 			    "sk=%lu/%lu; previous=%s", __func__, sk->ino,
 			    sk->base, u);
 			uuid_copy(v->owner, instance_id);
@@ -394,28 +389,28 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 	}
 
 	uuid_unparse(v->owner, u);
-	exlog_dbg(EXLOG_SLABDB, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
+	xlog_dbg(XLOG_SLABDB, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
 	    __func__,
 	    sk->ino, sk->base, v->revision, v->header_crc, u,
 	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
 
 	return 0;
 fail:
-	if (slabdb_rollback_txn(exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_rollback_txn(xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 int
-slabdb_get_next_itbl(off_t *base, struct exlog_err *e)
+slabdb_get_next_itbl(off_t *base, struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
+	int         r;
+	struct xerr e2;
 
 	if ((r = sqlite3_bind_int64(qry_get_next_itbl.stmt,
 	    qry_get_next_itbl.i_base, *base))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_bind_int64: %s", __func__, sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_bind_int64: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
@@ -425,26 +420,24 @@ slabdb_get_next_itbl(off_t *base, struct exlog_err *e)
 		    qry_get_next_itbl.o_base);
 		break;
 	case SQLITE_DONE:
-		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
-		    "%s: sqlite3_step: no itbl found after base %lu",
-		    __func__, base);
+		XERRF(e, XLOG_APP, XLOG_NOENT,
+		    "sqlite3_step: no itbl found after base %lu", base);
 		goto fail;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
 	return slabdb_qry_cleanup(qry_get_next_itbl.stmt, e);
 fail:
-	if (slabdb_qry_cleanup(qry_get_next_itbl.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_get_next_itbl.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
@@ -455,12 +448,12 @@ fail:
  */
 int
 slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
-    void *), void *data, struct exlog_err *e)
+    void *), void *data, struct xerr *e)
 {
 	int               r;
 	struct slab_key   sk;
 	struct slabdb_val v;
-	struct exlog_err  e2;
+	struct xerr       e2;
 
 	if (slabdb_begin_txn(e) == -1)
 		return -1;
@@ -495,14 +488,13 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 				goto end;
 			break;
 		case SQLITE_BUSY:
-			exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-			    "%s: sqlite3_step", __func__);
+			XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 			goto fail;
 		case SQLITE_MISUSE:
 		case SQLITE_ERROR:
 		default:
-			exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-			    __func__, sqlite3_errmsg(db), r);
+			XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+			    sqlite3_errmsg(db), r);
 			goto fail;
 		}
 	}
@@ -513,21 +505,21 @@ end:
 
 	return slabdb_qry_cleanup(qry_loop_lru.stmt, e);
 fail:
-	if (slabdb_rollback_txn(exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
-	if (slabdb_qry_cleanup(qry_loop_lru.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_rollback_txn(xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_loop_lru.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 static time_t
 txn_duration()
 {
-	time_t           delta_ns;
-	struct timespec  end;
+	time_t          delta_ns;
+	struct timespec end;
 
 	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
-		exlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
 		return ULONG_MAX;
 	}
 
@@ -538,131 +530,127 @@ txn_duration()
 }
 
 int
-slabdb_begin_txn(struct exlog_err *e)
+slabdb_begin_txn(struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
+	int         r;
+	struct xerr e2;
 
 	switch ((r = sqlite3_step(qry_begin_txn.stmt))) {
 	case SQLITE_DONE:
 		/* Nothing */
 		break;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
 	if (clock_gettime(CLOCK_REALTIME, &qry_begin_txn.start) == -1) {
-		exlog_errf(e, EXLOG_OS, errno, "%s: clock_gettime", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
 		goto fail;
 	}
 	return slabdb_qry_cleanup(qry_begin_txn.stmt, e);
 fail:
-	if (slabdb_qry_cleanup(qry_begin_txn.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_begin_txn.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 int
-slabdb_commit_txn(struct exlog_err *e)
+slabdb_commit_txn(struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
-	time_t           delta_ns;
+	int         r;
+	struct xerr e2;
+	time_t      delta_ns;
 
 	switch ((r = sqlite3_step(qry_commit_txn.stmt))) {
 	case SQLITE_DONE:
 		/* Nothing */
 		break;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
 	delta_ns = txn_duration();
-	exlog_dbg(EXLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
 fail:
 	// TODO: rollback?
-	if (slabdb_qry_cleanup(qry_commit_txn.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_commit_txn.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 int
-slabdb_rollback_txn(struct exlog_err *e)
+slabdb_rollback_txn(struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
-	time_t           delta_ns;
+	int         r;
+	struct xerr e2;
+	time_t      delta_ns;
 
 	switch ((r = sqlite3_step(qry_rollback_txn.stmt))) {
 	case SQLITE_DONE:
 		/* Nothing */
 		break;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
 	delta_ns = txn_duration();
-	exlog_dbg(EXLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);
 fail:
-	if (slabdb_qry_cleanup(qry_rollback_txn.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_rollback_txn.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 ssize_t
-slabdb_count(struct exlog_err *e)
+slabdb_count(struct xerr *e)
 {
-	int              r;
-	struct exlog_err e2;
-	ssize_t          count;
+	int         r;
+	struct xerr e2;
+	ssize_t     count;
 
 	switch ((r = sqlite3_step(qry_count.stmt))) {
 	case SQLITE_ROW:
 		count = sqlite3_column_int(qry_count.stmt, 0);
 		break;
 	case SQLITE_DONE:
-		exlog_errf(e, EXLOG_APP, EXLOG_NOENT,
-		    "%s: sqlite3_step() returned no result", __func__);
+		XERRF(e, XLOG_APP, XLOG_NOENT,
+		    "sqlite3_step() returned no result");
 		goto fail;
 	case SQLITE_BUSY:
-		exlog_errf(e, EXLOG_APP, EXLOG_BUSY,
-		    "%s: sqlite3_step", __func__);
+		XERRF(e, XLOG_APP, XLOG_BUSY, "sqlite3_step");
 		goto fail;
 	case SQLITE_MISUSE:
 	case SQLITE_ERROR:
 	default:
-		exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_step: %s (%d)",
-		    __func__, sqlite3_errmsg(db), r);
+		XERRF(e, XLOG_DB, r, "sqlite3_step: %s (%d)",
+		    sqlite3_errmsg(db), r);
 		goto fail;
 	}
 
@@ -670,13 +658,13 @@ slabdb_count(struct exlog_err *e)
 		return -1;
 	return count;
 fail:
-	if (slabdb_qry_cleanup(qry_count.stmt, exlog_zerr(&e2)) == -1)
-		exlog(LOG_ERR, &e2, "%s", __func__);
+	if (slabdb_qry_cleanup(qry_count.stmt, xerrz(&e2)) == -1)
+		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
 
 int
-slabdb_init(uuid_t id, struct exlog_err *e)
+slabdb_init(uuid_t id, struct xerr *e)
 {
 	char path[PATH_MAX];
 	int  r;
@@ -685,91 +673,84 @@ slabdb_init(uuid_t id, struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    DEFAULT_DB_NAME) >= sizeof(path))
-		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
-		    "%s: db name too long", __func__);
+		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
+		    "db name too long");
 
 	if ((r = sqlite3_open(path, &db)))
-		return exlog_errf(e, EXLOG_DB, r, "%s: sqlite3_open: %s",
+		return XERRF(e, XLOG_DB, r, "sqlite3_open: %s",
 		    sqlite3_errmsg(db));
 
 	// TODO: implement my own busy handler, with logging when we've
 	// been waiting more than X seconds.
 	if ((r = sqlite3_busy_timeout(db, 60000))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_busy_timeout: %s", sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_busy_timeout: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_exec(db, qry_create_table, NULL, NULL, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_exec: %s", sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_exec: %s", sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_exec(db, qry_create_index, NULL, NULL, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_exec: %s", sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_exec: %s", sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_put.sql, -1,
 	    &qry_put.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_put: %s", sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_put: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_get.sql, -1,
 	    &qry_get.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_get: %s", sqlite3_errmsg(db));
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_get: %s",
+		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_get_next_itbl.sql, -1,
 	    &qry_get_next_itbl.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_get_next_itbl: %s",
+		XERRF(e, XLOG_DB, r,
+		    "sqlite3_prepare_v2: qry_get_next_itbl: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_loop_lru.sql, -1,
 	    &qry_loop_lru.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_loop_lru: %s",
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_loop_lru: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_begin_txn.sql, -1,
 	    &qry_begin_txn.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_begin_txn: %s",
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_begin_txn: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_commit_txn.sql, -1,
 	    &qry_commit_txn.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_commit_txn: %s",
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_commit_txn: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_rollback_txn.sql, -1,
 	    &qry_rollback_txn.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_rollback_txn: %s",
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_rollback_txn: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
 
 	if ((r = sqlite3_prepare_v2(db, qry_count.sql, -1,
 	    &qry_count.stmt, NULL))) {
-		exlog_errf(e, EXLOG_DB, r,
-		    "%s: sqlite3_prepare_v2: qry_count: %s",
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_count: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
@@ -786,44 +767,44 @@ slabdb_shutdown()
 	int r;
 
 	if ((r = sqlite3_finalize(qry_put.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_put: %s", sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_get.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get: %s", sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_get_next_itbl.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get_next_itbl: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_loop_lru.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_loop_lru: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_begin_txn.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_begin_txn: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_commit_txn.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_commit_txn: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_rollback_txn.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_rollback_txn: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_finalize(qry_count.stmt)))
-		exlog(LOG_WARNING, NULL,
+		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_count: %s",
 		    sqlite3_errmsg(db));
 
 	if ((r = sqlite3_close(db)) != SQLITE_OK)
-		exlog(LOG_ERR, NULL,
+		xlog(LOG_ERR, NULL,
 		    "%s: sqlite3_close: %s", sqlite3_errmsg(db));
 }

@@ -32,16 +32,16 @@ struct dir_entry {
 
 /* None of these acquire any lock */
 ssize_t di_readdir(struct oinode *, struct dir_entry *, off_t *,
-            size_t, struct exlog_err *);
+            size_t, struct xerr *);
 int     di_lookup(struct oinode *, struct dir_entry *, const char *,
-            struct exlog_err *);
+            struct xerr *);
 int     di_mkdirent(struct oinode *, const struct dir_entry *,
-            struct dir_entry *, struct exlog_err *);
+            struct dir_entry *, struct xerr *);
 int     di_unlink(struct oinode *, const struct dir_entry *,
-            struct exlog_err *);
-int     di_stat(struct oinode *, struct stat *, struct exlog_err *);
-int     di_isempty(struct oinode *, struct exlog_err *);
-ino_t   di_parent(struct oinode *, struct exlog_err *);
-int     di_setparent(struct oinode *, ino_t, struct exlog_err *);
+            struct xerr *);
+int     di_stat(struct oinode *, struct stat *, struct xerr *);
+int     di_isempty(struct oinode *, struct xerr *);
+ino_t   di_parent(struct oinode *, struct xerr *);
+int     di_setparent(struct oinode *, ino_t, struct xerr *);
 
 #endif

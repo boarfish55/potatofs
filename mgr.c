@@ -35,7 +35,7 @@ mgr_init(const char *path)
 }
 
 int
-mgr_connect(int retry, struct exlog_err *e)
+mgr_connect(int retry, struct xerr *e)
 {
 	int                 mgr;
 	struct sockaddr_un  mgr_addr;
@@ -43,7 +43,7 @@ mgr_connect(int retry, struct exlog_err *e)
 
 	for (;;) {
 		if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
-			exlog_strerror(LOG_ERR, errno, "%s: socket", __func__);
+			xlog_strerror(LOG_ERR, errno, "%s: socket", __func__);
 			goto fail;
 		}
 
@@ -55,10 +55,10 @@ mgr_connect(int retry, struct exlog_err *e)
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,
 		    sizeof(mgr_addr)) == -1) {
 			if (errno == ENOENT)
-				exlog(LOG_NOTICE, NULL, "%s: no socket; "
+				xlog(LOG_NOTICE, NULL, "%s: no socket; "
 				    "waiting for mgr to start", __func__);
 			else
-				exlog_strerror(LOG_ERR, errno,
+				xlog_strerror(LOG_ERR, errno,
 				    "%s: connect", __func__);
 			goto fail;
 		}
@@ -75,7 +75,7 @@ fail:
 }
 
 int
-mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct exlog_err *e)
+mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct xerr *e)
 {
 	int             r;
 	struct msghdr   msg;
@@ -99,16 +99,15 @@ again:
 	if ((r = recvmsg(mgr, &msg, 0)) == -1) {
 		if (errno == EINTR)
 			goto again;
-		return exlog_errf(e, EXLOG_OS, errno, "%s: recvmsg", __func__);
+		return XERRF(e, XLOG_ERRNO, errno, "recvmsg");
 	}
 
 	if (r == 0)
-		return exlog_errf(e, EXLOG_APP, EXLOG_EOF,
-		    "%s: recvmsg: eof", __func__);
+		return XERRF(e, XLOG_APP, XLOG_EOF, "recvmsg: eof");
 
 	if ((msg.msg_flags & MSG_TRUNC) || (msg.msg_flags & MSG_CTRUNC))
-		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: recvmsg: control message truncated", __func__);
+		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "recvmsg: control message truncated");
 
 	if (fd != NULL) {
 		*fd = -1;
@@ -127,7 +126,7 @@ again:
 }
 
 int
-mgr_send(int mgr, int fd, struct mgr_msg *m, struct exlog_err *e)
+mgr_send(int mgr, int fd, struct mgr_msg *m, struct xerr *e)
 {
 	struct msghdr   msg;
 	struct cmsghdr *cmsg;
@@ -159,8 +158,7 @@ again:
 	if (sendmsg(mgr, &msg, 0) == -1) {
 		if (errno == EINTR)
 			goto again;
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: sendmsg", __func__);
+		return XERRF(e, XLOG_ERRNO, errno, "sendmsg");
 	}
 
 	return 0;

@@ -30,7 +30,7 @@
 #include <unistd.h>
 #include "config.h"
 #include "counters.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "mgr.h"
 #include "util.h"
 
@@ -41,15 +41,14 @@ static int       counters_shutdown = 0;
 static void *
 counter_flush(void *unused)
 {
-	struct timespec   t = {1, 0};
-	int               c, mgr;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct mgr_msg    m;
+	struct timespec t = {1, 0};
+	int             c, mgr;
+	struct xerr     e;
+	struct mgr_msg  m;
 
 	while (!counters_shutdown) {
-		exlog_zerr(&e);
-		if ((mgr = mgr_connect(1, &e)) == -1) {
-			exlog(LOG_ERR, &e, __func__);
+		if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+			xlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
 
@@ -57,18 +56,18 @@ counter_flush(void *unused)
 		for (c = 0; c < COUNTER_LAST; c++)
 			m.v.snd_counters.c[c] = counter_get(c);
 
-		if (mgr_send(mgr, -1, &m, &e) == -1) {
-			exlog(LOG_ERR, &e, "%s", __func__);
+		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			xlog(LOG_ERR, &e, "%s", __func__);
 			goto fail;
 		}
 
-		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-			exlog(LOG_ERR, &e, "%s", __func__);
+		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			xlog(LOG_ERR, &e, "%s", __func__);
 			goto fail;
 		}
 
 		if (m.m != MGR_MSG_SND_COUNTERS_OK) {
-			exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+			xlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 			    __func__, m.m);
 			goto fail;
 		}
@@ -83,7 +82,7 @@ fail:
 }
 
 int
-counter_init(struct exlog_err *e)
+counter_init(struct xerr *e)
 {
 	int            r, c;
 	pthread_attr_t attr;
@@ -91,30 +90,29 @@ counter_init(struct exlog_err *e)
 	for (c = 0; c < COUNTER_LAST; c++) {
 		counters[c].count = 0;
 		if ((r = pthread_mutex_init(&counters[c].mtx, NULL)) != 0)
-			return exlog_errf(e, EXLOG_OS, r,
-			    "%s: pthread_mutex_init", __func__);
+			return XERRF(e, XLOG_ERRNO, r, "pthread_mutex_init");
 	}
 
 	if ((r = pthread_attr_init(&attr)) != 0)
-		return exlog_errf(e, EXLOG_OS, r,
-		    "%s: failed to init pthread attributes", __func__);
+		return XERRF(e, XLOG_ERRNO, r,
+		    "failed to init pthread attributes");
 
 	if ((r = pthread_create(&counters_flush, &attr,
 	    &counter_flush, NULL)) != 0)
-		return exlog_errf(e, EXLOG_OS, r,
-		    "%s: failed to init pthread attributes", __func__);
+		return XERRF(e, XLOG_ERRNO, r,
+		    "failed to init pthread attributes");
 
 	return 0;
 }
 
 int
-counter_shutdown(struct exlog_err *e)
+counter_shutdown(struct xerr *e)
 {
 	int r;
 
 	counters_shutdown = 1;
 	if ((r = pthread_join(counters_flush, NULL)) != 0)
-		return exlog_errf(e, EXLOG_OS, r, "%s", __func__);
+		return XERRF(e, XLOG_ERRNO, r, "pthread_join");
 	return 0;
 }
 
@@ -128,7 +126,7 @@ void
 counter_add(int c, uint64_t v)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
+		xlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count += v;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -137,7 +135,7 @@ void
 counter_decr(int c)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
+		xlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count--;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -146,7 +144,7 @@ void
 counter_reset(int c)
 {
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
+		xlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	counters[c].count = 0;
 	pthread_mutex_unlock(&counters[c].mtx);
 }
@@ -157,7 +155,7 @@ counter_get(int c)
 	uint64_t v;
 
 	if (pthread_mutex_lock(&counters[c].mtx) != 0)
-		exlog(LOG_ERR, NULL, "failed to acquire counter lock");
+		xlog(LOG_ERR, NULL, "failed to acquire counter lock");
 	v = counters[c].count;
 	pthread_mutex_unlock(&counters[c].mtx);
 	return v;

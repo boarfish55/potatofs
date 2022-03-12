@@ -22,7 +22,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
-#include "exlog.h"
+#include "xlog.h"
 
 enum {
 	COUNTER_FS_GETATTR = 0,
@@ -73,12 +73,12 @@ struct counter {
 	uint64_t         count;
 };
 
-int      counter_init(struct exlog_err *);
+int      counter_init(struct xerr *);
 void     counter_incr(int);
 void     counter_add(int, uint64_t);
 void     counter_decr(int);
 void     counter_reset(int);
 uint64_t counter_get(int);
-int      counter_shutdown(struct exlog_err *);
+int      counter_shutdown(struct xerr *);
 
 #endif

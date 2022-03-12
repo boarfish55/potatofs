@@ -24,7 +24,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <stdint.h>
-#include "exlog.h"
+#include "xlog.h"
 
 typedef pthread_rwlock_t rwlk;
 typedef uint16_t         rwlk_flags;
@@ -40,7 +40,7 @@ void lk_lock(rwlk *, rwlk_flags, const char *, const char *, int);
 void lk_rdlock(rwlk *, const char *, const char *, int);
 void lk_wrlock(rwlk *, const char *, const char *, int);
 void lk_unlock(rwlk *, const char *, const char *, int);
-int  lk_init(rwlk *, const char *, const char *, int, struct exlog_err *);
+int  lk_init(rwlk *, const char *, const char *, int, struct xerr *);
 void lk_destroy(rwlk *, const char *, const char *, int);
 void mtx_lock(pthread_mutex_t *, const char *, const char *, int);
 void mtx_unlock(pthread_mutex_t *, const char *, const char *, int );

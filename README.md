@@ -139,6 +139,8 @@ KNOWN ISSUES
 TODO
 ====
 
+* Don't refuse to start potatomgr when the fs has errors or is not clean,
+  otherwise we can't do fsck. However, the fs should honor this.
 * Add a test to try out the last possible inode, 2^63
 * Doublecheck that atime is working as intended, add a test
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
@@ -175,10 +177,10 @@ TODO
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
 * Some format strings have the wrong conversion for tv_nsec, should be "l".
-* exlog (possibly renaming to xlog) needs to cleanup in how calls are made
+* xlog needs to cleanup in how calls are made
   and also how we have to clear the error in many places. Also we should
   add a descriptive text to the contextual errors instead of just printing
-  the index. Also, instead of doing exlog_zerr() all over the place,
+  the index. Also, instead of doing xerrz() all over the place,
   simply do it directly inside function args since it returns the struct
   it just cleared. This way we ensure users already clear it.
 * Refactor de fuse ops handling as a queue so we can implement nice things

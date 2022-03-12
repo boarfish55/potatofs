@@ -29,13 +29,13 @@
 #include "counters.h"
 #include "inodes.h"
 #include "fs_info.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "util.h"
 
 const char *potatofs_stat_path = "stats";
 
 int
-fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
+fs_info_open(struct fs_info *dst_info, struct xerr *e)
 {
 	int            fd = -1;
 	ssize_t        r;
@@ -45,26 +45,24 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 	if (fs_config.slab_size < SLAB_SIZE_FLOOR ||
 	    fs_config.slab_size > SLAB_SIZE_CEIL ||
 	    (fs_config.slab_size & (fs_config.slab_size - 1)) != 0)
-		return exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_INVAL,
 		    "slab_size must be a power of two, between %lu and %lu",
 		    SLAB_SIZE_FLOOR, SLAB_SIZE_CEIL);
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: failed to statvfs file; too long", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "failed to statvfs file; too long");
 		goto end;
 	}
 
 	if ((fd = open_wflock(path, O_CREAT|O_RDWR, 0600, LOCK_EX, 0)) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock()", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "open_wflock");
 		goto end;
 	}
 
 	if ((r = pread_x(fd, &fs_info, sizeof(fs_info), 0)) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: fs stat cannot be read", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "fs stat cannot be read");
 		goto end;
 	}
 
@@ -95,9 +93,8 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 		fs_info.stats.f_flag = 0;
 		fs_info.stats.f_namemax = FS_NAME_MAX;
 	} else if (r < sizeof(fs_info)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: structure size mismatch; "
-		    "incompatible version?", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "structure size mismatch; incompatible version?");
 		goto end;
 	}
 
@@ -107,10 +104,9 @@ fs_info_open(struct fs_info *dst_info, struct exlog_err *e)
 
 	if ((r = pwrite_x(fd, &fs_info, sizeof(fs_info), 0))
 	    < sizeof(fs_info)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_IO,
-		    "%s: failed to write potatofs_fs_info structure; "
-		    "write() returned %d instead of %d:",
-		    __func__, r, sizeof(fs_info));
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "failed to write potatofs_fs_info structure; "
+		    "write() returned %d instead of %d:", r, sizeof(fs_info));
 		goto end;
 	}
 end:
@@ -118,11 +114,11 @@ end:
 		memcpy(dst_info, &fs_info, sizeof(fs_info));
 	if (fd > 0)
 		close(fd);
-	return exlog_fail(e);
+	return xerr_fail(e);
 }
 
 int
-fs_info_read(struct fs_info *fs_info, struct exlog_err *e)
+fs_info_read(struct fs_info *fs_info, struct xerr *e)
 {
 	int     fd = -1;
 	ssize_t r;
@@ -130,44 +126,42 @@ fs_info_read(struct fs_info *fs_info, struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: failed to statvfs file; too long", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "failed to statvfs file; too long");
 		goto end;
 	}
 
 	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH, 0)) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock()", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "open_wflock");
 		goto end;
 	}
 
 	if ((r = read_x(fd, fs_info, sizeof(struct fs_info))) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: fs stat cannot be read", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "fs stat cannot be read");
 		goto end;
 	}
 
 	if (r < sizeof(struct fs_info)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: fs_info structure size mismatch; "
-		    "incompatible version?", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "fs_info structure size mismatch; "
+		    "incompatible version?");
 		goto end;
 	}
 
 	if (fs_info->fs_info_version != FS_INFO_VERSION) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: fs_info structure version mismatch; "
-		    "incompatible version?", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "fs_info structure version mismatch; "
+		    "incompatible version?");
 		goto end;
 	}
 end:
 	if (fd > 0)
 		close(fd);
-	return exlog_fail(e);
+	return xerr_fail(e);
 }
 
 int
-fs_info_write(const struct fs_info *fs_info, struct exlog_err *e)
+fs_info_write(const struct fs_info *fs_info, struct xerr *e)
 {
 	int            fd = -1;
 	ssize_t        r;
@@ -175,33 +169,31 @@ fs_info_write(const struct fs_info *fs_info, struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_INVAL,
-		    "%s: failed to statvfs file; too long", __func__);
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "failed to statvfs file; too long");
 		return -1;
 	}
 
 	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX, 0)) == -1) {
-		exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock()", __func__);
+		XERRF(e, XLOG_ERRNO, errno, "open_wflock");
 		goto end;
 	}
 
 	if ((r = write_x(fd, fs_info, sizeof(struct fs_info))) <
 	    sizeof(struct fs_info)) {
-		exlog_errf(e, EXLOG_APP, EXLOG_IO,
-		    "%s: failed to write potatofs_fs_info structure; "
-		    "write() returned %d instead of %d:",
-		    __func__, r, sizeof(fs_info));
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "failed to write potatofs_fs_info structure; "
+		    "write() returned %d instead of %d:", r, sizeof(fs_info));
 	}
 end:
 	if (fd > 0)
 		close(fd);
 
-	return exlog_fail(e);
+	return xerr_fail(e);
 }
 
 int
-fs_info_inspect(struct fs_info *fs, struct exlog_err *e)
+fs_info_inspect(struct fs_info *fs, struct xerr *e)
 {
 	char    path[PATH_MAX];
 	int     fd;
@@ -209,24 +201,22 @@ fs_info_inspect(struct fs_info *fs, struct exlog_err *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s",
 	    fs_config.data_dir, potatofs_stat_path) >= sizeof(path))
-		return exlog_errf(e, EXLOG_OS, EXLOG_NAMETOOLONG,
-		    "%s: potatofs base path too long", __func__);
+		return XERRF(e, XLOG_ERRNO, XLOG_NAMETOOLONG,
+		    "potatofs base path too long");
 
 	if ((fd = open_wflock(path, O_RDONLY, 0, LOCK_SH, 0)) == -1)
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: open_wflock()", __func__);
+		return XERRF(e, XLOG_ERRNO, errno, "open_wflock()");
 
 	if ((r = read(fd, fs, sizeof(struct fs_info))) == -1) {
 		close(fd);
-		return exlog_errf(e, EXLOG_OS, errno,
-		    "%s: failed to read fs_info", __func__);
+		return XERRF(e, XLOG_ERRNO, errno, "failed to read fs_info");
 	}
 
 	close(fd);
 
 	if (r < sizeof(struct fs_info))
-		return exlog_errf(e, EXLOG_OS, EXLOG_IO,
-		    "%s: short read on fs_info", __func__);
+		return XERRF(e, XLOG_ERRNO, XLOG_IO,
+		    "short read on fs_info");
 
 	return 0;
 }

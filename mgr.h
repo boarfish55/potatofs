@@ -24,7 +24,7 @@
 #include <stdint.h>
 #include "counters.h"
 #include "fs_info.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "slabs.h"
 
 struct mgr_msg {
@@ -105,8 +105,8 @@ struct mgr_msg {
 };
 
 void mgr_init(const char *);
-int  mgr_connect(int, struct exlog_err *);
-int  mgr_recv(int, int *, struct mgr_msg *, struct exlog_err *);
-int  mgr_send(int, int, struct mgr_msg *, struct exlog_err *);
+int  mgr_connect(int, struct xerr *);
+int  mgr_recv(int, int *, struct mgr_msg *, struct xerr *);
+int  mgr_send(int, int, struct mgr_msg *, struct xerr *);
 
 #endif

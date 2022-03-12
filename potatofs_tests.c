@@ -99,7 +99,7 @@ xnanosleep()
 #define ST_MTIME  0x0200
 
 int
-get_disk_inode(ino_t ino, struct stat *st, struct exlog_err *e)
+get_disk_inode(ino_t ino, struct stat *st, struct xerr *e)
 {
 	struct inode inode;
 
@@ -113,17 +113,17 @@ get_disk_inode(ino_t ino, struct stat *st, struct exlog_err *e)
 char *
 check_stat(const char *p, struct stat *st_want, uint16_t what)
 {
-	char             msg[LINE_MAX];
-	struct stat      st;
-	struct inode     inode;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	char         msg[LINE_MAX];
+	struct stat  st;
+	struct inode inode;
+	struct xerr  e = XLOG_ERR_INITIALIZER;
 
 	if (lstat(p, &st) == -1)
 		return ERR("", errno);
 
 	/* Check the data structure on disk */
 	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("reading inode failed", 0);
 	}
 
@@ -507,10 +507,10 @@ test_parent_mtime_after_mknod()
 char *
 test_unlink()
 {
-	struct stat       st;
-	ino_t             ino;
-	char             *p = makepath("unlink-me");
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct stat  st;
+	ino_t        ino;
+	char        *p = makepath("unlink-me");
+	struct xerr  e = XLOG_ERR_INITIALIZER;
 
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
@@ -522,8 +522,8 @@ test_unlink()
 
 	if (access(p, R_OK|F_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
-				exlog_prt(&e);
+			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 		} else {
@@ -559,10 +559,10 @@ test_parent_mtime_after_rmnod()
 char *
 test_rmdir()
 {
-	struct stat       st;
-	ino_t             ino;
-	char             *p = makepath("rmdir-me");
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct stat  st;
+	ino_t        ino;
+	char        *p = makepath("rmdir-me");
+	struct xerr  e = XLOG_ERR_INITIALIZER;
 
 	if (mkdir(p, 0755) == -1)
 		return ERR("", errno);
@@ -574,8 +574,8 @@ test_rmdir()
 
 	if (access(p, R_OK|X_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
-				exlog_prt(&e);
+			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 		} else {
@@ -590,10 +590,10 @@ test_rmdir()
 char *
 test_rmdir_notempty_notdir()
 {
-	struct stat     st;
-	char           *p = makepath("rmdir-me");
-	char           *p2 = makepath("rmdir-me/notempty");
-	struct stat     st_want;
+	struct stat  st;
+	char        *p = makepath("rmdir-me");
+	char        *p2 = makepath("rmdir-me/notempty");
+	struct stat  st_want;
 
 	st_want.st_mode = (S_IFDIR | 0711);
 	st_want.st_nlink = 2;
@@ -625,19 +625,19 @@ test_rmdir_notempty_notdir()
 char *
 test_file_size_and_mtime()
 {
-	struct stat       st_want, st;
-	int               fd;
-	ssize_t           w;
-	char              buf[4096];
-	char             *p = makepath("file_size");
-	struct timespec   tp;
-	char              msg[LINE_MAX];
-	off_t             sz;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct slab_hdr   hdr;
-	void             *slab_data;
-	size_t            slab_sz;
-	struct slab_key   sk;
+	struct stat      st_want, st;
+	int              fd;
+	ssize_t          w;
+	char             buf[4096];
+	char            *p = makepath("file_size");
+	struct timespec  tp;
+	char             msg[LINE_MAX];
+	off_t            sz;
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct slab_hdr  hdr;
+	void            *slab_data;
+	size_t           slab_sz;
+	struct slab_key  sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -693,7 +693,7 @@ test_file_size_and_mtime()
 
 	if ((slab_data = slab_disk_inspect(slab_key(&sk, st.st_ino, sz),
 	    &hdr, &slab_sz, &e)) == NULL) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("failed to inspect slab", 0);
 	}
 	free(slab_data);
@@ -926,12 +926,12 @@ test_rename_to_self()
 char *
 test_rename_replace()
 {
-	struct stat       st_want, st_unlink;
-	char             *p1 = makepath("before_move_replace");
-	char             *p2 = makepath("after_move_replace");
-	ino_t             gone;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	int               i = 0;
+	struct stat  st_want, st_unlink;
+	char        *p1 = makepath("before_move_replace");
+	char        *p2 = makepath("after_move_replace");
+	ino_t        gone;
+	struct xerr  e = XLOG_ERR_INITIALIZER;
+	int          i = 0;
 
 	if (mknod(p1, 0444, 0) == -1)
 		return ERR("", errno);
@@ -953,8 +953,8 @@ test_rename_replace()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
-				exlog_prt(&e);
+			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 			break;
@@ -1011,7 +1011,7 @@ test_rename_replace_crossdir()
 	char             *p1 = makepath("crossdir_replace1/x");
 	char             *p2 = makepath("crossdir_replace2/y");
 	ino_t             gone;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr  e = XLOG_ERR_INITIALIZER;
 	int               i = 0;
 
 	if (mkdir(d1, 0700) == -1)
@@ -1039,8 +1039,8 @@ test_rename_replace_crossdir()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
-				exlog_prt(&e);
+			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 			break;
@@ -1200,16 +1200,16 @@ test_parents_mtime_after_rename()
 char *
 test_file_content()
 {
-	struct stat       st_want, st;
-	int               fd, i;
-	ssize_t           r, w;
-	char              buf[4096];
-	char              path[4096];
-	char             *p = makepath("create_file");
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	char              msg[PATH_MAX + 1024];
-	ino_t             ino;
-	struct slab_key   sk;
+	struct stat      st_want, st;
+	int              fd, i;
+	ssize_t          r, w;
+	char             buf[4096];
+	char             path[4096];
+	char            *p = makepath("create_file");
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	char             msg[PATH_MAX + 1024];
+	ino_t            ino;
+	struct slab_key  sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -1262,7 +1262,7 @@ test_file_content()
 	 * be \0, since they're actually stored in the inode.
 	 */
 	if (slab_path(path, sizeof(path), slab_key(&sk, ino, 0), 0, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("failed to get slab path", 0);
 	}
 	if ((fd = open(path, O_RDONLY)) == -1)
@@ -1316,7 +1316,7 @@ test_file_content()
 	 */
 	if (slab_path(path, sizeof(path),
 	    slab_key(&sk, ino, SLAB_SIZE_DEFAULT), 0, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("failed to get slab path", 0);
 	}
 	if ((fd = open(path, O_RDONLY)) == -1)
@@ -1405,13 +1405,13 @@ test_fallocate()
 char *
 test_fallocate_large()
 {
-	int               fd;
-	char             *p = makepath("fallocated_large");
-	struct stat       st, st_want;
-	char              path[PATH_MAX];
-	char              msg[PATH_MAX + 1024];
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct slab_key   sk;
+	int              fd;
+	char            *p = makepath("fallocated_large");
+	struct stat      st, st_want;
+	char             path[PATH_MAX];
+	char             msg[PATH_MAX + 1024];
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct slab_key  sk;
 
 	st_want.st_mode = (S_IFREG | 0600);
 	st_want.st_nlink = 1;
@@ -1430,7 +1430,7 @@ test_fallocate_large()
 
 	if (slab_path(path, sizeof(path),
 	    slab_key(&sk, st.st_ino, slab_get_max_size()), 0, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("failed to get slab path", 0);
 	}
 
@@ -1451,13 +1451,13 @@ test_fallocate_large()
 char *
 test_many_inodes()
 {
-	char              path[PATH_MAX];
-	char             *d = makepath("many_inodes");
-	int               i, n_inodes = slab_inode_max() + 1;
-	struct inode      inode;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	DIR              *dir;
-	struct dirent    *de;
+	char           path[PATH_MAX];
+	char          *d = makepath("many_inodes");
+	int            i, n_inodes = slab_inode_max() + 1;
+	struct inode   inode;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	DIR           *dir;
+	struct dirent *de;
 
 	if (mkdir(d, 0700) == -1)
 		return ERR("", errno);
@@ -1473,7 +1473,7 @@ test_many_inodes()
 	errno = 0;
 	while ((de = readdir(dir))) {
 		if (inode_disk_inspect(de->d_ino, &inode, &e) == -1) {
-			exlog_prt(&e);
+			xerr_print(&e);
 			return ERR("reading inode failed", 0);
 		}
 		n_inodes--;
@@ -1488,19 +1488,19 @@ test_many_inodes()
 char *
 inode_reuse()
 {
-	struct stat       st;
-	struct inode      inode;
-	unsigned long     gen;
-	char             *p = makepath("reuse_me");
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	char              msg[1024];
+	struct stat    st;
+	struct inode   inode;
+	unsigned long  gen;
+	char          *p = makepath("reuse_me");
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	char           msg[1024];
 
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 	if (stat(p, &st) == -1)
 		return ERR("", errno);
 	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("reading inode failed", 0);
 	}
 	gen = inode.v.f.generation;
@@ -1511,7 +1511,7 @@ inode_reuse()
 		return ERR("", errno);
 
 	if (inode_disk_inspect(st.st_ino, &inode, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		return ERR("reading inode failed", 0);
 	}
 
@@ -1526,17 +1526,20 @@ inode_reuse()
 }
 
 char *
-test_exlog_over_line_max()
+test_xlog_over_line_max()
 {
-	int              i;
-	char             msg[LINE_MAX * 2];
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	int         i;
+	char        msg[LINE_MAX * 2];
+	struct xerr e = XLOG_ERR_INITIALIZER;
 
 	for (i = 0; i < sizeof(msg) - 1; i++)
 		msg[i] = 'a';
 	msg[i] = '\0';
-	exlog_errf(&e, EXLOG_APP, EXLOG_INVAL, msg);
-	if (strcmp(e.msg + LINE_MAX - 5, " ...") != 0)
+	xerrf(&e, XLOG_APP, XLOG_INVAL, msg);
+	if (e.msg[LINE_MAX - 2] != '*')
+		return ERR("truncated message formatting incorrect", 0);
+	XERRF(&e, XLOG_APP, XLOG_INVAL, msg);
+	if (e.msg[LINE_MAX - 2] != '*')
 		return ERR("truncated message formatting incorrect", 0);
 	return NULL;
 }
@@ -1627,7 +1630,7 @@ struct potatofs_test {
 	},
 	{
 		"long (truncated) error message",
-		&test_exlog_over_line_max
+		&test_xlog_over_line_max
 	},
 	{
 		"mounted",
@@ -1792,7 +1795,7 @@ main(int argc, char **argv)
 {
 	struct potatofs_test *t;
 	char                 *msg;
-	struct exlog_err      e = EXLOG_ERR_INITIALIZER;
+	struct xerr           e = XLOG_ERR_INITIALIZER;
 	struct fs_info        fs_info;
 	int                   status = 0;
 	char                  opt;
@@ -1824,7 +1827,7 @@ main(int argc, char **argv)
 	}
 
 	if (fs_info_inspect(&fs_info, &e) == -1) {
-		exlog_prt(&e);
+		xerr_print(&e);
 		exit(1);
 	}
 

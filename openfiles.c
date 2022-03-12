@@ -32,13 +32,13 @@
 #include "slabs.h"
 
 struct open_file *
-openfile_alloc(ino_t ino, int flags, struct exlog_err *e)
+openfile_alloc(ino_t ino, int flags, struct xerr *e)
 {
 	struct open_file *of;
 	uint32_t          oflags = 0;
 
 	if ((of = malloc(sizeof(struct open_file))) == NULL) {
-		exlog_errf(e, EXLOG_OS, errno, __func__);
+		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		return NULL;
 	}
 
@@ -53,14 +53,14 @@ openfile_alloc(ino_t ino, int flags, struct exlog_err *e)
 	}
 	of->flags = flags;
 
-	exlog_dbg(EXLOG_OF, "%s: (%p), inode=%lu, flags=(%d)",
+	xlog_dbg(XLOG_OF, "%s: (%p), inode=%lu, flags=(%d)",
 	    __func__, of, ino, flags);
 
 	return of;
 }
 
 int
-openfile_free(struct open_file *of, struct exlog_err *e)
+openfile_free(struct open_file *of, struct xerr *e)
 {
 	if (inode_unload(of->oi, e) == -1)
 		return -1;

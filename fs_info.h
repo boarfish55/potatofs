@@ -23,7 +23,7 @@
 #include <sys/types.h>
 #include <sys/statvfs.h>
 #include <uuid/uuid.h>
-#include "exlog.h"
+#include "xlog.h"
 #include "util.h"
 
 struct fs_info {
@@ -53,9 +53,9 @@ struct fs_info {
 	uint8_t         error;
 };
 
-int fs_info_open(struct fs_info *, struct exlog_err *);
-int fs_info_read(struct fs_info *, struct exlog_err *);
-int fs_info_write(const struct fs_info *, struct exlog_err *);
-int fs_info_inspect(struct fs_info *, struct exlog_err *);
+int fs_info_open(struct fs_info *, struct xerr *);
+int fs_info_read(struct fs_info *, struct xerr *);
+int fs_info_write(const struct fs_info *, struct xerr *);
+int fs_info_inspect(struct fs_info *, struct xerr *);
 
 #endif

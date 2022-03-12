@@ -32,7 +32,7 @@
 #include "config.h"
 #include "counters.h"
 #include "dirinodes.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "fs_error.h"
 #include "fs_info.h"
 #include "inodes.h"
@@ -101,8 +101,8 @@ static void fs_symlink(fuse_req_t, const char *, fuse_ino_t, const char *);
 static void fs_readlink(fuse_req_t, fuse_ino_t);
 static int  make_inode(ino_t, const char *, uid_t, gid_t, mode_t, mode_t,
                 dev_t, struct inode *, const char *, size_t,
-                struct exlog_err *);
-static void fs_err(int *, fuse_req_t, const struct exlog_err *, const char *);
+                struct xerr *);
+static void fs_err(int *, fuse_req_t, const struct xerr *, const char *);
 
 static struct fuse_lowlevel_ops fs_ops = {
 	.init         = fs_init,
@@ -231,10 +231,10 @@ check_fuse_reply(int err, const char *fn, const char *invocation)
 
 	if (err != 0) {
 		if ((lc = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
-			exlog(LOG_ERR, NULL, "%s: fuse reply failed: %s (%d)",
+			xlog(LOG_ERR, NULL, "%s: fuse reply failed: %s (%d)",
 			    fn, invocation, err);
 		else
-			exlog(LOG_ERR, NULL,
+			xlog(LOG_ERR, NULL,
 			    "%s: fuse reply failed: %s: %s (%d)",
 			    fn, invocation, strerror_l(-err, lc), err);
 	}
@@ -253,10 +253,10 @@ fs_ro_on_errors(fuse_req_t req, const char *fn)
 
 #define FS_ERR(r_sent, req, e) fs_err(r_sent, req, e, __func__)
 static void
-fs_err(int *reply_sent, fuse_req_t req, const struct exlog_err *e, const char *fn)
+fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 {
 	fs_error_set();
-	exlog(LOG_ERR, e, fn);
+	xlog(LOG_ERR, e, fn);
 	if (!*reply_sent) {
 		check_fuse_reply(fuse_reply_err(req, EIO), fn, __func__);
 		*reply_sent = 1;
@@ -268,9 +268,9 @@ fs_err(int *reply_sent, fuse_req_t req, const struct exlog_err *e, const char *f
 static void
 fs_set_time(struct oinode *oi, uint32_t what)
 {
-	struct timespec  tp;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	struct stat      st;
+	struct timespec tp;
+	struct xerr     e = XLOG_ERR_INITIALIZER;
+	struct stat     st;
 
 	if (fs_error_is_set())
 		return;
@@ -281,7 +281,7 @@ fs_set_time(struct oinode *oi, uint32_t what)
 	what &= (INODE_ATTR_ATIME|INODE_ATTR_CTIME|INODE_ATTR_MTIME);
 
 	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		exlog_strerror(LOG_ERR, errno, "clock_gettime");
+		xlog_strerror(LOG_ERR, errno, "clock_gettime");
 		return;
 	}
 
@@ -297,10 +297,10 @@ fs_set_time(struct oinode *oi, uint32_t what)
 static void
 fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	struct stat      st;
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	struct inode     inode;
-	int              r_sent = 0;
+	struct stat  st;
+	struct xerr  e = XLOG_ERR_INITIALIZER;
+	struct inode inode;
+	int          r_sent = 0;
 
 	counter_incr(COUNTER_FS_GETATTR);
 	LK_RDLOCK(&fs_tree_lock);
@@ -308,7 +308,7 @@ fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	bzero(&st, sizeof(st));
 
 	if (inode_cp_ino(ino, &inode, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		} else {
 			FS_ERR(&r_sent, req, &e);
@@ -328,12 +328,12 @@ static void
 fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
     int to_set, struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct stat       st;
-	struct timespec   tp;
-	uint32_t          mask = INODE_ATTR_CTIME;
-	struct oinode    *oi = NULL;
-	int               r_sent = 0;
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct stat      st;
+	struct timespec  tp;
+	uint32_t         mask = INODE_ATTR_CTIME;
+	struct oinode   *oi = NULL;
+	int              r_sent = 0;
 
 	counter_incr(COUNTER_FS_SETATTR);
 	if (FS_RO_ON_ERR(req)) return;
@@ -356,7 +356,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 		mask |= INODE_ATTR_MTIME;
 
 	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		exlog_strerror(LOG_ERR, errno,
+		xlog_strerror(LOG_ERR, errno,
 		    "failed to get time for inode creation");
 		return;
 	}
@@ -370,7 +370,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	/* Because looking up by open file is faster */
 	if (fi == NULL) {
 		if ((oi = inode_load(ino, 0, &e)) == NULL) {
-			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+			if (xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, ENOENT));
 			} else {
@@ -384,7 +384,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 
 	inode_lock(oi, LK_LOCK_RW);
 	if (inode_setattr(oi, &st, mask, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -396,12 +396,12 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 		FS_ERR(&r_sent, req, &e);
 	inode_unlock(oi);
 
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	if (fi == NULL)
 		inode_unload(oi, &e);
 
-	if (exlog_fail(&e))
+	if (xerr_fail(&e))
 		FS_ERR(&r_sent, req, &e);
 unlock:
 	LK_UNLOCK(&fs_tree_lock);
@@ -410,25 +410,25 @@ unlock:
 static void
 fs_destroy(void *unused)
 {
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct xerr e = XLOG_ERR_INITIALIZER;
 
-	exlog(LOG_NOTICE, NULL, "cleaning up and exiting");
+	xlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
 	LK_WRLOCK(&fs_tree_lock);
 
 	inode_shutdown();
 
 	if (slab_shutdown(&e) == -1) {
-		exlog(LOG_CRIT, &e, __func__);
+		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	if (counter_shutdown(&e) == -1) {
-		exlog(LOG_CRIT, &e, __func__);
+		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	LK_UNLOCK(&fs_tree_lock);
 }
@@ -436,7 +436,7 @@ fs_destroy(void *unused)
 static void
 fs_init(void *userdata, struct fuse_conn_info *conn)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct fs_config *c = (struct fs_config *)userdata;
 	struct oinode    *oi;
 	struct dir_entry  default_dir[2] = {
@@ -444,7 +444,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 		{ "..", FS_ROOT_INODE, 0 }
 	};
 
-	exlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
+	xlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
 
 	if (counter_init(&e) == -1)
 		goto fail;
@@ -457,14 +457,14 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if (inode_startup(&e) == -1)
 		goto fail;
 
-	exlog(LOG_NOTICE, NULL, "noatime is %s",
+	xlog(LOG_NOTICE, NULL, "noatime is %s",
 	    (c->noatime) ? "set" : "unset");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL) {
-		if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (!xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			goto fail;
 
-		exlog_zerr(&e);
+		xerrz(&e);
 		if (inode_make(FS_ROOT_INODE, c->uid, c->gid,
 		    S_IFDIR|0755, NULL, &e) == -1)
 			goto fail;
@@ -482,14 +482,14 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 		goto fail;
 	return;
 fail:
-	exlog(LOG_CRIT, &e, __func__);
+	xlog(LOG_CRIT, &e, __func__);
 	exit(1);
 }
 
 static void
 fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of;
 	int               r_sent = 0, is_dir;
 
@@ -497,7 +497,7 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	LK_RDLOCK(&fs_tree_lock);
 
 	if ((of = openfile_alloc(ino, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -513,7 +513,7 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	if (!is_dir) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
 		if (openfile_free(of, &e) == -1) {
-			exlog(LOG_ERR, &e, __func__);
+			xlog(LOG_ERR, &e, __func__);
 			fs_error_set();
 		}
 	}
@@ -527,7 +527,7 @@ static void
 fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct oinode    *oi;
 	struct inode      inode;
 	struct dir_entry  dirs[64];
@@ -551,7 +551,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		r = di_readdir(oi, dirs, &off,
 		    sizeof(dirs) / sizeof(struct dir_entry), &e);
 		if (r == -1) {
-			if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOTDIR))
+			if (xerr_is(&e, XLOG_APP, XLOG_NOTDIR))
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, ENOTDIR));
 			else
@@ -567,8 +567,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 			if (dirs[i].inode != inode_ino(oi)) {
 				if (inode_cp_ino(dirs[i].inode, &inode,
 				    &e) == -1) {
-					if (exlog_err_is(&e, EXLOG_APP,
-					    EXLOG_NOENT)) {
+					if (xerr_is(&e, XLOG_APP,
+					    XLOG_NOENT)) {
 						FS_ERR(&r_sent, req, &e);
 						goto fail;
 					}
@@ -603,7 +603,7 @@ static void
 fs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 	int               r_sent = 0, is_dir;
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of = (struct open_file *)fi->fh;
 
 	LK_RDLOCK(&fs_tree_lock);
@@ -625,14 +625,14 @@ fs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 static void
 fs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of;
 	int               r_sent = 0;
 
 	counter_incr(COUNTER_FS_OPEN);
 
 	if ((of = openfile_alloc(ino, fi->flags, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -648,7 +648,7 @@ static void
 fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     struct fuse_file_info *fi)
 {
-	struct exlog_err            e = EXLOG_ERR_INITIALIZER;
+	struct xerr                 e = XLOG_ERR_INITIALIZER;
 	struct open_file           *of;
 	struct fuse_bufvec         *bv;
 	int                         r_sent = 0, i;
@@ -661,7 +661,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (size / slab_get_max_size() + 2)));
 	if (bv == NULL) {
-		exlog_errf(&e, EXLOG_OS, errno, __func__);
+		XERRF(&e, XLOG_ERRNO, errno, "malloc");
 		FS_ERR(&r_sent, req, &e);
 		return;
 	}
@@ -699,7 +699,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	}
 
 	if (inode_splice_end_read(&si, &e) == -1)
-		exlog(LOG_ERR, &e, "%s: inode_splice_end_read", __func__);
+		xlog(LOG_ERR, &e, "%s: inode_splice_end_read", __func__);
 	free(bv);
 }
 
@@ -707,7 +707,7 @@ static void
 fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
     off_t off, struct fuse_file_info *fi)
 {
-	struct exlog_err            e = EXLOG_ERR_INITIALIZER;
+	struct xerr                 e = XLOG_ERR_INITIALIZER;
 	struct open_file           *of;
 	ssize_t                     w;
 	size_t                      sz = fuse_buf_size(bufv);
@@ -723,14 +723,14 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (sz / slab_get_max_size() + 2)));
 	if (bv == NULL) {
-		exlog_errf(&e, EXLOG_OS, errno, __func__);
+		XERRF(&e, XLOG_ERRNO, errno, "malloc");
 		FS_ERR(&r_sent, req, &e);
 		return;
 	}
 
 	if (inode_splice_begin_write(&si, of->oi, off,
 	    fuse_buf_size(bufv), &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_BADF))
+		if (xerr_is(&e, XLOG_APP, XLOG_BADF))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EBADF));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -757,7 +757,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, -w));
 		return;
 	}
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	/*
 	 * We still need to do cleanup on error. Let's report zero bytes
@@ -783,7 +783,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 static void
 fs_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of;
 	int               r_sent = 0;
 
@@ -804,15 +804,15 @@ fs_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 static void
 fs_forget(fuse_req_t req, fuse_ino_t ino, unsigned long nlookup)
 {
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
+	struct xerr e = XLOG_ERR_INITIALIZER;
 
-	exlog_dbg(EXLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
+	xlog_dbg(XLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
 	    __func__, req, ino, -nlookup);
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_FORGET);
 	if (inode_nlookup_ino(ino, -nlookup, &e) == -1)
-		exlog(LOG_ERR, &e, __func__);
+		xlog(LOG_ERR, &e, __func__);
 	fuse_reply_none(req);
 	LK_UNLOCK(&fs_tree_lock);
 }
@@ -821,18 +821,18 @@ static void
 fs_forget_multi(fuse_req_t req, size_t count,
     struct fuse_forget_data *forgets)
 {
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	int              i;
+	struct xerr e = XLOG_ERR_INITIALIZER;
+	int         i;
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_FORGET_MULTI);
 
 	for (i = 0; i < count; i++) {
-		exlog_dbg(EXLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
+		xlog_dbg(XLOG_OP, "%s: req=%p, ino=%lu, nlookup=%ld",
 		    __func__, req, forgets[i].ino, -forgets[i].nlookup);
 		if (inode_nlookup_ino(forgets[i].ino,
 		    -forgets[i].nlookup, &e) == -1)
-			exlog(LOG_ERR, &e, __func__);
+			xlog(LOG_ERR, &e, __func__);
 	}
 	fuse_reply_none(req);
 	LK_UNLOCK(&fs_tree_lock);
@@ -841,20 +841,20 @@ fs_forget_multi(fuse_req_t req, size_t count,
 static void
 fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-	struct exlog_err         e = EXLOG_ERR_INITIALIZER;
+	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct fuse_entry_param  entry;
 	struct dir_entry         de;
 	int                      status;
 	struct oinode           *oi = NULL, *parent_oi;
 	int                      r_sent = 0;
 
-	exlog_dbg(EXLOG_OP, "%s: req=%p, parent_ino=%lu, name=%s",
+	xlog_dbg(XLOG_OP, "%s: req=%p, parent_ino=%lu, name=%s",
 	    __func__, req, parent, name);
 	counter_incr(COUNTER_FS_LOOKUP);
 	LK_RDLOCK(&fs_tree_lock);
 
 	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -863,18 +863,18 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	inode_lock(parent_oi, LK_LOCK_RD);
 
 	if ((status = di_lookup(parent_oi, &de, name, &e)) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
 	}
 
-	exlog_zerr(&e);
+	xerrz(&e);
 	if (r_sent)
 		goto end;
 
 	if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -899,7 +899,7 @@ end:
 			FUSE_REPLY(&r_sent, fuse_reply_entry(req, &entry));
 	}
 
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	/* We don't update atime on the parent for lookups. */
 
@@ -923,7 +923,7 @@ fs_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode)
 static void
 fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct oinode    *parent_oi, *oi = NULL;
 	struct dir_entry  de;
 	int               r_sent = 0;
@@ -936,7 +936,7 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	LK_RDLOCK(&fs_tree_lock);
 
 	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -945,17 +945,17 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	inode_lock(parent_oi, LK_LOCK_RW);
 
 	if (di_lookup(parent_oi, &de, name, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
 	if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 	inode_lock(oi, LK_LOCK_RW);
@@ -975,17 +975,17 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 			break;
 		default:
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 			goto end;
 		}
 	}
 
 	if ((di_unlink(parent_oi, &de, &e)) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
@@ -1010,7 +1010,7 @@ end:
 		inode_unlock(oi);
 		if (inode_unload(oi, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 
@@ -1045,33 +1045,33 @@ fs_unlink(fuse_req_t req, fuse_ino_t parent, const char *name)
 static void
 fs_statfs(fuse_req_t req, fuse_ino_t ino)
 {
-	struct exlog_err e = EXLOG_ERR_INITIALIZER;
-	int              r_sent = 0;
-	int              mgr = -1;
-	struct mgr_msg   m;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	int            r_sent = 0;
+	int            mgr = -1;
+	struct mgr_msg m;
 
 	counter_incr(COUNTER_FS_STATFS);
 
 	if ((mgr = mgr_connect(1, &e)) == -1) {
-		exlog(LOG_ERR, &e, __func__);
+		xlog(LOG_ERR, &e, __func__);
 		goto fail;
 	}
 
 	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, &e) == -1) {
-		exlog(LOG_ERR, &e, "%s", __func__);
+		xlog(LOG_ERR, &e, "%s", __func__);
 		goto fail;
 	}
 
 	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-		exlog(LOG_ERR, &e, "%s", __func__);
+		xlog(LOG_ERR, &e, "%s", __func__);
 		goto fail;
 	}
 
 	close(mgr);
 
 	if (m.m != MGR_MSG_INFO_OK) {
-		exlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+		xlog(LOG_ERR, NULL, "%s: bad manager response: %d",
 		    __func__, m.m);
 		goto fail;
 	}
@@ -1088,10 +1088,10 @@ fail:
 static int
 make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
     mode_t mode, mode_t mask, dev_t rdev, struct inode *inode,
-    const char *data, size_t data_len, struct exlog_err *e)
+    const char *data, size_t data_len, struct xerr *e)
 {
-	struct exlog_err  e_dealloc = EXLOG_ERR_INITIALIZER;
-	struct exlog_err  e_unload = EXLOG_ERR_INITIALIZER;
+	struct xerr       e_dealloc = XLOG_ERR_INITIALIZER;
+	struct xerr       e_unload = XLOG_ERR_INITIALIZER;
 	struct dir_entry  de;
 	struct oinode    *parent_oi, *oi;
 	int               status = 0;
@@ -1104,7 +1104,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 	};
 
 	if (strlen(name) > FS_NAME_MAX)
-		return exlog_errf(e, EXLOG_APP, EXLOG_NAMETOOLONG,
+		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "file name too long");
 
 	if ((inode_make(0, uid, gid, (mode & ~(mode & mask)), inode, e)) == -1)
@@ -1113,7 +1113,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 	if ((oi = inode_load(inode->v.f.inode, 0, e)) == NULL) {
 		if (inode_dealloc(inode->v.f.inode, &e_dealloc) == -1) {
 			fs_error_set();
-			exlog(LOG_ERR, &e_dealloc, __func__);
+			xlog(LOG_ERR, &e_dealloc, __func__);
 		}
 		return -1;
 	}
@@ -1131,23 +1131,22 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		w = inode_write(oi, 0, data, data_len, e);
 	}
 	if ((flushed = inode_flush(oi, 0, e)) == -1) {
-		exlog(LOG_ERR, e, __func__);
-		exlog_zerr(e);
+		xlog(LOG_ERR, e, __func__);
+		xerrz(e);
 	}
 	memcpy(inode, &oi->ino, sizeof(struct inode));
 	inode_unlock(oi);
 
 	if (w == -1) {
-		exlog(LOG_ERR, e, __func__);
-		exlog_zerr(e);
+		xlog(LOG_ERR, e, __func__);
+		xerrz(e);
 	}
 
 	if (inode_unload(oi, e) == -1 || flushed == -1 ||
 	    (data && (w < data_len)) || (is_dir && (w < sizeof(default_dir)))) {
-		if (!exlog_fail(e))
-			exlog_errf(e, EXLOG_APP, EXLOG_IO,
-			    "%s: short write on inline inode data or directory",
-			    __func__);
+		if (!xerr_fail(e))
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "short write on inline inode data or directory");
 		goto unlink;
 	}
 	oi = NULL;
@@ -1165,15 +1164,15 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		inode_nlink(parent_oi, 1);
 	status = di_mkdirent(parent_oi, &de, NULL, e);
 	if ((flushed = inode_flush(parent_oi, 0, e)) == -1) {
-		exlog(LOG_ERR, e, __func__);
-		exlog_zerr(e);
+		xlog(LOG_ERR, e, __func__);
+		xerrz(e);
 	}
 	fs_set_time(parent_oi, INODE_ATTR_MTIME);
 	inode_unlock(parent_oi);
 
 	if (inode_unload(parent_oi, &e_unload) == -1) {
 		fs_error_set();
-		exlog(LOG_ERR, &e_unload, __func__);
+		xlog(LOG_ERR, &e_unload, __func__);
 		goto unlink;
 	}
 
@@ -1187,12 +1186,12 @@ unlink:
 	if (inode_nlink_ino(inode->v.f.inode,
 	    (is_dir) ? -2 : -1, &e_dealloc) == -1) {
 		fs_error_set();
-		exlog(LOG_ERR, &e_dealloc, __func__);
+		xlog(LOG_ERR, &e_dealloc, __func__);
 	}
-	exlog_zerr(&e_dealloc);
+	xerrz(&e_dealloc);
 	if (is_dir && inode_nlink_ino(parent, -1, &e_dealloc) == -1) {
 		fs_error_set();
-		exlog(LOG_ERR, &e_dealloc, __func__);
+		xlog(LOG_ERR, &e_dealloc, __func__);
 	}
 	return -1;
 }
@@ -1202,7 +1201,7 @@ fs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
     dev_t rdev)
 {
 	int                     status;
-	struct exlog_err        e = EXLOG_ERR_INITIALIZER;
+	struct xerr             e = XLOG_ERR_INITIALIZER;
 	struct inode            inode;
 	struct fuse_entry_param entry;
 	int                     r_sent = 0;
@@ -1216,12 +1215,12 @@ fs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    rdev, &inode, NULL, 0, &e);
 	if (status == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NAMETOOLONG))
+		if (xerr_is(&e, XLOG_APP, XLOG_NAMETOOLONG))
 			FUSE_REPLY(&r_sent,
 			    fuse_reply_err(req, ENAMETOOLONG));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_EXIST))
+		else if (xerr_is(&e, XLOG_APP, XLOG_EXIST))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EEXIST));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		else if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1245,7 +1244,7 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
     struct fuse_file_info *fi)
 {
 	int                      status;
-	struct exlog_err         e = EXLOG_ERR_INITIALIZER;
+	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct inode             inode;
 	struct fuse_entry_param  entry;
 	struct open_file        *of;
@@ -1259,13 +1258,13 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    0, &inode, NULL, 0, &e);
 	if (status == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NAMETOOLONG))
+		if (xerr_is(&e, XLOG_APP, XLOG_NAMETOOLONG))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_EXIST))
+		else if (xerr_is(&e, XLOG_APP, XLOG_EXIST))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EEXIST));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		else if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOSPC))
+		else if (xerr_is(&e, XLOG_APP, XLOG_NOSPC))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOSPC));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1281,7 +1280,7 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 
 	if ((of = openfile_alloc(inode.v.f.inode,
 	    fi->flags, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1301,15 +1300,15 @@ static void
 fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
     off_t offset, off_t length, struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	struct oinode    *oi;
-	int               r_sent = 0;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	struct oinode *oi;
+	int            r_sent = 0;
 
 	counter_incr(COUNTER_FS_FALLOCATE);
 	if (FS_RO_ON_ERR(req)) return;
 
 	if ((oi = inode_load(ino, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1321,7 +1320,7 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 	else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 
-	exlog_zerr(&e);
+	xerrz(&e);
 
 	if (inode_unload(oi, &e) == -1)
 		FS_ERR(&r_sent, req, &e);
@@ -1336,9 +1335,9 @@ static void
 fs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync,
     struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	int               r_sent = 0;
-	struct oinode    *oi;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	int            r_sent = 0;
+	struct oinode *oi;
 
 	oi = ((struct open_file *)fi->fh)->oi;
 
@@ -1361,9 +1360,9 @@ static void
 fs_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync,
     struct fuse_file_info *fi)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	int               r_sent = 0;
-	struct oinode    *oi;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	int            r_sent = 0;
+	struct oinode *oi;
 
 	counter_incr(COUNTER_FS_FSYNCDIR);
 	LK_RDLOCK(&fs_tree_lock);
@@ -1383,7 +1382,7 @@ static void
 fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
     const char *newname)
 {
-	struct exlog_err         e = EXLOG_ERR_INITIALIZER;
+	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct dir_entry         new_de;
 	struct oinode           *oi = NULL, *parent_oi;
 	struct fuse_entry_param  entry;
@@ -1404,7 +1403,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	new_de.name[sizeof(new_de.name) - 1] = '\0';
 
 	if ((parent_oi = inode_load(newparent, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1413,23 +1412,23 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	inode_lock(parent_oi, LK_LOCK_RW);
 
 	if ((oi = inode_load(ino, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 	inode_lock(oi, LK_LOCK_RW);
 
 	if (inode_isdir(oi)) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EPERM));
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 	if (oi->ino.v.f.nlink >= FS_LINK_MAX) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EMLINK));
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
@@ -1445,7 +1444,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 
 	if (di_mkdirent(parent_oi, &new_de, NULL, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		inode_nlink(oi, -1);
 		inode_nlookup(oi, -1);
 	}
@@ -1456,7 +1455,7 @@ end:
 		inode_unlock(oi);
 		if (inode_unload(oi, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 
@@ -1475,7 +1474,7 @@ fs_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
     const char *name)
 {
 	int                     status;
-	struct exlog_err        e = EXLOG_ERR_INITIALIZER;
+	struct xerr             e = XLOG_ERR_INITIALIZER;
 	struct inode            inode;
 	struct fuse_entry_param entry;
 	int                     r_sent = 0;
@@ -1494,13 +1493,13 @@ fs_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
 	    fuse_req_ctx(req)->gid, 0777 | S_IFLNK, fuse_req_ctx(req)->umask,
 	    0, &inode, link, strlen(link), &e);
 	if (status == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NAMETOOLONG))
+		if (xerr_is(&e, XLOG_APP, XLOG_NAMETOOLONG))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_EXIST))
+		else if (xerr_is(&e, XLOG_APP, XLOG_EXIST))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, EEXIST));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		else if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
-		else if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOSPC))
+		else if (xerr_is(&e, XLOG_APP, XLOG_NOSPC))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOSPC));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1522,17 +1521,17 @@ unlock:
 static void
 fs_readlink(fuse_req_t req, fuse_ino_t ino)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
-	ssize_t           r, offset;
-	char              link[FS_PATH_MAX];
-	int               r_sent = 0;
-	struct oinode    *oi;
+	struct xerr    e = XLOG_ERR_INITIALIZER;
+	ssize_t        r, offset;
+	char           link[FS_PATH_MAX];
+	int            r_sent = 0;
+	struct oinode *oi;
 
 	counter_incr(COUNTER_FS_READLINK);
 	LK_RDLOCK(&fs_tree_lock);
 
 	if ((oi = inode_load(ino, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1547,7 +1546,7 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 			break;
 		} else if (r == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 			break;
 		} else if (offset >= FS_PATH_MAX) {
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
@@ -1571,7 +1570,7 @@ static void
 fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
-	struct exlog_err  e = EXLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct dir_entry  de, new_de, replaced;
 	struct oinode    *old_doi = NULL, *new_doi = NULL;
 	struct oinode    *oi = NULL, *new_oi = NULL, *p_oi;
@@ -1590,7 +1589,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	LK_WRLOCK(&fs_tree_lock);
 
 	if ((old_doi = inode_load(oldparent, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
@@ -1600,40 +1599,40 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	if (oldparent == newparent) {
 		new_doi = old_doi;
 	} else if ((new_doi = inode_load(newparent, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
 	if (di_lookup(old_doi, &de, oldname, &e) == -1) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	} else if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
-		if (exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT))
+		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOENT));
 		else
 			FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
 	if (di_lookup(new_doi, &new_de, newname, &e) == -1) {
-		if (!exlog_err_is(&e, EXLOG_APP, EXLOG_NOENT)) {
+		if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 			goto end;
 		}
-		exlog_zerr(&e);
+		xerrz(&e);
 	} else if ((new_oi = inode_load(new_de.inode, 0, &e)) == NULL) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
@@ -1672,16 +1671,16 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		for (p = newparent; p != FS_ROOT_INODE; newparent_depth++) {
 			if ((p_oi = inode_load(p, 0, &e)) == NULL) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 				goto end;
 			}
 			if ((p = di_parent(p_oi, &e)) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 			}
 			if (inode_unload(p_oi, &e) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 				goto end;
 			}
 
@@ -1703,16 +1702,16 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		for (p = oldparent; p != FS_ROOT_INODE; oldparent_depth++) {
 			if ((p_oi = inode_load(p, 0, &e)) == NULL) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 				goto end;
 			}
 			if ((p = di_parent(p_oi, &e)) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 			}
 			if (inode_unload(p_oi, &e) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 				goto end;
 			}
 
@@ -1757,7 +1756,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	inode_nlink(oi, 1);
 	if (inode_flush(oi, 0, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 	}
 
 	new_de.inode = de.inode;
@@ -1767,7 +1766,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	if (di_mkdirent(new_doi, &new_de, &replaced, &e) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 		goto end;
 	}
 
@@ -1775,7 +1774,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	if (inode_isdir(oi)) {
 		if (di_setparent(oi, inode_ino(new_doi), &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 			goto end;
 		}
 		/*
@@ -1786,7 +1785,7 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			inode_nlink(new_doi, 1);
 			if (inode_flush(new_doi, 0, &e) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				exlog_zerr(&e);
+				xerrz(&e);
 			}
 		}
 
@@ -1796,25 +1795,25 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		inode_nlink(new_oi, -1);
 		if (inode_flush(new_oi, 0, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 
 	if (di_unlink(old_doi, &de, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 	}
 	if (inode_isdir(oi)) {
 		inode_nlink(old_doi, -1);
 		if (inode_flush(old_doi, 0, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 	inode_nlink(oi, -1);
 	if (inode_flush(oi, 0, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		exlog_zerr(&e);
+		xerrz(&e);
 	}
 end:
 	if (old_doi) {
@@ -1822,7 +1821,7 @@ end:
 		inode_unlock(old_doi);
 		if (inode_unload(old_doi, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 	if (oldparent != newparent && new_doi != NULL) {
@@ -1830,7 +1829,7 @@ end:
 		inode_unlock(new_doi);
 		if (inode_unload(new_doi, &e) == -1) {
 			FS_ERR(&r_sent, req, &e);
-			exlog_zerr(&e);
+			xerrz(&e);
 		}
 	}
 	if (oi) {
@@ -1886,8 +1885,8 @@ main(int argc, char **argv)
 
 	config_read();
 
-	if (exlog_init(PROGNAME, fs_config.dbg, 1) == -1)
-		err(1, "exlog_init");
+	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1)
+		err(1, "xlog_init");
 
 	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) != -1 &&
 	    (ch = fuse_mount(mountpoint, &args)) != NULL) {

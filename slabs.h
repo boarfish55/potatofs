@@ -25,7 +25,7 @@
 #include <uuid/uuid.h>
 #include "config.h"
 #include "openfiles.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "slabs.h"
 #include "util.h"
 
@@ -166,16 +166,16 @@ struct oslab {
 #define OSLAB_EPHEMERAL 0x00000004
 };
 
-int slab_configure(rlim_t, time_t, struct exlog_err *);
-int slab_shutdown(struct exlog_err *);
-int slab_make_dirs(struct exlog_err *);
+int slab_configure(rlim_t, time_t, struct xerr *);
+int slab_shutdown(struct xerr *);
+int slab_make_dirs(struct xerr *);
 
 /*
  * Computes the path/filename of a slab based on the slab type
  * and inode (for data slabs) or base inode (for itbl slabs).
  */
-int slab_path(char *, size_t, const struct slab_key *, int, struct exlog_err *);
-int slab_parse_path(const char *, struct slab_key *, struct exlog_err *);
+int slab_path(char *, size_t, const struct slab_key *, int, struct xerr *);
+int slab_parse_path(const char *, struct slab_key *, struct xerr *);
 
 /*
  * Returns a pointer to a slab which can be passed to other slab_*
@@ -196,20 +196,20 @@ int slab_parse_path(const char *, struct slab_key *, struct exlog_err *);
  * periodically disowned, at which point the underlying file descriptor is
  * closed.
  */
-struct oslab *slab_load(const struct slab_key *, uint32_t, struct exlog_err *);
-int           slab_forget(struct oslab *, struct exlog_err *);
+struct oslab *slab_load(const struct slab_key *, uint32_t, struct xerr *);
+int           slab_forget(struct oslab *, struct xerr *);
 
 /*
  * Similar to the above, but specifically used to load inode tables.
  */
 struct oslab *slab_load_itbl(const struct slab_key *, rwlk_flags,
-                  struct exlog_err *);
-int           slab_close_itbl(struct oslab *, struct exlog_err *);
+                  struct xerr *);
+int           slab_close_itbl(struct oslab *, struct xerr *);
 
 /*
  * Return n inode table bases, which is provided by the caller.
  */
-ssize_t       slab_itbls(off_t *, size_t, struct exlog_err *);
+ssize_t       slab_itbls(off_t *, size_t, struct xerr *);
 
 /* Must be called while the slab bytes_lock is held */
 int   slab_itbl_is_free(struct oslab *, ino_t);
@@ -232,16 +232,16 @@ void *slab_hdr_data(struct oslab *);
  * if multiple threads need to perform I/O on slabs and retain consistency,
  * they should claim the slab's bytes_lock.
  */
-int     slab_write_hdr(struct oslab *, struct exlog_err *);
-int     slab_write_hdr_nolock(struct oslab *, struct exlog_err *);
+int     slab_write_hdr(struct oslab *, struct xerr *);
+int     slab_write_hdr_nolock(struct oslab *, struct xerr *);
 ssize_t slab_write(struct oslab *, const void *, off_t,
-            size_t, struct exlog_err *);
-int     slab_read_hdr(struct oslab *, struct exlog_err *);
+            size_t, struct xerr *);
+int     slab_read_hdr(struct oslab *, struct xerr *);
 ssize_t slab_read(struct oslab *, void *, off_t,
-            size_t, struct exlog_err *);
-int     slab_unlink(struct oslab *, struct exlog_err *);
-int     slab_truncate(struct oslab *, off_t, struct exlog_err *);
-int     slab_sync(struct oslab *, struct exlog_err *);
+            size_t, struct xerr *);
+int     slab_unlink(struct oslab *, struct xerr *);
+int     slab_truncate(struct oslab *, off_t, struct xerr *);
+int     slab_sync(struct oslab *, struct xerr *);
 void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
             size_t *, int *, int);
 
@@ -252,7 +252,7 @@ void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
 void    slab_set_dirty(struct oslab *);
 
 /* Returns the size of the slab in bytes, minus the header. */
-off_t   slab_size(struct oslab *, struct exlog_err *);
+off_t   slab_size(struct oslab *, struct xerr *);
 
 /* Returns the maximum size of a slab in bytes, minus the header. */
 off_t   slab_get_max_size();
@@ -262,15 +262,15 @@ size_t  slab_inode_max();
 
 /* Populates a slab_key from inode/offset/flags */
 struct slab_key *slab_key(struct slab_key *, ino_t, off_t);
-int              slab_key_valid(const struct slab_key *, struct exlog_err *);
+int              slab_key_valid(const struct slab_key *, struct xerr *);
 
 /* Loop over all local slabs and perform a function. */
-int     slab_loop_files(void (*)(const char *), struct exlog_err *);
+int     slab_loop_files(void (*)(const char *), struct xerr *);
 
 /* To be used for testing only, acquires no lock */
 void *slab_disk_inspect(struct slab_key *, struct slab_hdr *, size_t *,
-          struct exlog_err *);
+          struct xerr *);
 void *slab_inspect(int, struct slab_key *, uint32_t, struct slab_hdr *,
-          size_t *, struct exlog_err *);
+          size_t *, struct xerr *);
 
 #endif

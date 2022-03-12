@@ -24,7 +24,7 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include "openfiles.h"
-#include "exlog.h"
+#include "xlog.h"
 #include "slabs.h"
 
 /*
@@ -146,8 +146,8 @@ char  *inode_data(struct inode *);
 /*
  * Only acquires slab locks. The inode isn't actually loaded at any point.
  */
-int inode_make(ino_t, uid_t, gid_t, mode_t, struct inode *, struct exlog_err *);
-int inode_dealloc(ino_t, struct exlog_err *);
+int inode_make(ino_t, uid_t, gid_t, mode_t, struct inode *, struct xerr *);
+int inode_dealloc(ino_t, struct xerr *);
 
 /* The inode lock is public, as opposed to the bytes_lock. */
 void inode_lock(struct oinode *, rwlk_flags);
@@ -158,15 +158,15 @@ void inode_unlock(struct oinode *);
  * as we keep track of how many times it is referenced. Note that
  * inode_unload() will call inode_flush() when the refcnt is 0.
  */
-struct oinode *inode_load(ino_t, uint32_t, struct exlog_err *);
-int            inode_unload(struct oinode *, struct exlog_err *);
+struct oinode *inode_load(ino_t, uint32_t, struct xerr *);
+int            inode_unload(struct oinode *, struct xerr *);
 
 /*
  * The following must be called with the inode write-lock. They all
  * acquire the bytes_lock internally.
  */
-int inode_setattr(struct oinode *, struct stat *, uint32_t, struct exlog_err *);
-int inode_flush(struct oinode *, int, struct exlog_err *);
+int inode_setattr(struct oinode *, struct stat *, uint32_t, struct xerr *);
+int inode_flush(struct oinode *, int, struct xerr *);
 
 /*
  * The following do not acquire the inode lock. It's up to the caller
@@ -175,24 +175,24 @@ int inode_flush(struct oinode *, int, struct exlog_err *);
  * functions acquire the bytes_lock.
  */
 ssize_t inode_write(struct oinode *, off_t, const void *,
-            size_t, struct exlog_err *);
-ssize_t inode_read(struct oinode *, off_t, void *, size_t, struct exlog_err *);
+            size_t, struct xerr *);
+ssize_t inode_read(struct oinode *, off_t, void *, size_t, struct xerr *);
 off_t   inode_getsize(struct oinode *);
-int     inode_truncate(struct oinode *, off_t, struct exlog_err *);
-int     inode_fallocate(struct oinode *, off_t, off_t, int, struct exlog_err *);
+int     inode_truncate(struct oinode *, off_t, struct xerr *);
+int     inode_fallocate(struct oinode *, off_t, off_t, int, struct xerr *);
 int     inode_splice_begin_read(struct inode_splice_bufvec *, struct oinode *,
-            off_t, size_t, struct exlog_err *);
-int     inode_splice_end_read(struct inode_splice_bufvec *, struct exlog_err *);
+            off_t, size_t, struct xerr *);
+int     inode_splice_end_read(struct inode_splice_bufvec *, struct xerr *);
 int     inode_splice_begin_write(struct inode_splice_bufvec *, struct oinode *,
-            off_t, size_t, struct exlog_err *);
+            off_t, size_t, struct xerr *);
 int     inode_splice_end_write(struct inode_splice_bufvec *, size_t,
-            struct exlog_err *);
+            struct xerr *);
 
 /*
  * The following must be called with the inode write-lock held.
  */
 int   inode_isdir(struct oinode *);
-int   inode_sync(struct oinode *, struct exlog_err *);
+int   inode_sync(struct oinode *, struct xerr *);
 void  inode_cp_stat(struct stat *, const struct inode *);
 ino_t inode_ino(struct oinode *);
 
@@ -203,16 +203,16 @@ nlink_t       inode_nlink(struct oinode *, int);
 unsigned long inode_nlookup(struct oinode *, int);
 
 /* Locking calls; calls interacting on an ino_t get a lock on the inode. */
-int inode_nlookup_ino(ino_t, int, struct exlog_err *);
-int inode_nlink_ino(ino_t, int, struct exlog_err *);
-int inode_cp_ino(ino_t, struct inode *, struct exlog_err *);
+int inode_nlookup_ino(ino_t, int, struct xerr *);
+int inode_nlink_ino(ino_t, int, struct xerr *);
+int inode_cp_ino(ino_t, struct inode *, struct xerr *);
 
 /* Free all remaining inodes at filesystem shutdown. No locks required. */
 void inode_shutdown();
 int  inode_startup();
 
 /* For testing only, acquires no lock */
-int inode_inspect(int, ino_t, struct inode *, struct exlog_err *);
-int inode_disk_inspect(ino_t, struct inode *, struct exlog_err *);
+int inode_inspect(int, ino_t, struct inode *, struct xerr *);
+int inode_disk_inspect(ino_t, struct inode *, struct xerr *);
 
 #endif
