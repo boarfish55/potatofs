@@ -211,11 +211,11 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 		msg[sizeof(e->msg) - 2] = '*';
 
 	if (e->sp == XLOG_ERRNO && e->code != 0)
-		syslog(priority, "[err=%d, c_err=%d]: %s: %s: %s",
+		syslog(priority, "[sp=%d, code=%d]: %s: %s: %s",
 		    e->sp, e->code, msg, e->msg,
 		    strerror_l(e->code, log_locale));
 	else
-		syslog(priority, "[err=%d, c_err=%d]: %s: %s",
+		syslog(priority, "[sp=%d, code=%d]: %s: %s",
 		    e->sp, e->code, msg, e->msg);
 }
 

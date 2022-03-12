@@ -38,18 +38,15 @@ enum xerr_code {
 	XLOG_EXIST,        /* An entity already exists */
 	XLOG_NOTDIR,       /* Attempted to readdir() on a non-directory */
 	XLOG_IO,           /* Something abnormal happened during I/O op */
-	XLOG_RES,          /* Resource is exhausted, or limit reached */
 	XLOG_BUSY,         /* Resource is busy, or already loaded */
 	XLOG_OPNOTSUPP,    /* The operation is not supported */
 	XLOG_NAMETOOLONG,  /* File name too long */
-	XLOG_LOCKBUSY,     /* A lock is already claimed */
 	XLOG_BADF,         /* Bad file descriptor, or conflicting open flags */
 	XLOG_OVERFLOW,     /* Variable size overflow */
 	XLOG_SHORTIO,      /* Data sent or received is shorter than expected */
 	XLOG_EOF,          /* End-of-file */
 	XLOG_EXEC,         /* Error while running backend executable */
-	XLOG_JSON,         /* JSON error */
-	XLOG_CRC_MISMATCH, /* CRC mismatch in slab */
+	XLOG_MISMATCH,     /* CRC/revision/size does not match expectations */
 	XLOG_NOSPC,        /* No space left on device */
 	XLOG_MGR           /* Issue arised during communication with
 	                      slab manager */

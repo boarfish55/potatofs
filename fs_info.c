@@ -51,7 +51,7 @@ fs_info_open(struct fs_info *dst_info, struct xerr *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "failed to statvfs file; too long");
 		goto end;
 	}
@@ -93,7 +93,7 @@ fs_info_open(struct fs_info *dst_info, struct xerr *e)
 		fs_info.stats.f_flag = 0;
 		fs_info.stats.f_namemax = FS_NAME_MAX;
 	} else if (r < sizeof(fs_info)) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "structure size mismatch; incompatible version?");
 		goto end;
 	}
@@ -126,7 +126,7 @@ fs_info_read(struct fs_info *fs_info, struct xerr *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "failed to statvfs file; too long");
 		goto end;
 	}
@@ -142,14 +142,14 @@ fs_info_read(struct fs_info *fs_info, struct xerr *e)
 	}
 
 	if (r < sizeof(struct fs_info)) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "fs_info structure size mismatch; "
 		    "incompatible version?");
 		goto end;
 	}
 
 	if (fs_info->fs_info_version != FS_INFO_VERSION) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "fs_info structure version mismatch; "
 		    "incompatible version?");
 		goto end;
@@ -169,7 +169,7 @@ fs_info_write(const struct fs_info *fs_info, struct xerr *e)
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "failed to statvfs file; too long");
 		return -1;
 	}

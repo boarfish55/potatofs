@@ -80,7 +80,7 @@ struct mgr_msg {
 			struct fs_info fs_info;
 		} info;
 
-		uint8_t        fs_error;
+		uint8_t fs_error;
 
 		struct {
 			ino_t    base;
@@ -99,9 +99,9 @@ struct mgr_msg {
 		struct {
 			time_t grace_period;
 		} shutdown;
-	} v;
 
-	int err;
+		struct xerr err;
+	} v;
 };
 
 void mgr_init(const char *);

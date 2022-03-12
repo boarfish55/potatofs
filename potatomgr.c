@@ -156,6 +156,7 @@ snd_counters(int c, struct mgr_msg *m, struct xerr *e)
 	int i;
 	if (sem_wait(&mgr_counters->sem) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sem_wait");
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_wait");
 		goto fail;
 	}
 
@@ -163,7 +164,8 @@ snd_counters(int c, struct mgr_msg *m, struct xerr *e)
 		mgr_counters->c[i] = m->v.snd_counters.c[i];
 
 	if (sem_post(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
+		xlog_strerror(LOG_ERR, errno, "sem_post");
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_post");
 		goto fail;
 	}
 
@@ -180,6 +182,7 @@ rcv_counters(int c, struct mgr_msg *m, struct xerr *e)
 	int i;
 	if (sem_wait(&mgr_counters->sem) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sem_wait");
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_wait");
 		goto fail;
 	}
 
@@ -190,7 +193,8 @@ rcv_counters(int c, struct mgr_msg *m, struct xerr *e)
 		m->v.rcv_counters.mgr_c[i] = mgr_counters->mgr_c[i];
 
 	if (sem_post(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
+		xlog_strerror(LOG_ERR, errno, "sem_post");
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_post");
 		goto fail;
 	}
 
@@ -516,16 +520,18 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	struct statvfs    stv;
 	struct slabdb_val v;
 
-	if (slab_key_valid(&m->v.unclaim.key, e) == -1)
+	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
+		xerr_prepend(e, __func__);
 		goto fail;
+	}
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
-		XERRF(e, XLOG_ERRNO, errno, "short read on slab header");
+		xerrf(e, XLOG_ERRNO, errno, "short read on slab header");
 		goto fail;
 	}
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
-		xlog_strerror(LOG_ERR, errno, "statvfs");
+		xerrf(e, XLOG_ERRNO, errno, "statvfs");
 		goto fail;
 	}
 	if (stv.f_bfree <
@@ -554,7 +560,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		}
 
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
-			XERRF(e, XLOG_ERRNO, errno,
+			xerrf(e, XLOG_ERRNO, errno,
 			    "short write on slab header");
 			goto fail;
 		}
@@ -581,7 +587,6 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		if (unlink(src) == -1) {
 			xlog_strerror(LOG_ERR, errno,
 			    "%s: unlink src %s", __func__, src);
-			purge = 0;
 		} else {
 			xlog(LOG_INFO, NULL, "%s: purged slab %s "
 			    "(revision=%lu, crc=%u)",
@@ -596,11 +601,11 @@ end:
 	m->m = MGR_MSG_UNCLAIM_OK;
 	return mgr_send(c, -1, m, e);
 fail:
-	xlog(LOG_ERR, e, "%s");
-	xerrz(e);
+	xlog(LOG_ERR, e, __func__);
+	memcpy(&m->v.err, e, sizeof(struct xerr));
 	m->m = MGR_MSG_UNCLAIM_ERR;
 	close(fd);
-	return mgr_send(c, -1, m, e);
+	return mgr_send(c, -1, m, xerrz(e));
 }
 
 static int
@@ -790,14 +795,14 @@ check_slab_header(struct slab_hdr *hdr, uint32_t header_crc, uint64_t rev,
 		 * backend doesn't have correct (latest?) version
 		 * of slab. Are we dealing with eventual consistency?
 		 */
-		XERRF(e, XLOG_APP, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching slab revision: "
 		    "expected=%lu, slab=%lu", rev, hdr->v.f.revision);
 	}
 
 	if ((crc = crc32_z(0L, (Bytef *)hdr,
 	    sizeof(struct slab_hdr))) != header_crc) {
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching header CRC: "
 		    "expected=%u, slab=%u", header_crc, crc);
 	}
@@ -835,7 +840,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 	//       instances.
 	if (uuid_compare(hdr.v.f.last_owner, instance_id) != 0) {
 		uuid_unparse(hdr.v.f.last_owner, u);
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "unknown slab owner %s; do we have a rogue instance "
 		    "writing slabs to our backend?", u);
 	}
@@ -845,14 +850,15 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		 * backend doesn't have correct (latest?) version
 		 * of slab. Are we dealing with eventual consistency?
 		 */
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching slab revision: "
 		    "expected=%lu, slab=%lu", revision, hdr.v.f.revision);
 	}
 
 	if ((crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr))) != header_crc)
-		return XERRF(e, XLOG_APP, XLOG_INVAL, "mismatching header CRC: "
-		    "expected=%u, slab=%u", header_crc, crc);
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
+		    "mismatching header CRC: expected=%u, slab=%u",
+		    header_crc, crc);
 
 write_hdr_again:
 	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
@@ -896,7 +902,7 @@ copy_again:
 		 * slab content doesn't match our checksum. Maybe
 		 * the data was corrupted on the backend?
 		 */
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching slab content checksum: "
 		    "expected=%u, slab=%u", hdr.v.f.checksum, crc);
 	}
@@ -920,7 +926,8 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 
 	do {
 		if (statvfs(fs_config.data_dir, &stv) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "statvfs");
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "statvfs: %s", strerror(errno));
 			goto fail;
 		}
 
@@ -938,8 +945,10 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		}
 	} while(0);
 
-	if (slab_key_valid(&m->v.claim.key, e) == -1)
+	if (slab_key_valid(&m->v.claim.key, e) == -1) {
+		xerr_prepend(e, __func__);
 		goto fail;
+	}
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -950,7 +959,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		    xerr_is(e, XLOG_APP, XLOG_NOENT)) {
 			m->m = MGR_MSG_CLAIM_NOENT;
 			if (mgr_send(c, -1, m, xerrz(e)) == -1) {
-				xlog(LOG_ERR, e, "%s", __func__);
+				xlog(LOG_ERR, e, __func__);
 				goto fail;
 			}
 			return 0;
@@ -964,7 +973,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	 * to relay bytes instead. For now, we just fail.
 	 */
 	if (uuid_compare(v.owner, instance_id) != 0) {
-		XERRF(e, XLOG_MGR, XLOG_INVAL,
+		XERRF(e, XLOG_APP, XLOG_IO,
 		    "consensus for ownership not implemented");
 		goto fail;
 	}
@@ -979,8 +988,10 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	 * successfully copying.
 	 */
 	if (slab_path(dst, sizeof(dst), &m->v.claim.key, 0, e) == -1 ||
-	    slab_path(name, sizeof(name), &m->v.claim.key, 1, e) == -1)
+	    slab_path(name, sizeof(name), &m->v.claim.key, 1, e) == -1) {
+		xerr_prepend(e, __func__);
 		goto fail;
+	}
 
 	if (m->v.claim.oflags & OSLAB_SYNC)
 		fd_flags |= O_SYNC;
@@ -1020,8 +1031,10 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	}
 
 	if (v.revision == 0) {
-		if (fs_info_read(&fs_info, e) == -1)
+		if (fs_info_read(&fs_info, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail;
+		}
 
 		if (fs_info.stats.f_bfree < fs_info.stats.f_blocks / 100) {
 			XERRF(e, XLOG_APP, XLOG_NOSPC,
@@ -1079,7 +1092,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		 * Wrong rev/header_crc is fine, just proceed
 		 * with retrieving.
 		 */
-		} else if (!xerr_is(e, XLOG_APP, XLOG_INVAL))
+		} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
 			goto fail_close_dst;
 
 		/*
@@ -1126,13 +1139,13 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	}
 
 get_again:
-	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key, e) == -1) {
+	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key,
+	    xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOENT)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual
 			 * consistentcy? Or the backend actually lost data.
 			 */
-			xerrz(e);
 			xlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
 			    "but backend_get() claims is doesn't exist; "
 			    "retrying", __func__, name);
@@ -1141,11 +1154,9 @@ get_again:
 		} else if (xerr_is(e, XLOG_APP, XLOG_EXEC)) {
 			xlog(LOG_ERR, e, "%s: backend script failed, "
 			    "will retry; reason: %s", __func__);
-			xerrz(e);
 			sleep(5);
 			goto get_again;
 		} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
-			xerrz(e);
 			xlog(LOG_ERR, NULL, "%s: ran out of space during "
 			    "backend_get(); retrying", __func__);
 			sleep(5);
@@ -1168,9 +1179,8 @@ get_again:
 	if (copy_incoming_slab(dst_fd, incoming_fd, v.header_crc,
 	    v.revision, e) == -1) {
 		close(incoming_fd);
-		if (xerr_is(e, XLOG_APP, XLOG_INVAL)) {
+		if (xerr_is(e, XLOG_APP, XLOG_MISMATCH)) {
 			xlog(LOG_ERR, e, "%s: retrying; ", __func__);
-			xerrz(e);
 			sleep(5);
 			goto get_again;
 		}
@@ -1187,6 +1197,7 @@ end:
 		 * since we don't mind if they get purged shortly after.
 		 */
 		if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
+			XERRF(e, XLOG_ERRNO, errno, "%s: clock_gettime");
 			xlog_strerror(LOG_ERR, errno, "%s: clock_gettime",
 			    __func__);
 			goto fail_close_dst;
@@ -1210,7 +1221,7 @@ fail_close_dst:
 	close(dst_fd);
 fail:
 	if (xerr_fail(e)) {
-		m->err = e->code;
+		memcpy(&m->v.err, &e, sizeof(struct xerr));
 		xlog(LOG_ERR, e, __func__);
 	}
 	m->m = MGR_MSG_CLAIM_ERR;
@@ -1262,6 +1273,7 @@ do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 	if ((p = getppid()) > 1) {
 		if (kill(p, 15) == -1) {
 			xlog_strerror(LOG_ERR, errno, "%s: kill", __func__);
+			memcpy(&m->v.err, e, sizeof(struct xerr));
 			m->m = MGR_MSG_SHUTDOWN_ERR;
 		} else {
 			m->m = MGR_MSG_SHUTDOWN_OK;
@@ -1270,7 +1282,7 @@ do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 		m->m = MGR_MSG_SHUTDOWN_ERR;
 	}
 
-	if (mgr_send(c, -1, m, e) == -1)
+	if (mgr_send(c, -1, m, xerrz(e)) == -1)
 		return -1;
 	return 0;
 }
@@ -1281,6 +1293,7 @@ info(int c, struct mgr_msg *m, struct xerr *e)
 	pid_t mgr_pid;
 	if (fs_info_read(&m->v.info.fs_info, e) == -1) {
 		xlog(LOG_ERR, e, "%s", __func__);
+		memcpy(&m->v.err, e, sizeof(struct xerr));
 		m->m = MGR_MSG_INFO_ERR;
 	} else {
 		m->m = MGR_MSG_INFO_OK;
@@ -1292,9 +1305,7 @@ info(int c, struct mgr_msg *m, struct xerr *e)
 		    sizeof(m->v.info.version_string));
 	}
 
-	xerrz(e);
-
-	if (mgr_send(c, -1, m, e) == -1)
+	if (mgr_send(c, -1, m, xerrz(e)) == -1)
 		return -1;
 
 	return 0;
@@ -1790,13 +1801,12 @@ worker(int lsock)
 		}
 
 		for (;;) {
-			if ((r = mgr_recv(c, &fd, &m, &e)) == -1) {
+			if ((r = mgr_recv(c, &fd, &m, xerrz(&e))) == -1) {
 				if (xerr_is(&e, XLOG_ERRNO, EAGAIN))
 					xlog(LOG_NOTICE, NULL,
 					    "read timeout on socket %d", c);
-				else if (!xerr_is(&e, XLOG_APP,
-				    XLOG_EOF))
-					xlog(LOG_ERR, &e, "%s", __func__);
+				else if (!xerr_is(&e, XLOG_APP, XLOG_EOF))
+					xlog(LOG_ERR, &e, __func__);
 				xerrz(&e);
 				close(c);
 				break;
@@ -1804,32 +1814,35 @@ worker(int lsock)
 
 			switch (m.m) {
 			case MGR_MSG_CLAIM:
-				claim(c, &m, &e);
+				claim(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_UNCLAIM:
-				unclaim(c, &m, fd, &e);
+				unclaim(c, &m, fd, xerrz(&e));
 				break;
 			case MGR_MSG_INFO:
-				info(c, &m, &e);
+				info(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_SHUTDOWN:
-				do_shutdown(c, &m, &e);
+				do_shutdown(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_SET_FS_ERROR:
-				if (set_fs_error() == -1)
+				if (set_fs_error() == -1) {
+					XERRF(&m.v.err, XLOG_APP, XLOG_IO,
+					    "set_fs_error");
 					m.m = MGR_MSG_SET_FS_ERROR_ERR;
-				else
+				} else {
 					m.m = MGR_MSG_SET_FS_ERROR_OK;
-				mgr_send(c, -1, &m, &e);
+				}
+				mgr_send(c, -1, &m, xerrz(&e));
 				break;
 			case MGR_MSG_CLAIM_NEXT_ITBL:
-				claim_next_itbls(c, &m, &e);
+				claim_next_itbls(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_SND_COUNTERS:
-				snd_counters(c, &m, &e);
+				snd_counters(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_RCV_COUNTERS:
-				rcv_counters(c, &m, &e);
+				rcv_counters(c, &m, xerrz(&e));
 				break;
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
@@ -1838,14 +1851,12 @@ worker(int lsock)
 				break;
 			}
 			if (xerr_fail(&e)) {
-				xlog(LOG_ERR, &e, "%s", __func__);
+				xlog(LOG_ERR, &e, __func__);
 				if (e.sp == XLOG_ERRNO) {
-					xerrz(&e);
 					close(c);
 					break;
 				}
 			}
-			xerrz(&e);
 		}
 	}
 	close(lsock);

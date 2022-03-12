@@ -163,8 +163,11 @@ read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
 		exit(1);
 	}
 
-	if (m.m != MGR_MSG_RCV_COUNTERS_OK)
-		errx(1, "%s: bad manager response: %d",
+	if (m.m == MGR_MSG_RCV_COUNTERS_ERR) {
+		xerr_print(&m.v.err);
+		exit(1);
+	} else if (m.m != MGR_MSG_RCV_COUNTERS_OK)
+		errx(1, "%s: mgr_recv: unexpected response: %d",
 		    __func__, m.m);
 
 	for (c = 0; c < COUNTER_LAST; c++)
@@ -351,7 +354,7 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct xerr *e)
 	}
 
 	if (hdr->v.f.checksum != crc)
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching content CRC for ino=%lu / base=%lu: "
 		    "expected=%lu, actual=%u", hdr->v.f.key.ino,
 		    hdr->v.f.key.base, hdr->v.f.checksum, crc);
@@ -388,9 +391,13 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 		XERRF(e, XLOG_APP, XLOG_NOENT,
 		    "no more inode tables after %lu", b->hdr.v.f.key.base);
 		return NULL;
+	} else if (m.m == MGR_MSG_CLAIM_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		xerr_prepend(e, __func__);
+		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		XERRF(e, XLOG_APP, XLOG_MGR,
-		    "bad manager response: %d", m.err);
+		    "mgr_recv: unexpected response: %d", m.m);
 		return NULL;
 	}
 
@@ -444,7 +451,12 @@ end:
 	if (mgr_send(mgr, b->fd, &m, e) != -1 &&
 	    mgr_recv(mgr, NULL, &m, e) != -1 &&
 	    m.m != MGR_MSG_UNCLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "bad manager response: %d", m.m);
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			memcpy(e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(e, __func__);
+		} else
+			XERRF(e, XLOG_APP, XLOG_MGR,
+			    "mgr_recv: unexpected response: %d", m.m);
 	}
 	close(b->fd);
 	return itbl;
@@ -588,8 +600,14 @@ inode_tables(int argc, char **argv)
 
 		if (m.m == MGR_MSG_CLAIM_NEXT_ITBL_END) {
 			break;
+		} else if (m.m != MGR_MSG_CLAIM_ERR) {
+			memcpy(&e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(&e, __func__);
+			xerr_print(&e);
+			exit(1);
 		} else if (m.m != MGR_MSG_CLAIM_OK) {
-			errx(1, "%s: bad manager response: %d", __func__, m.m);
+			errx(1, "%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
 		}
 		memcpy(&sk, &m.v.claim.key, sizeof(sk));
 		base = sk.base;
@@ -601,7 +619,14 @@ inode_tables(int argc, char **argv)
 		if (mgr_send(mgr, fd, &m, xerrz(&e)) != -1 &&
 		    mgr_recv(mgr, NULL, &m, xerrz(&e)) != -1 &&
 		    m.m != MGR_MSG_UNCLAIM_OK) {
-			errx(1, "%s: bad manager response: %d", __func__, m.m);
+			if (m.m == MGR_MSG_UNCLAIM_ERR) {
+				memcpy(&e, &m.v.err, sizeof(struct xerr));
+				xerr_prepend(&e, __func__);
+				xerr_print(&e);
+				exit(1);
+			} else
+				errx(1, "%s: mgr_recv: unexpected response: %d",
+				    __func__, m.m);
 		}
 		close(fd);
 	}
@@ -643,8 +668,12 @@ do_shutdown(int argc, char **argv)
 		return 1;
 	}
 
-	if (m.m != MGR_MSG_SHUTDOWN_OK) {
-		warnx("%s: bad manager response: %d",
+	if (m.m == MGR_MSG_SHUTDOWN_ERR) {
+		memcpy(&e, &m.v.err, sizeof(struct xerr));
+		xerr_print(&e);
+		return 1;
+	} else if (m.m != MGR_MSG_SHUTDOWN_OK) {
+		warnx("%s: mgr_recv: unexpected response: %d",
 		    __func__, m.m);
 		return 1;
 	}
@@ -698,8 +727,12 @@ fs_status(int argc, char **argv)
 
 		close(mgr);
 
-		if (m.m != MGR_MSG_INFO_OK) {
-			warnx("%s: bad manager response: %d",
+		if (m.m == MGR_MSG_INFO_ERR) {
+			memcpy(&e, &m.v.err, sizeof(struct xerr));
+			xerr_print(&e);
+			return 1;
+		} else if (m.m != MGR_MSG_INFO_OK) {
+			warnx("%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			return 1;
 		}
@@ -1011,7 +1044,10 @@ claim(int argc, char **argv)
 	if (m.m == MGR_MSG_CLAIM_NOENT)
 		errx(1, "failed to claim slab for inode %lu "
 		    "at base %lu: no such slab", ino, base);
-	else if (m.m != MGR_MSG_CLAIM_OK)
+	else if (m.m == MGR_MSG_CLAIM_ERR) {
+		xerr_print(&m.v.err);
+		exit(1);
+	} else if (m.m != MGR_MSG_CLAIM_OK)
 		errx(1, "failed to claim slab for inode %lu "
 		    "at base %lu: resp=%d", ino, base, m.m);
 
@@ -1037,8 +1073,12 @@ claim(int argc, char **argv)
 	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1)
 		goto fail;
 
-	if (m.m != MGR_MSG_UNCLAIM_OK)
-		errx(1, "%s: bad manager response: %d", __func__, m.m);
+	if (m.m == MGR_MSG_UNCLAIM_ERR) {
+		xerr_print(&m.v.err);
+		exit(1);
+	} else if (m.m != MGR_MSG_UNCLAIM_OK)
+		errx(1, "%s: mgr_recv: unexpected response: %d",
+		    __func__, m.m);
 
 	close(b.fd);
 	close(mgr);
@@ -1091,10 +1131,11 @@ write_dir(int mgr, char *data, struct inode *inode, off_t new_size)
 
 		if (m.m == MGR_MSG_CLAIM_NOENT) {
 			continue;
+		} else if (m.m == MGR_MSG_CLAIM_ERR) {
+			xerr_print(&m.v.err);
+			goto fail;
 		} else if (m.m != MGR_MSG_CLAIM_OK) {
-			warnx("failed to claim slab for inode %lu "
-			    "at offset %lu: resp=%d", inode->v.f.inode,
-			    offset, m.m);
+			warnx("mgr_recv: unexpected response: %d", m.m);
 			goto fail;
 		}
 
@@ -1159,8 +1200,12 @@ write_dir(int mgr, char *data, struct inode *inode, off_t new_size)
 			goto fail;
 		}
 
-		if (m.m != MGR_MSG_UNCLAIM_OK) {
-			warnx("%s: bad manager response: %d", __func__, m.m);
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			xerr_print(&m.v.err);
+			goto fail;
+		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+			warnx("%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
 			goto fail;
 		}
 
@@ -1182,9 +1227,11 @@ write_dir(int mgr, char *data, struct inode *inode, off_t new_size)
 		return -1;
 	}
 
-	if (m.m != MGR_MSG_CLAIM_OK) {
-		warnx("failed to claim slab for inode %lu "
-		    "at offset %lu: resp=%d", inode->v.f.inode, offset, m.m);
+	if (m.m != MGR_MSG_CLAIM_ERR) {
+		xerr_print(&m.v.err);
+		return -1;
+	} else if (m.m != MGR_MSG_CLAIM_OK) {
+		warnx("mgr_recv: unexpected response: %d", m.m);
 		return -1;
 	}
 
@@ -1232,8 +1279,12 @@ write_dir(int mgr, char *data, struct inode *inode, off_t new_size)
 		goto fail;
 	}
 
-	if (m.m != MGR_MSG_UNCLAIM_OK) {
-		warnx("%s: bad manager response: %d", __func__, m.m);
+	if (m.m == MGR_MSG_UNCLAIM_ERR) {
+		xerr_print(&m.v.err);
+		goto fail;
+	} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+		warnx("%s: mgr_recv: unexpected response: %d",
+		    __func__, m.m);
 		goto fail;
 	}
 
@@ -1290,9 +1341,14 @@ load_dir(int mgr, char **data, struct inode *inode)
 			goto fail;
 		}
 
-		if (m.m != MGR_MSG_CLAIM_OK) {
-			warnx("failed to claim slab for inode %lu "
-			    "at offset %lu: resp=%d", ino, offset, m.m);
+		if (m.m == MGR_MSG_CLAIM_ERR) {
+			memcpy(&e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(&e, __func__);
+			xerr_print(&e);
+			goto fail;
+		} else if (m.m != MGR_MSG_CLAIM_OK) {
+			warnx("%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
 			goto fail;
 		}
 
@@ -1347,8 +1403,14 @@ load_dir(int mgr, char **data, struct inode *inode)
 			goto fail_free_slab;
 		}
 
-		if (m.m != MGR_MSG_UNCLAIM_OK) {
-			warnx("%s: bad manager response: %d", __func__, m.m);
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			memcpy(&e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(&e, __func__);
+			xerr_print(&e);
+			goto fail_free_slab;
+		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+			warnx("%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
 			goto fail_free_slab;
 		}
 

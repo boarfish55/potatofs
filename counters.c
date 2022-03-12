@@ -66,8 +66,11 @@ counter_flush(void *unused)
 			goto fail;
 		}
 
-		if (m.m != MGR_MSG_SND_COUNTERS_OK) {
-			xlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+		if (m.m == MGR_MSG_SND_COUNTERS_ERR) {
+			xlog(LOG_ERR, &m.v.err, __func__);
+			goto fail;
+		} else if (m.m != MGR_MSG_SND_COUNTERS_OK) {
+			xlog(LOG_ERR, NULL, "%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			goto fail;
 		}

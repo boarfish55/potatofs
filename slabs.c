@@ -180,9 +180,16 @@ slab_unclaim(struct oslab *b)
 			goto fail;
 		}
 
-		if (m.m != MGR_MSG_UNCLAIM_OK) {
-			xlog(LOG_ERR, NULL, "%s: bad manager response %d "
-			    "for slab sk=%lu/%lu",
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			// TODO: should we just close here and let
+			// scrubbing handle things?
+			xlog(LOG_ERR, &m.v.err,
+			    "%s: slab sk=%lu/%lu: mgr_recv", __func__,
+			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+			goto fail;
+		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
+			    "unexpected response: %d for slab sk=%lu/%lu",
 			    __func__, m.m, b->hdr.v.f.key.ino,
 			    b->hdr.v.f.key.base);
 			goto fail;
@@ -654,8 +661,10 @@ slab_path(char *path, size_t len, const struct slab_key *sk, int name_only,
 {
 	size_t l;
 
-	if (slab_key_valid(sk, e) == -1)
+	if (slab_key_valid(sk, e) == -1) {
+		xerr_prepend(e, __func__);
 		return -1;
+	}
 	if (name_only) {
 		if (sk->ino == 0) {
 			l = snprintf(path, len, "%s%020ld", ITBL_PREFIX,
@@ -773,21 +782,25 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
 		XERRF(e, XLOG_APP, XLOG_NOENT, "no such slab");
 		goto fail_destroy_locks;
+	} else if (m.m == MGR_MSG_CLAIM_ERR) {
+		// TODO: we should handle backend unavailability here,
+		// aka EAGAIN
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		xerr_prepend(e, __func__);
+		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		XERRF(e, XLOG_APP, ((m.err != 0) ? m.err : XLOG_MGR),
-		    "bad manager response for claim on slab sk=%lu/%lu",
-		    sk->ino, sk->base);
+		XERRF(e, XLOG_APP, XLOG_MGR, "mgr_recv: "
+		    "unexpected response: %d", m.m);
 		goto fail_destroy_locks;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "bad manager response; "
+		XERRF(e, XLOG_APP, XLOG_MGR, "unexpected slab key in response; "
 		    "ino: expected=%lu, received=%lu base: expected=%lu, "
 		    "received=%lu", sk->ino, m.v.claim.key.ino, sk->base,
 		    m.v.claim.key.base);
 		goto fail_destroy_locks;
 	} else if (b->fd == -1) {
 		XERRF(e, XLOG_APP, XLOG_MGR,
-		    "bad manager response; mgr returned fd -1 on slab "
-		    "sk=%lu/%lu", sk->ino, sk->base);
+		    "mgr returned fd -1 on slab sk=%lu/%lu", sk->ino, sk->base);
 		goto fail_destroy_locks;
 	}
 
@@ -1174,9 +1187,14 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
 		XERRF(e, XLOG_APP, XLOG_NOENT, "no such slab");
 		return NULL;
+	} else if (m.m == MGR_MSG_CLAIM_ERR) {
+		// TODO: handle backend unavailability
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		xerr_prepend(e, __func__);
+		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		XERRF(e, XLOG_APP, ((m.err != 0) ? m.err : XLOG_MGR),
-		    "bad manager response");
+		XERRF(e, XLOG_APP, XLOG_MGR,
+		    "mgr_recv: unexpected response: %d", m.m);
 		return NULL;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
 		XERRF(e, XLOG_APP, XLOG_MGR,
@@ -1185,8 +1203,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		    sk->ino, m.v.claim.key.ino, sk->base, m.v.claim.key.base);
 		return NULL;
 	} else if (fd == -1) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
-		    "bad manager response; mgr returned fd -1");
+		XERRF(e, XLOG_APP, XLOG_MGR, "mgr returned fd -1");
 		return NULL;
 	}
 
@@ -1235,8 +1252,13 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		goto fail_free_data;
 	}
 
-	if (m.m != MGR_MSG_UNCLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "bad manager response: %d", m.m);
+	if (m.m == MGR_MSG_UNCLAIM_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		xerr_prepend(e, __func__);
+		goto fail_free_data;
+	} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+		XERRF(e, XLOG_APP, XLOG_MGR,
+		    "mgr_recv: unexpected response: %d", m.m);
 		goto fail_free_data;
 	} else if (memcmp(&m.v.unclaim.key, sk, sizeof(struct slab_key))) {
 		XERRF(e, XLOG_APP, XLOG_MGR,

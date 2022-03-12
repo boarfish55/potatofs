@@ -44,9 +44,12 @@ again:
 
 	close(mgr);
 
-	if (m.m != MGR_MSG_SET_FS_ERROR_OK)
-		xlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+	if (m.m == MGR_MSG_SET_FS_ERROR_ERR) {
+		xlog(LOG_ERR, &m.v.err, "%s: mgr_recv", __func__);
+	} else if (m.m != MGR_MSG_SET_FS_ERROR_OK) {
+		xlog(LOG_ERR, NULL, "%s: mgr_recv: unexpected response: %d",
 		    __func__, m.m);
+	}
 }
 
 uint8_t

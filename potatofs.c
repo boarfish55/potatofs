@@ -1070,8 +1070,11 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 
 	close(mgr);
 
-	if (m.m != MGR_MSG_INFO_OK) {
-		xlog(LOG_ERR, NULL, "%s: bad manager response: %d",
+	if (m.m == MGR_MSG_INFO_ERR) {
+		xlog(LOG_ERR, &m.v.err, "%s: mgr_recv", __func__);
+		goto fail;
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		xlog(LOG_ERR, NULL, "%s: mgr_recv: unexpected response: %d",
 		    __func__, m.m);
 		goto fail;
 	}
