@@ -115,5 +115,6 @@ void xlog(int, const struct xerr *, const char *, ...);
 void xlog_strerror(int, int, const char *, ...);
 void xerr_print(const struct xerr *);
 int  xerr_prepend(struct xerr *, const char *);
+#define XERR_PREPENDFN(e) xerr_prepend(e, __func__)
 
 #endif

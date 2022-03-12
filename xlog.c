@@ -195,28 +195,42 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 	size_t  written;
 
 	if (e == NULL) {
-		if (fmt == NULL)
-			return;
-		va_start(ap, fmt);
-		vsyslog(priority, fmt, ap);
-		va_end(ap);
+		if (fmt != NULL) {
+			va_start(ap, fmt);
+			vsyslog(priority, fmt, ap);
+			va_end(ap);
+		}
 		return;
 	}
 
-	va_start(ap, fmt);
-	written = vsnprintf(msg, sizeof(msg), fmt, ap);
-	va_end(ap);
+	if (fmt != NULL) {
+		va_start(ap, fmt);
+		written = vsnprintf(msg, sizeof(msg), fmt, ap);
+		va_end(ap);
 
-	if (written >= sizeof(msg))
-		msg[sizeof(e->msg) - 2] = '*';
+		if (written >= sizeof(msg))
+			msg[sizeof(e->msg) - 2] = '*';
+	}
 
-	if (e->sp == XLOG_ERRNO && e->code != 0)
-		syslog(priority, "[sp=%d, code=%d]: %s: %s: %s",
-		    e->sp, e->code, msg, e->msg,
-		    strerror_l(e->code, log_locale));
-	else
-		syslog(priority, "[sp=%d, code=%d]: %s: %s",
-		    e->sp, e->code, msg, e->msg);
+	if (e->sp == XLOG_ERRNO && e->code != 0) {
+		if (fmt) {
+			syslog(priority, "[sp=%d, code=%d]: %s: %s: %s",
+			    e->sp, e->code, msg, e->msg,
+			    strerror_l(e->code, log_locale));
+		} else {
+			syslog(priority, "[sp=%d, code=%d]: %s: %s",
+			    e->sp, e->code, e->msg, strerror_l(e->code,
+			    log_locale));
+		}
+	} else {
+		if (fmt) {
+			syslog(priority, "[sp=%d, code=%d]: %s: %s",
+			    e->sp, e->code, msg, e->msg);
+		} else {
+			syslog(priority, "[sp=%d, code=%d]: %s",
+			    e->sp, e->code, e->msg);
+		}
+	}
 }
 
 void

@@ -171,22 +171,20 @@ slab_unclaim(struct oslab *b)
 		    sizeof(struct slab_key));
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
-			xlog(LOG_ERR, &e, "%s", __func__);
+			xlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
 
 		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-			xlog(LOG_ERR, &e, "%s", __func__);
-			goto fail;
-		}
-
-		if (m.m == MGR_MSG_UNCLAIM_ERR) {
-			// TODO: should we just close here and let
-			// scrubbing handle things?
-			xlog(LOG_ERR, &m.v.err,
-			    "%s: slab sk=%lu/%lu: mgr_recv", __func__,
+			xlog(LOG_ERR, &e, "%s: failed to receive response "
+			    "for unclaim of slab sk=%lu/%lu, but "
+			    "closing it anyway", __func__,
 			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
-			goto fail;
+		} else if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			xlog(LOG_ERR, &m.v.err,
+			    "%s: failed to unclaim slab sk=%lu/%lu, but "
+			    "closing it anyway: mgr_recv", __func__,
+			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
 		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
 			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
 			    "unexpected response: %d for slab sk=%lu/%lu",
@@ -722,8 +720,10 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 	int              mgr = -1;
 	struct mgr_msg   m;
 
-	if (slab_key_valid(sk, e) == -1)
+	if (slab_key_valid(sk, e) == -1) {
+		XERR_PREPENDFN(e);
 		return NULL;
+	}
 
 	memcpy(&needle.hdr.v.f.key, sk, sizeof(struct slab_key));
 
@@ -786,7 +786,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		// TODO: we should handle backend unavailability here,
 		// aka EAGAIN
 		memcpy(e, &m.v.err, sizeof(struct xerr));
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		XERRF(e, XLOG_APP, XLOG_MGR, "mgr_recv: "

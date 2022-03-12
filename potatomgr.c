@@ -526,12 +526,12 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	}
 
 	if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
-		xerrf(e, XLOG_ERRNO, errno, "short read on slab header");
+		XERRF(e, XLOG_ERRNO, errno, "short read on slab header");
 		goto fail;
 	}
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
-		xerrf(e, XLOG_ERRNO, errno, "statvfs");
+		XERRF(e, XLOG_ERRNO, errno, "statvfs");
 		goto fail;
 	}
 	if (stv.f_bfree <
@@ -555,12 +555,14 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 				    m->v.unclaim.key.base);
 				xerrz(e);
 				goto end;
-			} else
+			} else {
+				xerr_prepend(e, __func__);
 				goto fail;
+			}
 		}
 
 		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
-			xerrf(e, XLOG_ERRNO, errno,
+			XERRF(e, XLOG_ERRNO, errno,
 			    "short write on slab header");
 			goto fail;
 		}
@@ -577,12 +579,16 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
 	    e) == -1) {
 		set_fs_error();
+		xerr_prepend(e, __func__);
 		goto fail;
 	}
 
 	if (purge) {
-		if (slab_path(src, sizeof(src), &m->v.unclaim.key, 0, e) == -1)
+		if (slab_path(src, sizeof(src),
+		    &m->v.unclaim.key, 0, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail;
+		}
 
 		if (unlink(src) == -1) {
 			xlog_strerror(LOG_ERR, errno,
@@ -601,7 +607,7 @@ end:
 	m->m = MGR_MSG_UNCLAIM_OK;
 	return mgr_send(c, -1, m, e);
 fail:
-	xlog(LOG_ERR, e, __func__);
+	xlog(LOG_ERR, e, NULL);
 	memcpy(&m->v.err, e, sizeof(struct xerr));
 	m->m = MGR_MSG_UNCLAIM_ERR;
 	close(fd);
@@ -959,8 +965,8 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		    xerr_is(e, XLOG_APP, XLOG_NOENT)) {
 			m->m = MGR_MSG_CLAIM_NOENT;
 			if (mgr_send(c, -1, m, xerrz(e)) == -1) {
-				xlog(LOG_ERR, e, __func__);
-				goto fail;
+				xerr_prepend(e, __func__);
+				return -1;
 			}
 			return 0;
 		}
@@ -1209,7 +1215,7 @@ end:
 
 	m->m = MGR_MSG_CLAIM_OK;
 	if (mgr_send(c, dst_fd, m, e) == -1) {
-		xlog(LOG_ERR, e, "%s", __func__);
+		xerr_prepend(e, __func__);
 		close(dst_fd);
 		return -1;
 	}
@@ -1225,8 +1231,7 @@ fail:
 		xlog(LOG_ERR, e, __func__);
 	}
 	m->m = MGR_MSG_CLAIM_ERR;
-	if (mgr_send(c, -1, m, xerrz(e)) == -1)
-		xlog(LOG_ERR, e, __func__);
+	mgr_send(c, -1, m, xerrz(e));
 	return -1;
 }
 
@@ -1292,7 +1297,7 @@ info(int c, struct mgr_msg *m, struct xerr *e)
 {
 	pid_t mgr_pid;
 	if (fs_info_read(&m->v.info.fs_info, e) == -1) {
-		xlog(LOG_ERR, e, "%s", __func__);
+		xlog(LOG_ERR, e, __func__);
 		memcpy(&m->v.err, e, sizeof(struct xerr));
 		m->m = MGR_MSG_INFO_ERR;
 	} else {
