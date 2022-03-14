@@ -68,6 +68,10 @@ struct mgr_msg {
 		struct {
 			struct slab_key key;
 			uint32_t        oflags;
+			// TODO: support "nowait" when claiming to simply
+			// return when someone already has the slab claimed.
+			uint8_t         claim_flags;
+#define MGR_CLAIM_NOWAIT 0x01
 		} claim;
 
 		struct {
@@ -108,5 +112,9 @@ void mgr_init(const char *);
 int  mgr_connect(int, struct xerr *);
 int  mgr_recv(int, int *, struct mgr_msg *, struct xerr *);
 int  mgr_send(int, int, struct mgr_msg *, struct xerr *);
+
+/* Helpers */
+int  mgr_send_shutdown(struct xerr *);
+int  mgr_fs_info(struct fs_info *, struct xerr *);
 
 #endif

@@ -645,41 +645,14 @@ print_metric_header()
 int
 do_shutdown(int argc, char **argv)
 {
-	int            mgr;
-	struct mgr_msg m;
-	struct xerr    e;
+	struct xerr e;
 
-	if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
+	if (mgr_send_shutdown(xerrz(&e)) == -1) {
 		xerr_print(&e);
-		return 1;
-	}
-
-	m.m = MGR_MSG_SHUTDOWN;
-	// TODO: unused at the moment
-	m.v.shutdown.grace_period = 0;
-
-	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
-		xerr_print(&e);
-		return 1;
-	}
-
-	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
-		xerr_print(&e);
-		return 1;
-	}
-
-	if (m.m == MGR_MSG_SHUTDOWN_ERR) {
-		memcpy(&e, &m.v.err, sizeof(struct xerr));
-		xerr_print(&e);
-		return 1;
-	} else if (m.m != MGR_MSG_SHUTDOWN_OK) {
-		warnx("%s: mgr_recv: unexpected response: %d",
-		    __func__, m.m);
 		return 1;
 	}
 
 	printf("%s: shutdown signal sent\n", __func__);
-	close(mgr);
 	return 0;
 }
 

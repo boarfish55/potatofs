@@ -31,6 +31,7 @@ static char mgr_sock_path[PATH_MAX];
 void
 mgr_init(const char *path)
 {
+	// TODO: setup auto-reconnect here, not on every call
 	strlcpy(mgr_sock_path, path, sizeof(mgr_sock_path));
 }
 
@@ -136,6 +137,8 @@ mgr_send(int mgr, int fd, struct mgr_msg *m, struct xerr *e)
 		unsigned char  buf[CMSG_SPACE(sizeof(int))];
 	} cmsgbuf;
 
+	// TODO: support reconnect if EPIPE / EBADF ... or all errors really?
+
 	iov[0].iov_base = m;
 	iov[0].iov_len = sizeof(struct mgr_msg);
 
@@ -161,5 +164,74 @@ again:
 		return XERRF(e, XLOG_ERRNO, errno, "sendmsg");
 	}
 
+	return 0;
+}
+
+int
+mgr_send_shutdown(struct xerr *e)
+{
+	int            mgr;
+	struct mgr_msg m;
+
+	if ((mgr = mgr_connect(0, xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+
+	m.m = MGR_MSG_SHUTDOWN;
+	// TODO: unused at the moment
+	m.v.shutdown.grace_period = 0;
+
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	close(mgr);
+
+	if (m.m == MGR_MSG_SHUTDOWN_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_SHUTDOWN_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGR,
+		    "mgr_recv: unexpected response: %d", m.m);
+	}
+
+	return 0;
+}
+
+int
+mgr_fs_info(struct fs_info *fs_info, struct xerr *e)
+{
+	int            mgr;
+	struct mgr_msg m;
+
+	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+
+	m.m = MGR_MSG_INFO;
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	close(mgr);
+
+	if (m.m == MGR_MSG_INFO_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGR,
+		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
+	}
+	memcpy(fs_info, &m.v.info.fs_info, sizeof(struct fs_info));
 	return 0;
 }

@@ -265,39 +265,6 @@ fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 
 // TODO: implement interrupt (INTERRUPT)
 
-static int
-get_fs_info(struct fs_info *fs_info, struct xerr *e)
-{
-	int            mgr = -1;
-	struct mgr_msg m;
-
-	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
-		return XERR_PREPENDFN(e);
-
-	m.m = MGR_MSG_INFO;
-	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
-		close(mgr);
-		return XERR_PREPENDFN(e);
-	}
-
-	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
-		close(mgr);
-		return XERR_PREPENDFN(e);
-	}
-
-	close(mgr);
-
-	if (m.m == MGR_MSG_INFO_ERR) {
-		memcpy(e, &m.v.err, sizeof(struct xerr));
-		return XERR_PREPENDFN(e);
-	} else if (m.m != MGR_MSG_INFO_OK) {
-		return XERRF(e, XLOG_APP, XLOG_MGR,
-		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
-	}
-	memcpy(fs_info, &m.v.info.fs_info, sizeof(struct fs_info));
-	return 0;
-}
-
 static void
 fs_set_time(struct oinode *oi, uint32_t what)
 {
@@ -443,7 +410,7 @@ unlock:
 static void
 fs_destroy(void *unused)
 {
-	struct xerr e = XLOG_ERR_INITIALIZER;
+	struct xerr e;
 
 	xlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
@@ -451,19 +418,20 @@ fs_destroy(void *unused)
 
 	inode_shutdown();
 
-	if (slab_shutdown(&e) == -1) {
+	if (slab_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
-	xerrz(&e);
 
-	if (counter_shutdown(&e) == -1) {
+	if (counter_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
-	xerrz(&e);
 
 	LK_UNLOCK(&fs_tree_lock);
+
+	if (mgr_send_shutdown(xerrz(&e)) == -1)
+		xlog(LOG_ERR, &e, __func__);
 }
 
 static void
@@ -1082,7 +1050,7 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 
 	counter_incr(COUNTER_FS_STATFS);
 
-	if (get_fs_info(&fs_info, &e) == -1) {
+	if (mgr_fs_info(&fs_info, &e) == -1) {
 		xlog(LOG_ERR, &e, __func__);
 		fs_error_set();
 		FS_ERR(&r_sent, req, &e);
@@ -1903,7 +1871,7 @@ main(int argc, char **argv)
 
 	mgr_init(fs_config.mgr_sock_path);
 
-	if (get_fs_info(&fs_info, xerrz(&e)) == -1) {
+	if (mgr_fs_info(&fs_info, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}

@@ -35,31 +35,22 @@ case $1 in
 		#
 		# We also need a "fast" fsck mode that only validates inodes,
 		# so that we can leave the file slabs alone.
-		echo -n "* fsck"
+		echo -n "* fsck..."
 		$binpath/potatoctl -c $conf fsck quiet || exit 1
-		echo ""
+		echo "OK."
 
 		echo "* Mounting..."
 		$binpath/potatofs -o cfg_path=$conf,max_open_slabs=2048,dbg=inodes \
 			$mountpoint
+		echo "OK."
 		;;
 	stop)
-		echo -n "* Starting potatofs/potatomgr..."
+		echo -n "* Stopping potatofs/potatomgr..."
 		fusermount -u $mountpoint
-		while pgrep -f -l "$mountpoint" >/dev/null; do
-			echo -n "."
-			sleep 1
-		done
-		pid=`cat $pidfile`
-		$binpath/potatoctl -c $conf shutdown
 		while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
 			echo -n "."
 			sleep 1
 		done
-		# TODO: we still need this since the 'status' command above
-		# will not be able to use workers, which at this point
-		# will be down.
-		while kill -0 "$pid"; do sleep 1; done
 		echo "OK."
 		;;
 	*)

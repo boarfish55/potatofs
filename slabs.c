@@ -711,6 +711,11 @@ slab_parse_path(const char *path, struct slab_key *sk, struct xerr *e)
 	return slab_key_valid(sk, e);
 }
 
+/*
+ * TODO: we need to clearly define the errors returned here, as
+ * many will bubble up all the way to the fuse call and will need
+ * to return an appropriate errno to the user.
+ */
 struct oslab *
 slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 {

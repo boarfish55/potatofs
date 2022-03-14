@@ -63,11 +63,12 @@ wait
 echo ""
 
 echo "*** fsck ***"
+./potatomgr -c "$conf" -w 1 -W 1 -T 3600
 ./potatoctl -c "$conf" fsck quiet
+./potatoctl -c "$conf" shutdown
 echo ""
 
 echo "*** cleanup ***"
-./potatoctl -c "$conf" shutdown
 while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
 	sleep 1
 done

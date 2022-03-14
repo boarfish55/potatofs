@@ -731,7 +731,7 @@ backend_put(const char *local_path, const char *backend_name,
 
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
 	    sizeof(stdout), stderr, sizeof(stderr), e) == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 
 	if (WEXITSTATUS(wstatus) > 2)
 		return XERRF(e, XLOG_APP, XLOG_EXEC,
@@ -869,6 +869,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 write_hdr_again:
 	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 		if (errno == ENOSPC) {
+			// TODO: don't try this indefinitely
 			xlog(LOG_ERR, NULL, "%s: ran out of space during; "
 			    "retrying", __func__);
 			sleep(5);
@@ -916,6 +917,42 @@ copy_again:
 	return 0;
 }
 
+/*
+ * TODO: clearly define errors
+ *
+ * Errors:
+ *   XLOG_APP   / XLOG_IO: statvfs() failed, I/O error, consensus issue
+ *   XLOG_APP   / XLOG_INVAL: from slab_key_valid()
+ *   XLOG_APP   / XLOG_MISMATCH: unexpected revision/CRC/version on slabs
+ *                  or fs_info structure
+ *   XLOG_APP   / XLOG_BUSY: Those should be sent back to the user and
+ *                  converted to EAGAIN.
+ *                  - DB lock could not be acquired
+ *                  - Contention / deadlock avoided for a slab
+ *                  - Backend keeps reporting the slab does not exist
+ *                    (but the DB does, meaning we're dealing with possible
+ *                    eventual consistency); this is converted to XLOG_BUSY
+ *                    from XLOG_NOENT at backend_get()
+ *   XLOG_APP   / XLOG_EXEC: Backend script keeps failing for any other
+ *                    reason, such as timeouts. Should be converted to EAGAIN
+ *                    for the user.
+ *   XLOG_APP   / XLOG_NOSPC: Those should be exposed as ENOSPC to the user.
+ *                  - Out of space on the backend; this should be reported
+ *                    back to the user.
+ *                  - Out of space on the cache partition even after waiting
+ *                    a bit.
+ *   XLOG_APP   / XLOG_NAMETOOLONG: a slab's name expanded to a value that is
+ *                too long.
+ *   XLOG_ERRNO / multiple:
+ *                  - from clock_gettime()
+ *                  - from open_wflock()
+ *                  - from read_x() on fs_info structure
+ *                  - from write_x() on slab header writes
+ *                  - from fsync() after new slab creation
+ *                  - from fstat() on new slab creation
+ *                  - from sendmsg() on mgr reply
+ *   XLOG_DB    / multiple: from slabdb_*()
+ */
 static int
 claim(int c, struct mgr_msg *m, struct xerr *e)
 {
@@ -1036,6 +1073,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		goto fail;
 	}
 
+new_slab_again:
 	if (v.revision == 0) {
 		if (fs_info_read(&fs_info, e) == -1) {
 			xerr_prepend(e, __func__);
@@ -1062,6 +1100,14 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		hdr.v.f.revision = 0;
 		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
 		if (write_x(dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+			if (errno == ENOSPC) {
+				xlog(LOG_ERR, NULL,
+				    "%s: ran out of space while creating new "
+				    "slab sk=%lu/%ld; retrying",
+				    hdr.v.f.key.ino, hdr.v.f.key.base);
+				sleep(5);
+				goto new_slab_again;
+			}
 			XERRF(e, XLOG_ERRNO, errno,
 			    "short write on slab header");
 			goto fail_close_dst;
@@ -1097,6 +1143,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		/*
 		 * Wrong rev/header_crc is fine, just proceed
 		 * with retrieving.
+		 * TODO: that's the only possible error.
 		 */
 		} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
 			goto fail_close_dst;
@@ -1146,6 +1193,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	}
 
 get_again:
+	// TODO: max number of retries here.
 	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key,
 	    xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOENT)) {
