@@ -2034,11 +2034,9 @@ main(int argc, char **argv)
 		xlog(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
-	if (fs_info.error) {
-		xlog(LOG_ERR, NULL, "filesystem has errors; aborting startup",
+	if (fs_info.error)
+		xlog(LOG_ERR, NULL, "filesystem has errors; run fsck",
 		    __func__);
-		exit(1);
-	}
 	uuid_copy(instance_id, fs_info.instance_id);
 
 	if (slab_make_dirs(&e) == -1) {

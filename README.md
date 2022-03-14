@@ -139,8 +139,6 @@ KNOWN ISSUES
 TODO
 ====
 
-* Don't refuse to start potatomgr when the fs has errors or is not clean,
-  otherwise we can't do fsck. However, the fs should honor this.
 * Add a test to try out the last possible inode, 2^63
 * Doublecheck that atime is working as intended, add a test
 * All the fuse fs_ functions will need to handle backend timeouts gracefully

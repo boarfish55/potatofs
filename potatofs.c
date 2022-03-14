@@ -265,6 +265,39 @@ fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 
 // TODO: implement interrupt (INTERRUPT)
 
+static int
+get_fs_info(struct fs_info *fs_info, struct xerr *e)
+{
+	int            mgr = -1;
+	struct mgr_msg m;
+
+	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+
+	m.m = MGR_MSG_INFO;
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	close(mgr);
+
+	if (m.m == MGR_MSG_INFO_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGR,
+		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
+	}
+	memcpy(fs_info, &m.v.info.fs_info, sizeof(struct fs_info));
+	return 0;
+}
+
 static void
 fs_set_time(struct oinode *oi, uint32_t what)
 {
@@ -448,8 +481,6 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 
 	if (counter_init(&e) == -1)
 		goto fail;
-
-	mgr_init(c->mgr_sock_path);
 
 	if (slab_configure(c->max_open_slabs, c->slab_max_age, &e) == -1)
 		goto fail;
@@ -1047,45 +1078,19 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 {
 	struct xerr    e = XLOG_ERR_INITIALIZER;
 	int            r_sent = 0;
-	int            mgr = -1;
-	struct mgr_msg m;
+	struct fs_info fs_info;
 
 	counter_incr(COUNTER_FS_STATFS);
 
-	if ((mgr = mgr_connect(1, &e)) == -1) {
+	if (get_fs_info(&fs_info, &e) == -1) {
 		xlog(LOG_ERR, &e, __func__);
-		goto fail;
+		fs_error_set();
+		FS_ERR(&r_sent, req, &e);
+		return;
 	}
 
-	m.m = MGR_MSG_INFO;
-	if (mgr_send(mgr, -1, &m, &e) == -1) {
-		xlog(LOG_ERR, &e, "%s", __func__);
-		goto fail;
-	}
-
-	if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-		xlog(LOG_ERR, &e, "%s", __func__);
-		goto fail;
-	}
-
-	close(mgr);
-
-	if (m.m == MGR_MSG_INFO_ERR) {
-		xlog(LOG_ERR, &m.v.err, "%s: mgr_recv", __func__);
-		goto fail;
-	} else if (m.m != MGR_MSG_INFO_OK) {
-		xlog(LOG_ERR, NULL, "%s: mgr_recv: unexpected response: %d",
-		    __func__, m.m);
-		goto fail;
-	}
-
-	FUSE_REPLY(&r_sent, fuse_reply_statfs(req, &m.v.info.fs_info.stats));
+	FUSE_REPLY(&r_sent, fuse_reply_statfs(req, &fs_info.stats));
 	return;
-fail:
-	if (mgr != -1)
-		close(mgr);
-	fs_error_set();
-	FS_ERR(&r_sent, req, &e);
 }
 
 static int
@@ -1861,6 +1866,8 @@ main(int argc, char **argv)
 	struct sigaction  act;
 	sigset_t          set;
 	int               foreground;
+	struct fs_info    fs_info;
+	struct xerr       e;
 
 	sigemptyset(&set);
 	sigaddset(&set, SIGPIPE);
@@ -1891,8 +1898,19 @@ main(int argc, char **argv)
 	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1)
 		err(1, "xlog_init");
 
-	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) != -1 &&
-	    (ch = fuse_mount(mountpoint, &args)) != NULL) {
+	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) == -1)
+		exit(1);
+
+	mgr_init(fs_config.mgr_sock_path);
+
+	if (get_fs_info(&fs_info, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	if (fs_info.error)
+		errx(1, "filesystem has errors; run fsck");
+
+	if ((ch = fuse_mount(mountpoint, &args)) != NULL) {
 		struct fuse_session *se;
 
 		se = fuse_lowlevel_new(&args, &fs_ops,

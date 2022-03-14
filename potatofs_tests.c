@@ -1970,7 +1970,7 @@ struct potatofs_test {
 		&test_path_max
 	},
 	{
-		"claim from backend (this test takes a few minutes)",
+		"claim from backend (this test may take a few minutes)",
 		&test_claim_from_backend
 	},
 
