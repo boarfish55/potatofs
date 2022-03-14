@@ -149,8 +149,6 @@ TODO
   gracefully shutdown the fs, such as when going losing Internet then
   needing to shutdown their machine.
 * The fs should really retry claims and unclaim ops.
-* Set an upper bound on how long we're willing to wait for the last bg_purge
-  run.
 * fsck is too slow, too many cleam/unclaim. Try to batch operations on
   a single slab together
 * Make the workers and timeouts configurable in the config file
