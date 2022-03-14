@@ -37,6 +37,7 @@ const struct module_dbg_map_entry module_dbg_map[] = {
 	{ "ops",       XLOG_OP },
 	{ "openfiles", XLOG_OF },
 	{ "sladb",     XLOG_SLABDB },
+	{ "mgr",       XLOG_MGR },
 	{ "all",       0xFFFF },
 	{ "",          0x0000 }
 };

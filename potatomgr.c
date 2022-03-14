@@ -1123,6 +1123,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	}
 	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0,
 	    LOCK_SH, flock_timeout)) != -1) {
+		xlog_dbg(XLOG_MGR, "found slab in outgoing at %s", out_path);
 		if (copy_incoming_slab(dst_fd, outgoing_fd, v.header_crc,
 		    v.revision, e) == 0) {
 			close(outgoing_fd);

@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -1449,6 +1450,81 @@ test_fallocate_large()
 }
 
 char *
+test_truncate_large()
+{
+	int              fd, i;
+	char            *p = makepath("truncate_large");
+	struct stat      st, st_want;
+	char             path[PATH_MAX];
+	char             msg[PATH_MAX + 1024];
+	char             buf[BUFSIZ];
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct slab_key  sk;
+	ssize_t          r;
+	off_t            sz, off;
+	size_t           slab_sz;
+	void            *data;
+	struct slab_hdr  hdr;
+	ino_t            ino;
+
+	sz = (slab_get_max_size() * 2) + (slab_get_max_size() / 2);
+	st_want.st_nlink = 1;
+	st_want.st_size = 0;
+
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'a';
+	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
+		return ERR("", errno);
+
+	/* 2.5x slab size, so we truncate from different offsets */
+	while (i < sz) {
+		if ((r = write(fd, buf, sizeof(buf))) == -1)
+			return ERR("", errno);
+		i += r;
+	}
+
+	if (ftruncate(fd, 0) == -1)
+		return ERR("", errno);
+
+	if (fstat(fd, &st) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	ino = st.st_ino;
+
+	for (off = 0; off < sz; off += slab_get_max_size()) {
+		if (slab_path(path, sizeof(path),
+		    slab_key(&sk, ino, off), 0, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab path", 0);
+		}
+
+		if ((data = slab_disk_inspect(slab_key(&sk, ino,
+		    sz), &hdr, &slab_sz, &e)) == NULL) {
+			xerr_print(&e);
+			return ERR("failed to inspect slab", 0);
+		}
+		free(data);
+		if (!(hdr.v.f.flags & SLAB_REMOVED))
+			return ERR("slab should be marked as removed, "
+			    "but isn't", 0);
+		if (stat(path, &st) == -1) {
+			snprintf(msg, sizeof(msg),
+			    "failed to stat slab %s at offset %lu: ",
+			    path, off);
+			return ERR(msg, errno);
+		}
+
+		if (st.st_size > sizeof(struct slab_hdr))
+			return ERR("truncated slab is larger "
+			    "than the slab header", 0);
+	}
+
+	return check_stat(p, &st_want, ST_NLINK|ST_SIZE);
+}
+
+char *
 test_many_inodes()
 {
 	char           path[PATH_MAX];
@@ -1620,6 +1696,119 @@ test_path_max()
 	    "have failed", 0);
 }
 
+char *
+test_claim_from_backend()
+{
+	char            *p = makepath("claim_me");
+	struct stat      st;
+	int              i, fd;
+	char             path[PATH_MAX];
+	char             out_name[NAME_MAX];
+	char             out_path[PATH_MAX];
+	char             buf[BUFSIZ];
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct slab_key  sk;
+	ssize_t          r;
+
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'a';
+	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
+		return ERR("", errno);
+
+	while (i < slab_get_max_size()) {
+		if ((r = write(fd, buf, sizeof(buf))) == -1)
+			return ERR("", errno);
+		i += r;
+	}
+
+	if (fstat(fd, &st) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	if (slab_path(path, sizeof(path),
+	    slab_key(&sk, st.st_ino, 0), 0, &e) == -1) {
+		xerr_print(&e);
+		return ERR("failed to get slab path", 0);
+	}
+	if (slab_path(out_name, sizeof(out_name),
+	    slab_key(&sk, st.st_ino, 0), 1, &e) == -1) {
+		xerr_print(&e);
+		return ERR("failed to get slab name", 0);
+	}
+
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return ERR("", errno);
+
+	/* Wait for the fs/mgr to release the claim on the slab. */
+	if (flock(fd, LOCK_EX) == -1)
+		return ERR("", errno);
+
+	if (unlink(path) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	if (access(path, F_OK) != -1 || errno != ENOENT)
+		return ERR("slab is present, but should have been unlinked", 0);
+
+	/* Then reclaim; this is probably coming from the outoing dir. */
+	if ((fd = open(p, O_RDONLY)) == -1)
+		return ERR("", errno);
+	/* Reading the inode size is enough to trigger a slab download */
+	if (read(fd, buf, sizeof(struct inode)) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	if (access(path, F_OK) == -1)
+		return ERR("", errno);
+
+	/*
+	 * Next let's try to get it from the actual backend. Because we
+	 * did not write to it, the slab is not dirty so this time will not
+	 * end up in outgoing. If we erase it, well have to get it from
+	 * the backend.
+	 */
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return ERR("", errno);
+
+	/* Wait for the fs/mgr to release the claim on the slab. */
+	if (flock(fd, LOCK_EX) == -1)
+		return ERR("", errno);
+
+	if (unlink(path) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	if (access(path, F_OK) != -1 || errno != ENOENT)
+		return ERR("slab is present, but should have been unlinked", 0);
+
+	if (snprintf(out_path, sizeof(out_path), "%s/%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR, out_name) >= sizeof(out_path))
+		return ERR("outgoing slab name too long", errno);
+
+	/* At this point, both our slab and outgoing slab should be gone. */
+	if (access(out_path, F_OK) != -1 || errno != ENOENT)
+		return ERR("outgoing slab is present, but should "
+		    "have been unlinked", 0);
+	if (access(path, F_OK) != -1 || errno != ENOENT)
+		return ERR("slab is present, but should have been unlinked", 0);
+
+	/* Then reclaim, hopefully from the actual backend this time. */
+	if ((fd = open(p, O_RDONLY)) == -1)
+		return ERR("", errno);
+	/* Reading the inode size is enough to trigger a slab download */
+	if (read(fd, buf, sizeof(struct inode)) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	if (access(path, F_OK) == -1)
+		return ERR("", errno);
+
+	return NULL;
+}
+
 struct potatofs_test {
 	char  description[256];
 	char *(*fn)();
@@ -1761,6 +1950,10 @@ struct potatofs_test {
 		&test_fallocate_large
 	},
 	{
+		"truncate file spanning multiple slabs",
+		&test_truncate_large
+	},
+	{
 		"inode reuse increases generation",
 		&inode_reuse
 	},
@@ -1775,6 +1968,10 @@ struct potatofs_test {
 	{
 		"path >= FS_PATH_MAX",
 		&test_path_max
+	},
+	{
+		"claim from backend (this test takes a few minutes)",
+		&test_claim_from_backend
 	},
 
 	/* End */

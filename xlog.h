@@ -58,6 +58,7 @@ enum xerr_code {
 #define XLOG_OP      0x0008
 #define XLOG_OF      0x0010
 #define XLOG_SLABDB  0x0020
+#define XLOG_MGR     0x0040
 
 typedef uint16_t xlog_mask_t;
 

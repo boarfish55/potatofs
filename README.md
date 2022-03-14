@@ -155,10 +155,7 @@ TODO
   run.
 * fsck is too slow, too many cleam/unclaim. Try to batch operations on
   a single slab together
-* Add tests for basic claim/unclaim ops.
 * Make the workers and timeouts configurable in the config file
-* Add a test for unlink on large file; resulting slabs should be
-  truncated.
 * In low-space conditions, run flush/purge more often to free up space. The
   problem is that it also clogs up the workers. Maybe we need an separate
   control socket that's used by non-workers. Would also solve the
