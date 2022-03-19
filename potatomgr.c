@@ -350,7 +350,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 				    "probably have a zombie around now",
 				    __func__);
 			*wstatus = 137;
-			return XERRF(e, XLOG_ERRNO, XLOG_EXEC,
+			return XERRF(e, XLOG_APP, XLOG_BETIMEOUT,
 			    "command timed out after %d seconds; aborting",
 			    BACKEND_TIMEOUT_SECONDS);
 		}
@@ -642,7 +642,7 @@ backend_get(const char *local_path, const char *backend_name,
 		return -1;
 
 	if (WEXITSTATUS(wstatus) > 2) {
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"get\" resulted in an undefined error (exit %d)",
 		    WEXITSTATUS(wstatus));
 		goto fail;
@@ -650,46 +650,46 @@ backend_get(const char *local_path, const char *backend_name,
 
 	/* Bad invocation error, there is no JSON to read here. */
 	if (WEXITSTATUS(wstatus) == 2) {
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"get\" reported bad invocation (exit 2)");
 		goto fail;
 	}
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_EXEC, jerr.text);
+		XERRF(e, XLOG_APP, XLOG_BEERROR, jerr.text);
 		goto fail;
 	}
 
 	if ((o = json_object_get(j, "status")) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"status\" missing from backend JSON output");
 		goto fail;
 	}
 
-	if (strcmp(json_string_value(o), "ERR_NOENT") == 0) {
-		XERRF(e, XLOG_APP, XLOG_NOENT, "slab not found on backend");
+	if (strcmp(json_string_value(o), "ERR_NOSLAB") == 0) {
+		XERRF(e, XLOG_APP, XLOG_NOSLAB, "slab not found on backend");
 		goto fail;
 	}
 
 	if (strcmp(json_string_value(o), "OK") != 0) {
 		if ((o = json_object_get(j, "msg")) == NULL) {
-			XERRF(e, XLOG_APP, XLOG_EXEC, "\"msg\" missing from JSON");
+			XERRF(e, XLOG_APP, XLOG_BEERROR, "\"msg\" missing from JSON");
 			goto fail;
 		}
 
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"get\" failed: %s", json_string_value(o));
 		goto fail;
 	}
 
 	if (WEXITSTATUS(wstatus) == 1) {
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"get\" exit 1; backend produced no error message");
 		goto fail;
 	}
 
 	if ((o = json_object_get(j, "in_bytes")) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_EXEC, "\"in_bytes\" missing from JSON");
+		XERRF(e, XLOG_APP, XLOG_BEERROR, "\"in_bytes\" missing from JSON");
 		goto fail;
 	}
 
@@ -734,41 +734,41 @@ backend_put(const char *local_path, const char *backend_name,
 		return XERR_PREPENDFN(e);
 
 	if (WEXITSTATUS(wstatus) > 2)
-		return XERRF(e, XLOG_APP, XLOG_EXEC,
+		return XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" resulted in an undefined error (exit %d)",
 		    WEXITSTATUS(wstatus));
 
 	/* Bad invocation error, there is no JSON to read here. */
 	if (WEXITSTATUS(wstatus) == 2)
-		return XERRF(e, XLOG_APP, XLOG_EXEC,
+		return XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" reported bad invocation (exit 2)");
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
-		return XERRF(e, XLOG_APP, XLOG_EXEC, "%s", jerr.text);
+		return XERRF(e, XLOG_APP, XLOG_BEERROR, "%s", jerr.text);
 	}
 
 	if ((o = json_object_get(j, "status")) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"status\" missing from JSON");
 		goto fail;
 	}
 
 	if (strcmp(json_string_value(o), "OK") != 0) {
 		if ((o = json_object_get(j, "msg")) == NULL) {
-			return XERRF(e, XLOG_APP, XLOG_EXEC,
+			return XERRF(e, XLOG_APP, XLOG_BEERROR,
 			    "\"msg\" missing from JSON");
 		}
-		XERRF(e, XLOG_APP, XLOG_EXEC,
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" failed: %s", json_string_value(o));
 		goto fail;
 	}
 
 	if (WEXITSTATUS(wstatus) == 1)
-		return XERRF(e, XLOG_APP, XLOG_EXEC,
+		return XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" exit 1; no message available");
 
 	if ((o = json_object_get(j, "out_bytes")) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_EXEC, "\"in_bytes\" missing from JSON");
+		XERRF(e, XLOG_APP, XLOG_BEERROR, "\"in_bytes\" missing from JSON");
 		goto fail;
 	}
 
@@ -932,10 +932,10 @@ copy_again:
  *                  - Backend keeps reporting the slab does not exist
  *                    (but the DB does, meaning we're dealing with possible
  *                    eventual consistency); this is converted to XLOG_BUSY
- *                    from XLOG_NOENT at backend_get()
- *   XLOG_APP   / XLOG_EXEC: Backend script keeps failing for any other
- *                    reason, such as timeouts. Should be converted to EAGAIN
- *                    for the user.
+ *                    from XLOG_NOSLAB at backend_get()
+ *   XLOG_APP   / XLOG_BEERROR: Backend script fails, possibly due to timeout.
+ *   XLOG_APP   / XLOG_BETIMEOUT: Backend script failed to return within
+ *                    set timeout.
  *   XLOG_APP   / XLOG_NOSPC: Those should be exposed as ENOSPC to the user.
  *                  - Out of space on the backend; this should be reported
  *                    back to the user.
@@ -999,7 +999,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	 */
 	if (slabdb_get(&m->v.claim.key, &v, m->v.claim.oflags, e) == -1) {
 		if (m->v.claim.oflags & OSLAB_NOCREATE &&
-		    xerr_is(e, XLOG_APP, XLOG_NOENT)) {
+		    xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			m->m = MGR_MSG_CLAIM_NOENT;
 			if (mgr_send(c, -1, m, xerrz(e)) == -1) {
 				xerr_prepend(e, __func__);
@@ -1081,7 +1081,7 @@ new_slab_again:
 		}
 
 		if (fs_info.stats.f_bfree < fs_info.stats.f_blocks / 100) {
-			XERRF(e, XLOG_APP, XLOG_NOSPC,
+			XERRF(e, XLOG_FS, ENOSPC,
 			    "backend is at 99%% capacity");
 			goto fail;
 		}
@@ -1196,7 +1196,7 @@ get_again:
 	// TODO: max number of retries here.
 	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key,
 	    xerrz(e)) == -1) {
-		if (xerr_is(e, XLOG_APP, XLOG_NOENT)) {
+		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual
 			 * consistentcy? Or the backend actually lost data.
@@ -1206,7 +1206,7 @@ get_again:
 			    "retrying", __func__, name);
 			sleep(5);
 			goto get_again;
-		} else if (xerr_is(e, XLOG_APP, XLOG_EXEC)) {
+		} else if (xerr_is(e, XLOG_APP, XLOG_BEERROR)) {
 			xlog(LOG_ERR, e, "%s: backend script failed, "
 			    "will retry; reason: %s", __func__);
 			sleep(5);
@@ -1297,7 +1297,7 @@ claim_next_itbls(int c, struct mgr_msg *m, struct xerr *e)
 	base = m->v.claim_next_itbl.base;
 
 	if (slabdb_get_next_itbl(&base, xerrz(e)) == -1) {
-		if (xerr_is(e, XLOG_APP, XLOG_NOENT)) {
+		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			m->m = MGR_MSG_CLAIM_NEXT_ITBL_END;
 			if (mgr_send(c, -1, m, xerrz(e)) == -1)
 				return -1;
@@ -1573,7 +1573,7 @@ scrub(const char *path)
 	}
 
 	if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
-		if (xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+		if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 			xlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
 			    "unlinking", __func__, path);
 			unlink(path);

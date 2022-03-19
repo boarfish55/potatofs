@@ -79,7 +79,7 @@ do_get() {
 		return 2
 	fi
 	if [ ! -r "$BACKEND_DATA_PATH/$slab" ]; then
-		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such slab on backend: $slab\"}"
+		echo "{\"status\": \"ERR_NOSLAB\", \"msg\": \"no such slab on backend: $slab\"}"
 		return 1
 	fi
 	sz=$(stat -c %s "$BACKEND_DATA_PATH/$slab")

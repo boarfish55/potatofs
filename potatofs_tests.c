@@ -523,7 +523,7 @@ test_unlink()
 
 	if (access(p, R_OK|F_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -575,7 +575,7 @@ test_rmdir()
 
 	if (access(p, R_OK|X_OK) == -1 && errno == ENOENT) {
 		if (get_disk_inode(ino, &st, &e) == -1) {
-			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -954,7 +954,7 @@ test_rename_replace()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
@@ -1040,7 +1040,7 @@ test_rename_replace_crossdir()
 	 */
 	for (i = 5; i > 0; i--) {
 		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}

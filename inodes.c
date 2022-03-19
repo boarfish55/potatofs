@@ -74,8 +74,10 @@ slab_at(struct oinode *oi, off_t offset, uint32_t oflags, struct xerr *e)
 	if (oi->oflags & INODE_OSYNC)
 		oflags |= OSLAB_SYNC;
 	if ((b = slab_load(slab_key(&sk, oi->ino.v.f.inode, offset),
-	    oflags, xerrz(e))) == NULL)
+	    oflags, xerrz(e))) == NULL) {
+		XERR_PREPENDFN(e);
 		return NULL;
+	}
 
 	return b;
 }
@@ -96,14 +98,14 @@ alloc_inode(ino_t *inode, struct xerr *e)
 	 */
 	n_bases = slab_itbls(bases, sizeof(bases) / sizeof(off_t), xerrz(e));
 	if (n_bases == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return NULL;
 	}
 
 	for (n = 0; n < n_bases; n++) {
 		if ((b = slab_load_itbl(slab_key(&sk, 0, bases[n]),
 		    LK_LOCK_RW, xerrz(e))) == NULL) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			return NULL;
 		}
 		ino = slab_itbl_find_unallocated(b);
@@ -113,7 +115,7 @@ alloc_inode(ino_t *inode, struct xerr *e)
 			return b;
 		}
 		if (slab_close_itbl(b, xerrz(e)) == -1) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			return NULL;
 		}
 
@@ -128,7 +130,7 @@ alloc_inode(ino_t *inode, struct xerr *e)
 	for (i = max_ino; i < SLAB_KEY_MAX; i += slab_inode_max()) {
 		if ((b = slab_load_itbl(slab_key(&sk, 0, i),
 		    LK_LOCK_RW, xerrz(e))) == NULL) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			return NULL;
 		}
 
@@ -140,12 +142,12 @@ alloc_inode(ino_t *inode, struct xerr *e)
 		}
 
 		if (slab_close_itbl(b, xerrz(e)) == -1) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			return NULL;
 		}
 	}
 
-	XERRF(e, XLOG_APP, XLOG_NOSPC, "unable to locate free "
+	XERRF(e, XLOG_FS, ENOSPC, "unable to locate free "
 	    "inode; we looped up to base %lu", i);
 	return NULL;
 }
@@ -176,7 +178,7 @@ inode_dealloc(ino_t ino, struct xerr *e)
 
 	b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, xerrz(e));
 	if (b == NULL) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return -1;
 	}
 
@@ -221,8 +223,8 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 
 	if (written > LONG_MAX - offset) {
 		LK_UNLOCK(&oi->bytes_lock);
-		return XERRF(e, XLOG_APP, XLOG_OVERFLOW,
-		    "inode size overflow: %lu", oi->ino.v.f.inode);
+		return XERRF(e, XLOG_FS, EFBIG,
+		    "file size overflow: %lu", oi->ino.v.f.inode);
 	}
 
 	if (oi->ino.v.f.size < offset + written) {
@@ -256,12 +258,12 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 		b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, xerrz(e));
 
 	if (b == NULL) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return -1;
 	}
 
 	if (!slab_itbl_is_free(b, ino)) {
-		XERRF(e, XLOG_APP, XLOG_EXIST,
+		XERRF(e, XLOG_FS, EEXIST,
 		    "inode already allocated: %lu", ino);
 		goto fail;
 	}
@@ -409,7 +411,7 @@ inode_fallocate(struct oinode *oi, off_t offset, off_t len,
 	int   done = 0;
 
 	if (mode != 0)
-		return XERRF(e, XLOG_APP, XLOG_OPNOTSUPP,
+		return XERRF(e, XLOG_FS, EOPNOTSUPP,
 		    "non-zero mode isn't support by fallocate() "
 		    "at this time");
 
@@ -461,7 +463,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	for (c_off = offset; c_off <= old_size; c_off += slab_get_max_size()) {
 		b = slab_at(oi, c_off, OSLAB_NOCREATE, xerrz(e));
 		if (b == NULL) {
-			if (!xerr_is(e, XLOG_APP, XLOG_NOENT)) {
+			if (!xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 				fs_error_set();
 				xerr_prepend(e, __func__);
 				goto end;
@@ -668,11 +670,14 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		return oi;
 	}
 
-	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RD, xerrz(e))) == NULL)
+	if ((b = slab_load_itbl(slab_key(&sk, 0, ino),
+	    LK_LOCK_RD, xerrz(e))) == NULL) {
+		XERR_PREPENDFN(e);
 		goto end;
+	}
 
 	if (slab_itbl_is_free(b, ino)) {
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_FS, ENOENT,
 		    "no such inode allocated: %lu", ino);
 		goto fail_close_itbl;
 	}
@@ -712,7 +717,7 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		goto fail_destroy_lock;
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
-		XERRF(e, XLOG_APP, XLOG_BUSY, "inode already loaded %lu", ino);
+		XERRF(e, XLOG_APP, XLOG_IO, "inode already loaded %lu", ino);
 		goto fail_destroy_lock;
 	}
 
@@ -822,7 +827,7 @@ inode_sync(struct oinode *oi, struct xerr *e)
 	    offset += slab_get_max_size()) {
 		b = slab_at(oi, offset, OSLAB_NOCREATE, xerrz(e));
 		if (b == NULL) {
-			if (xerr_is(e, XLOG_APP, XLOG_NOENT)) {
+			if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 				xerrz(e);
 				continue;
 			}
@@ -870,8 +875,11 @@ inode_flush(struct oinode *oi, int data_only, struct xerr *e)
 	xlog_dbg(XLOG_INODE, "%s: ino=%lu (%p); data_only=%d",
 	    __func__, ino, oi, data_only);
 
-	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), LK_LOCK_RW, xerrz(e))) == NULL)
+	if ((b = slab_load_itbl(slab_key(&sk, 0, ino),
+	    LK_LOCK_RW, xerrz(e))) == NULL) {
+		XERR_PREPENDFN(e);
 		return -1;
+	}
 
 	if (data_only) {
 		/*
@@ -982,7 +990,7 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 	struct oslab *b;
 
 	if (oi->oflags & INODE_ORO)
-		return XERRF(e, XLOG_APP, XLOG_BADF,
+		return XERRF(e, XLOG_FS, EBADF,
 		    "write attemped on read-only open inode %lu",
 		    oi->ino.v.f.inode);
 
@@ -1211,7 +1219,7 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 	struct oslab *b;
 
 	if (oi->oflags & INODE_ORO)
-		return XERRF(e, XLOG_APP, XLOG_BADF,
+		return XERRF(e, XLOG_FS, EBADF,
 		    "write attemped on read-only open inode %lu",
 		    oi->ino.v.f.inode);
 
@@ -1300,7 +1308,7 @@ inode_disk_inspect(ino_t ino, struct inode *inode, struct xerr *e)
 		return -1;
 
 	if (slab_itbl_is_free(&b, ino)) {
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_FS, ENOENT,
 		    "no such inode allocated: %lu", ino);
 		goto fail;
 	}
@@ -1336,7 +1344,7 @@ inode_inspect(int mgr, ino_t ino, struct inode *inode, struct xerr *e)
 		return xerr_prepend(e, __func__);
 
 	if (slab_itbl_is_free(&b, ino)) {
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_FS, ENOENT,
 		    "no such inode allocated: %lu", ino);
 		goto fail;
 	}

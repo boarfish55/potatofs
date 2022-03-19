@@ -177,7 +177,7 @@ get_file() {
 
 	id=$(find_file $parent "$name.crypt")
 	if [ -z "$id" ]; then
-		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such file\"}"
+		echo "{\"status\": \"ERR_NOSLAB\", \"msg\": \"no such file\"}"
 		exit 1
 	fi
 

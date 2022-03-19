@@ -50,6 +50,7 @@ for i in 1 2 3 4 5; do
 	[ $i -eq 5 ] && fatal "timeout while mounting"
 	sleep 1
 done
+mgr_pid=`cat $basepath/potatomgr.pid`
 echo ""
 
 echo "*** Running tests ***"
@@ -60,6 +61,7 @@ echo ""
 echo "*** Unmounting ***"
 fusermount -u "$mountpoint"
 wait
+while kill -0 $mgr_pid 2>/dev/null; do sleep 1; done
 echo ""
 
 echo "*** fsck ***"

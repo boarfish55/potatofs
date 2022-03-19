@@ -494,8 +494,10 @@ slab_load_itbl(const struct slab_key *sk, rwlk_flags lkf, struct xerr *e)
 		return NULL;
 	}
 
-	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL)
+	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL) {
+		XERR_PREPENDFN(e);
 		return NULL;
+	}
 
 	ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 
@@ -712,9 +714,15 @@ slab_parse_path(const char *path, struct slab_key *sk, struct xerr *e)
 }
 
 /*
- * TODO: we need to clearly define the errors returned here, as
- * many will bubble up all the way to the fuse call and will need
- * to return an appropriate errno to the user.
+ * Notable errors from this function are:
+ *
+ *   XLOG_APP / XLOG_BUSY: timed out trying to acquire slab lock
+ *   XLOG_APP / XLOG_BEERROR: backend script error
+ *   XLOG_APP / XLOG_BETIMEOUT: backend script timer expired
+ *   XLOG_APP / XLOG_NOSPC: backend is at full capacity
+ *
+ * Those should be passed up to the fs layer, where they can be
+ * converted to standard errno and exposed to the user.
  */
 struct oslab *
 slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
@@ -785,11 +793,9 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		goto fail_destroy_locks;
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
-		XERRF(e, XLOG_APP, XLOG_NOENT, "no such slab");
+		XERRF(e, XLOG_APP, XLOG_NOSLAB, "no such slab");
 		goto fail_destroy_locks;
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
-		// TODO: we should handle backend unavailability here,
-		// aka EAGAIN
 		memcpy(e, &m.v.err, sizeof(struct xerr));
 		XERR_PREPENDFN(e);
 		goto fail_destroy_locks;
@@ -821,7 +827,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		goto fail_unclaim;
 	if (b->hdr.v.f.flags & SLAB_REMOVED) {
 		if (oflags & OSLAB_NOCREATE) {
-			XERRF(e, XLOG_APP, XLOG_NOENT, "slab was removed and "
+			XERRF(e, XLOG_APP, XLOG_NOSLAB, "slab was removed and "
 			    "OSLAB_NOCREATE is set");
 			goto fail_unclaim;
 		}
@@ -1122,7 +1128,7 @@ slab_disk_inspect(struct slab_key *sk, struct slab_hdr *hdr,
 
 	if ((fd = open(path, O_RDONLY)) == -1) {
 		if (errno == ENOENT)
-			XERRF(e, XLOG_APP, XLOG_NOENT, "no such slab");
+			XERRF(e, XLOG_APP, XLOG_NOSLAB, "no such slab");
 		else
 			XERRF(e, XLOG_ERRNO, errno,
 			    "failed to load slab %s", path);
@@ -1190,7 +1196,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	}
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
-		XERRF(e, XLOG_APP, XLOG_NOENT, "no such slab");
+		XERRF(e, XLOG_APP, XLOG_NOSLAB, "no such slab");
 		return NULL;
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
 		// TODO: handle backend unavailability

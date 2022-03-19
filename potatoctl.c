@@ -235,7 +235,7 @@ clear_dir_entry(struct dir_entry *start, struct dir_entry *de, size_t *sz,
 	fsck_printf("    FIX: cleared dir entry: %lu", ino);
 	return 0;
 noent:
-	return XERRF(e, XLOG_APP, XLOG_NOENT, "no such dirent");
+	return XERRF(e, XLOG_APP, XLOG_IO, "no such dirent");
 }
 
 int
@@ -388,7 +388,7 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 		return NULL;
 
 	if (m.m == MGR_MSG_CLAIM_NEXT_ITBL_END) {
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
 		    "no more inode tables after %lu", b->hdr.v.f.key.base);
 		return NULL;
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
@@ -498,7 +498,7 @@ fsck(int argc, char **argv)
 		if ((itbl = fsck_load_next_itbl(mgr, &b,
 		    &itbl_sz, &e)) == NULL) {
 			if (xerr_fail(&e)) {
-				if (!xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+				if (!xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 					stats.errors++;
 					xerr_print(&e);
 					xerrz(&e);
@@ -1436,7 +1436,7 @@ show_inode(int argc, char **argv)
 	}
 
 	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
-		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
+		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
 		exit(1);
@@ -1519,7 +1519,7 @@ show_dir(int argc, char **argv)
 	}
 
 	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
-		if (xerr_is(&e, XLOG_APP, XLOG_NOENT))
+		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
 		exit(1);
@@ -1546,7 +1546,7 @@ show_dir(int argc, char **argv)
 		if ((slab_data = slab_inspect(mgr, slab_key(&sk, ino, i),
 		    OSLAB_NOCREATE|OSLAB_EPHEMERAL,
 		    &hdr, &slab_sz, &e)) == NULL) {
-			if (xerr_is(&e, XLOG_APP, XLOG_NOENT)) {
+			if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 				xerrz(&e);
 				break;
 			}

@@ -231,7 +231,7 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 		goto fail;
 
 	if (slabdb_get_nolock(sk, &r_v, e) == -1) {
-		if (!xerr_is(e, XLOG_APP, XLOG_NOENT))
+		if (!xerr_is(e, XLOG_APP, XLOG_NOSLAB))
 			goto fail;
 
 		xerrz(e);
@@ -316,7 +316,7 @@ slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
 			    sqlite3_column_blob(qry_get.stmt, qry_get.o_owner));
 		break;
 	case SQLITE_DONE:
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
 		    "sqlite3_step: slab not found, sk=%lu/%lu",
 		    sk->ino, sk->base);
 		goto fail;
@@ -356,7 +356,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		return -1;
 
 	if (slabdb_get_nolock(sk, v, e) == -1) {
-		if (!xerr_is(e, XLOG_APP, XLOG_NOENT) ||
+		if (!xerr_is(e, XLOG_APP, XLOG_NOSLAB) ||
 		    (oflags & OSLAB_NOCREATE))
 			goto fail;
 
@@ -420,7 +420,7 @@ slabdb_get_next_itbl(off_t *base, struct xerr *e)
 		    qry_get_next_itbl.o_base);
 		break;
 	case SQLITE_DONE:
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
 		    "sqlite3_step: no itbl found after base %lu", base);
 		goto fail;
 	case SQLITE_BUSY:
@@ -640,7 +640,7 @@ slabdb_count(struct xerr *e)
 		count = sqlite3_column_int(qry_count.stmt, 0);
 		break;
 	case SQLITE_DONE:
-		XERRF(e, XLOG_APP, XLOG_NOENT,
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
 		    "sqlite3_step() returned no result");
 		goto fail;
 	case SQLITE_BUSY:

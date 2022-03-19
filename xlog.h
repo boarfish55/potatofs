@@ -26,28 +26,25 @@
 
 enum xerr_space {
 	XLOG_NONE = 0,
-	XLOG_APP,      /* App-specific error */
-	XLOG_ERRNO,    /* Standard errno code */
+	XLOG_APP,      /* App-internal error */
+	XLOG_FS,       /* Standard errno code meant to be returned to FUSE */
+	XLOG_ERRNO,    /* Standard errno code used internally only */
 	XLOG_DB        /* DB error */
 };
 
 enum xerr_code {
 	XLOG_SUCCESS = 0,
 	XLOG_INVAL,        /* An invalid value was obtained */
-	XLOG_NOENT,        /* An entity doesn't exist */
-	XLOG_EXIST,        /* An entity already exists */
-	XLOG_NOTDIR,       /* Attempted to readdir() on a non-directory */
+	XLOG_NOSLAB,       /* Requested slab doesn't exist */
 	XLOG_IO,           /* Something abnormal happened during I/O op */
-	XLOG_BUSY,         /* Resource is busy, or already loaded */
-	XLOG_OPNOTSUPP,    /* The operation is not supported */
+	XLOG_BUSY,         /* Resource/lock is busy */
 	XLOG_NAMETOOLONG,  /* File name too long */
-	XLOG_BADF,         /* Bad file descriptor, or conflicting open flags */
-	XLOG_OVERFLOW,     /* Variable size overflow */
 	XLOG_SHORTIO,      /* Data sent or received is shorter than expected */
 	XLOG_EOF,          /* End-of-file */
-	XLOG_EXEC,         /* Error while running backend executable */
 	XLOG_MISMATCH,     /* CRC/revision/size does not match expectations */
 	XLOG_NOSPC,        /* No space left on device */
+	XLOG_BETIMEOUT,    /* Backend timeout */
+	XLOG_BEERROR,      /* Backend error */
 	XLOG_MGR           /* Issue arised during communication with
 	                      slab manager */
 };

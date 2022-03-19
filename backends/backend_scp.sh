@@ -80,7 +80,7 @@ do_get() {
 	fi
 	if ! ssh -o ConnectTimeout=5 $ssh_host \
 		test -r "$backend_path/$slab"; then
-		echo "{\"status\": \"ERR_NOENT\", \"msg\": \"no such slab on backend: $slab\"}"
+		echo "{\"status\": \"ERR_NOSLAB\", \"msg\": \"no such slab on backend: $slab\"}"
 		return 1
 	fi
 	scp -o ConnectTimeout=5 $ssh_host:$backend_path/$slab "$local_path"

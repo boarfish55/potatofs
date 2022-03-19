@@ -17,6 +17,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <errno.h>
 #include <string.h>
 #include "inodes.h"
 #include "dirinodes.h"
@@ -35,7 +36,7 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 	ssize_t entries = 0;
 
 	if (!inode_isdir(oi))
-		return XERRF(e, XLOG_APP, XLOG_NOTDIR, "not a directory");
+		return XERRF(e, XLOG_FS, ENOTDIR, "not a directory");
 
 	while (entries < count) {
 		r = inode_read(oi, *offset, dirs + entries,
@@ -72,7 +73,7 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 
 /*
  * Fills 'de' with the dirent of 'name', if it exists. Returns
- * 0 on success, -1 with XLOG_NOENT if it doesn't exist, or
+ * 0 on success, -1 with ENOENT if it doesn't exist, or
  * any other error if encountered.
  */
 int
@@ -100,7 +101,7 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
 		if (de->next == 0)
 			break;
 	}
-	return XERRF(e, XLOG_APP, XLOG_NOENT,
+	return XERRF(e, XLOG_FS, ENOENT,
 	    "no such directory entry: %s (inode=%d)", name, inode_ino(oi));
 }
 
@@ -145,7 +146,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 
 		if (strcmp(r_de.name, n_de.name) == 0) {
 			if (!replaced) {
-				return XERRF(e, XLOG_APP, XLOG_EXIST,
+				return XERRF(e, XLOG_FS, EEXIST,
 				    "file %s already exists", de->name);
 			}
 			memcpy(replaced, &r_de, sizeof(r_de));
@@ -267,7 +268,7 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 
 	return 0;
 noent:
-	return XERRF(e, XLOG_APP, XLOG_NOENT, "no such dirent");
+	return XERRF(e, XLOG_FS, ENOENT, "no such dirent");
 }
 
 ino_t
