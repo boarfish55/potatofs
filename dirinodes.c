@@ -40,14 +40,14 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 
 	while (entries < count) {
 		r = inode_read(oi, *offset, dirs + entries,
-		    sizeof(struct dir_entry), e);
+		    sizeof(struct dir_entry), xerrz(e));
 		if (r == 0) {
 		    break;
 		} else if (r < sizeof(struct dir_entry)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
-			return -1;
+			return XERR_PREPENDFN(e);
 
 		/*
 		 * If we hit a zero'd inode, maybe the offset
@@ -86,14 +86,14 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
 	bzero(de, sizeof(struct dir_entry));
 	for (offset = 0;; offset = de->next) {
 		r = inode_read(oi, offset, de,
-		    sizeof(struct dir_entry), e);
+		    sizeof(struct dir_entry), xerrz(e));
 		if (r == 0) {
 			break;
 		} else if (r < sizeof(struct dir_entry)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
-			return -1;
+			return XERR_PREPENDFN(e);
 
 		if (strcmp(de->name, name) == 0)
 			return 0;
@@ -135,14 +135,14 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	 */
 	for (;;) {
 		r = inode_read(parent, offset, &r_de,
-		    sizeof(struct dir_entry), e);
+		    sizeof(struct dir_entry), xerrz(e));
 		if (r == 0) {
 			break;
 		} else if (r < sizeof(struct dir_entry)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
-			return -1;
+			return XERR_PREPENDFN(e);
 
 		if (strcmp(r_de.name, n_de.name) == 0) {
 			if (!replaced) {
@@ -173,13 +173,13 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	 * Write the new inode first to make sure it can be referenced. Only
 	 * then can we finish writing the previous inode, or dir header.
 	 */
-	r = inode_write(parent, offset, &n_de, sizeof(n_de), e);
+	r = inode_write(parent, offset, &n_de, sizeof(n_de), xerrz(e));
 	if (r < sizeof(struct dir_entry)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might "
 		    "be corrupted");
 	} else if (r == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 
 	r = inode_write(parent, prev_off, &prev_used, sizeof(prev_used), e);
 	if (r < sizeof(struct dir_entry)) {
@@ -251,16 +251,15 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 
 	if (prev_used.next == 0) {
 		if (inode_truncate(parent,
-		    prev_off + sizeof(prev_used), xerrz(e)) == -1) {
-			return xerr_prepend(e, __func__);
-		}
+		    prev_off + sizeof(prev_used), xerrz(e)) == -1)
+			return XERR_PREPENDFN(e);
 		return 0;
 	}
 
 	bzero(&z_de, sizeof(z_de));
 	r = inode_write(parent, offset, &z_de, sizeof(z_de), xerrz(e));
 	if (r == -1) {
-		return -1;
+		return XERR_PREPENDFN(e);
 	} else if (r < sizeof(z_de)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might be corrupted");
@@ -278,9 +277,9 @@ di_parent(struct oinode *oi, struct xerr *e)
 	struct dir_entry de;
 
 	r = inode_read(oi, sizeof(struct dir_entry), &de,
-	    sizeof(struct dir_entry), e);
+	    sizeof(struct dir_entry), xerrz(e));
 	if (r == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 	else if (r < sizeof(struct dir_entry))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted directory; incomplete entries");
@@ -295,17 +294,17 @@ di_setparent(struct oinode *oi, ino_t parent, struct xerr *e)
 	struct dir_entry de;
 
 	r = inode_read(oi, sizeof(struct dir_entry), &de,
-	    sizeof(struct dir_entry), e);
+	    sizeof(struct dir_entry), xerrz(e));
 	if (r == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 	else if (r < sizeof(struct dir_entry))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted directory; incomplete entries");
 	de.inode = parent;
 	r = inode_write(oi, sizeof(struct dir_entry), &de,
-	    sizeof(struct dir_entry), e);
+	    sizeof(struct dir_entry), xerrz(e));
 	if (r == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 	else if (r < sizeof(struct dir_entry))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might be corrupted");
