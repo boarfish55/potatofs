@@ -1736,6 +1736,9 @@ test_claim_from_backend()
 		xerr_print(&e);
 		return ERR("failed to get slab name", 0);
 	}
+	if (snprintf(out_path, sizeof(out_path), "%s/%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR, out_name) >= sizeof(out_path))
+		return ERR("outgoing slab name too long", errno);
 
 	if ((fd = open(path, O_RDONLY)) == -1)
 		return ERR("", errno);
@@ -1749,8 +1752,11 @@ test_claim_from_backend()
 
 	close(fd);
 
-	if (access(path, F_OK) != -1 || errno != ENOENT)
+	if (access(path, F_OK) != -1)
 		return ERR("slab is present, but should have been unlinked", 0);
+	if (errno != ENOENT)
+		return ERR("failed to access() slab for "
+		    "reason other than ENOENT", errno);
 
 	/* Then reclaim; this is probably coming from the outoing dir. */
 	if ((fd = open(p, O_RDONLY)) == -1)
@@ -1762,6 +1768,21 @@ test_claim_from_backend()
 
 	if (access(path, F_OK) == -1)
 		return ERR("", errno);
+
+	/*
+	 * This time make sure the slab in outgoing is actually flushed
+	 * to the backend.
+	 */
+	/* At this point, both our slab and outgoing slab should be gone. */
+	for (i = 0; access(out_path, F_OK) == 0; i++) {
+		if (i > 10)
+			return ERR("outgoing slab still present; "
+			    "is bg_flush running?", 0);
+		sleep(1);
+	}
+	if (errno != ENOENT)
+		return ERR("access() failed for outgoing slab with reason "
+		    "other than ENOENT", errno);
 
 	/*
 	 * Next let's try to get it from the actual backend. Because we
@@ -1781,19 +1802,11 @@ test_claim_from_backend()
 
 	close(fd);
 
-	if (access(path, F_OK) != -1 || errno != ENOENT)
+	if (access(path, F_OK) != -1)
 		return ERR("slab is present, but should have been unlinked", 0);
-
-	if (snprintf(out_path, sizeof(out_path), "%s/%s/%s",
-	    fs_config.data_dir, OUTGOING_DIR, out_name) >= sizeof(out_path))
-		return ERR("outgoing slab name too long", errno);
-
-	/* At this point, both our slab and outgoing slab should be gone. */
-	if (access(out_path, F_OK) != -1 || errno != ENOENT)
-		return ERR("outgoing slab is present, but should "
-		    "have been unlinked", 0);
-	if (access(path, F_OK) != -1 || errno != ENOENT)
-		return ERR("slab is present, but should have been unlinked", 0);
+	if (errno != ENOENT)
+		return ERR("failed to access() slab for "
+		    "reason other than ENOENT", errno);
 
 	/* Then reclaim, hopefully from the actual backend this time. */
 	if ((fd = open(p, O_RDONLY)) == -1)

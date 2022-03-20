@@ -800,17 +800,18 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		XERR_PREPENDFN(e);
 		goto fail_destroy_locks;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "mgr_recv: "
+		XERRF(e, XLOG_APP, XLOG_MGRERROR, "mgr_recv: "
 		    "unexpected response: %d", m.m);
 		goto fail_destroy_locks;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "unexpected slab key in response; "
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "unexpected slab key in response; "
 		    "ino: expected=%lu, received=%lu base: expected=%lu, "
 		    "received=%lu", sk->ino, m.v.claim.key.ino, sk->base,
 		    m.v.claim.key.base);
 		goto fail_destroy_locks;
 	} else if (b->fd == -1) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "mgr returned fd -1 on slab sk=%lu/%lu", sk->ino, sk->base);
 		goto fail_destroy_locks;
 	}
@@ -1204,17 +1205,17 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		xerr_prepend(e, __func__);
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "mgr_recv: unexpected response: %d", m.m);
 		return NULL;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "bad manager response; ino expected=%lu, received=%lu "
 		    "base expected=%lu, received=%lu",
 		    sk->ino, m.v.claim.key.ino, sk->base, m.v.claim.key.base);
 		return NULL;
 	} else if (fd == -1) {
-		XERRF(e, XLOG_APP, XLOG_MGR, "mgr returned fd -1");
+		XERRF(e, XLOG_APP, XLOG_MGRERROR, "mgr returned fd -1");
 		return NULL;
 	}
 
@@ -1268,11 +1269,11 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		xerr_prepend(e, __func__);
 		goto fail_free_data;
 	} else if (m.m != MGR_MSG_UNCLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "mgr_recv: unexpected response: %d", m.m);
 		goto fail_free_data;
 	} else if (memcmp(&m.v.unclaim.key, sk, sizeof(struct slab_key))) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "bad manager response for unclaim; "
 		    "ino expected=%lu, received=%lu"
 		    "base expected=%lu, received=%lu",

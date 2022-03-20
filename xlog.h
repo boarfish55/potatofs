@@ -45,7 +45,7 @@ enum xerr_code {
 	XLOG_NOSPC,        /* No space left on device */
 	XLOG_BETIMEOUT,    /* Backend timeout */
 	XLOG_BEERROR,      /* Backend error */
-	XLOG_MGR           /* Issue arised during communication with
+	XLOG_MGRERROR      /* Issue arised during communication with
 	                      slab manager */
 };
 

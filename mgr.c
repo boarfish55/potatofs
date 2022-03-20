@@ -196,7 +196,7 @@ mgr_send_shutdown(struct xerr *e)
 		memcpy(e, &m.v.err, sizeof(struct xerr));
 		return XERR_PREPENDFN(e);
 	} else if (m.m != MGR_MSG_SHUTDOWN_OK) {
-		return XERRF(e, XLOG_APP, XLOG_MGR,
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "mgr_recv: unexpected response: %d", m.m);
 	}
 
@@ -229,7 +229,7 @@ mgr_fs_info(struct fs_info *fs_info, struct xerr *e)
 		memcpy(e, &m.v.err, sizeof(struct xerr));
 		return XERR_PREPENDFN(e);
 	} else if (m.m != MGR_MSG_INFO_OK) {
-		return XERRF(e, XLOG_APP, XLOG_MGR,
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
 	}
 	memcpy(fs_info, &m.v.info.fs_info, sizeof(struct fs_info));

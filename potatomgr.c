@@ -446,14 +446,14 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 	if ((dst_fd = open_wflock(dst, O_CREAT|O_RDWR, 0600,
 	    LOCK_EX, flock_timeout)) == -1) {
 		if (errno == EWOULDBLOCK)
-			return XERRF(e, XLOG_MGR, XLOG_BUSY,
+			return XERRF(e, XLOG_APP, XLOG_BUSY,
 			    "open_wflock() timed out after multiple "
 			    "retries for slab %s; this should not happen "
 			    "unless something is stuck trying to send to the "
 			    "backend.", dst);
 		return XERRF(e, XLOG_ERRNO, errno, "open_wflock: slab %s", dst);
 	}
-copy_again:
+
 	/* Make room for the header we're about to fill in. */
 	if (lseek(dst_fd, sizeof(struct slab_hdr), SEEK_SET) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "lseek");
@@ -482,13 +482,12 @@ copy_again:
 		r = write_x(dst_fd, buf, r);
 		if (r == -1) {
 			if (errno == ENOSPC) {
-				xlog(LOG_ERR, NULL, "%s: ran out of space "
-				    "while copying slab %s; retrying",
+				XERRF(e, XLOG_ERRNO, errno,
+				    "%s: ran out of space while copying "
+				    "slab %s, we can retry later",
 				    __func__, dst);
-				sleep(5);
-				goto copy_again;
-			}
-			XERRF(e, XLOG_ERRNO, errno, "write");
+			} else
+				XERRF(e, XLOG_ERRNO, errno, "write");
 			goto fail;
 		}
 	}
@@ -544,8 +543,8 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
 		if (copy_outgoing_slab(fd, &m->v.unclaim.key, &hdr, e) == -1) {
-			if (xerr_is(e, XLOG_MGR, XLOG_BUSY)) {
-				xlog(LOG_NOTICE, e, "%s: slab "
+			if (xerr_is(e, XLOG_APP, XLOG_BUSY)) {
+				xlog(LOG_WARNING, e, "%s: slab "
 				    "(ino=%lu / base=%lu) is "
 				    "being locked for a long time; is the "
 				    "backend responsive? Continuing anyway "
@@ -553,6 +552,10 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 				    "the scrubber will pick it up later",
 				    __func__, m->v.unclaim.key.ino,
 				    m->v.unclaim.key.base);
+				xerrz(e);
+				goto end;
+			} else if (xerr_is(e, XLOG_FS, ENOSPC)) {
+				xlog(LOG_WARNING, e, __func__);
 				xerrz(e);
 				goto end;
 			} else {
@@ -838,7 +841,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 			return XERRF(e, XLOG_ERRNO, errno,
 			    "short read on slab header");
 		else
-			return XERRF(e, XLOG_MGR, XLOG_SHORTIO,
+			return XERRF(e, XLOG_APP, XLOG_SHORTIO,
 			    "short read on slab header");
 	}
 
@@ -1061,7 +1064,7 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	if ((dst_fd = open_wflock(dst, fd_flags, 0600,
 	    LOCK_EX, flock_timeout)) == -1) {
 		if (errno == EWOULDBLOCK)
-			XERRF(e, XLOG_MGR, XLOG_BUSY,
+			XERRF(e, XLOG_APP, XLOG_BUSY,
 			    "open_wflock() timed out after multiple "
 			    "retries for slab %s; this should not happen if "
 			    "the fs process is properly managing open slabs. "
@@ -1631,14 +1634,14 @@ scrub(const char *path)
 		    "being unclaimed; incrementing revision and sending "
 		    "to outgoing now", __func__, path);
 		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {
-			if (xerr_is(&e, XLOG_MGR, XLOG_BUSY)) {
+			if (xerr_is(&e, XLOG_APP, XLOG_BUSY) ||
+			    xerr_is(&e, XLOG_ERRNO, ENOSPC)) {
+				xlog(LOG_WARNING, &e, __func__);
 				xerrz(&e);
-				xlog(LOG_NOTICE, NULL, "%s: slab %s is "
-				    "being locked for a long time; is the "
-				    "backend responsive?", __func__, path);
 				goto end;
 			}
-			xlog(LOG_ERR, &e, "%s", __func__);
+			xlog(LOG_ERR, &e, __func__);
+			set_fs_error();
 			goto end;
 		}
 
@@ -1655,7 +1658,7 @@ scrub(const char *path)
 		if (slabdb_put(&sk, &v,
 		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
 		    &e) == -1) {
-			xlog(LOG_CRIT, &e, "%s", __func__);
+			xlog(LOG_CRIT, &e, __func__);
 			set_fs_error();
 			goto end;
 		}

@@ -396,7 +396,7 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 		xerr_prepend(e, __func__);
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
-		XERRF(e, XLOG_APP, XLOG_MGR,
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "mgr_recv: unexpected response: %d", m.m);
 		return NULL;
 	}
@@ -455,7 +455,7 @@ end:
 			memcpy(e, &m.v.err, sizeof(struct xerr));
 			xerr_prepend(e, __func__);
 		} else
-			XERRF(e, XLOG_APP, XLOG_MGR,
+			XERRF(e, XLOG_APP, XLOG_MGRERROR,
 			    "mgr_recv: unexpected response: %d", m.m);
 	}
 	close(b->fd);

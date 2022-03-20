@@ -369,7 +369,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 
 	/* Because looking up by open file is faster */
 	if (fi == NULL) {
-		if ((oi = inode_load(ino, 0, &e)) == NULL) {
+		if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
 			if (e.sp == XLOG_FS) {
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, e.code));
@@ -389,20 +389,18 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 		else
 			FS_ERR(&r_sent, req, &e);
 	} else {
-		FUSE_REPLY(&r_sent, fuse_reply_attr(req, &st,
-		    fs_config.entry_timeouts));
+		if (inode_flush(oi, 0, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+		else
+			FUSE_REPLY(&r_sent, fuse_reply_attr(req, &st,
+			    fs_config.entry_timeouts));
 	}
-	if (inode_flush(oi, 0, &e) == -1)
-		FS_ERR(&r_sent, req, &e);
 	inode_unlock(oi);
 
-	xerrz(&e);
-
-	if (fi == NULL)
-		inode_unload(oi, &e);
-
-	if (xerr_fail(&e))
-		FS_ERR(&r_sent, req, &e);
+	if (fi == NULL) {
+		if (inode_unload(oi, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+	}
 unlock:
 	LK_UNLOCK(&fs_tree_lock);
 }
@@ -897,12 +895,10 @@ end:
 			FUSE_REPLY(&r_sent, fuse_reply_entry(req, &entry));
 	}
 
-	xerrz(&e);
-
 	/* We don't update atime on the parent for lookups. */
 
 	inode_unlock(parent_oi);
-	if (inode_unload(parent_oi, &e) == -1)
+	if (inode_unload(parent_oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 unlock:
 	LK_UNLOCK(&fs_tree_lock);
@@ -1284,9 +1280,7 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 	else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 
-	xerrz(&e);
-
-	if (inode_unload(oi, &e) == -1)
+	if (inode_unload(oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 }
 
