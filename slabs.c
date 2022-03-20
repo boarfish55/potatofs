@@ -103,7 +103,7 @@ slab_read_hdr(struct oslab *b, struct xerr *e)
 		if (r == -1)
 			return XERRF(e, XLOG_ERRNO, errno,
 			    "short read on slab header");
-		return XERRF(e, XLOG_APP, XLOG_SHORTIO,
+		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "short read on slab header; read %d bytes", r);
 	}
 	return 0;
@@ -1157,7 +1157,7 @@ slab_disk_inspect(struct slab_key *sk, struct slab_hdr *hdr,
 		if (r == -1)
 			XERRF(e, XLOG_ERRNO, errno, "read");
 		else
-			XERRF(e, XLOG_APP, XLOG_SHORTIO,
+			XERRF(e, XLOG_APP, XLOG_IO,
 			    "short read on slab; expected size from "
 			    "fstat() is %lu, read_x() returned %lu",
 			    *slab_sz, r);
@@ -1244,7 +1244,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 
 	if ((r = slab_read(b, data, 0, *slab_sz, e)) < *slab_sz) {
 		if (r != -1)
-			XERRF(e, XLOG_APP, XLOG_SHORTIO,
+			XERRF(e, XLOG_APP, XLOG_IO,
 			    "short read on slab; expected size from "
 			    "fstat() is %lu, slab_read() returned %lu",
 			    *slab_sz, r);

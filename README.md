@@ -142,15 +142,16 @@ TODO
 * Add a test to try out the last possible inode, 2^63
 * Doublecheck that atime is working as intended, add a test
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
-  and bubble up a nicer error to processes. => EAGAIN
-  This will need to be returned from all the way down from backend_get()
-  and backend_put(), after a few retries keep failing. We could loop
-  forever too, but at some point we would want the user to be able to
-  gracefully shutdown the fs, such as when going losing Internet then
-  needing to shutdown their machine.
-* The fs should really retry claims and unclaim ops.
-* fsck is too slow, too many cleam/unclaim. Try to batch operations on
-  a single slab together
+  and bubble up a nicer error to processes. They should retry the operations
+  but check for interrupt in-between with fuse_req_interrupted(req).
+  Claim errors that we could loop until interrupt:
+  - XLOG_APP, XLOG_BEERROR (Internet?)
+  - XLOG_APP, XLOG_BETIMEOUT (Internet?)
+  - XLOG_ERRNO, ENOSPC (no space on cache, copy_incoming_slab, claim, new slab)
+  - XLOG_APP, XLOG_BUSY (deadlock?; should not happen unless an external program
+    is holding a lock; retryable)
+  - XLOG_APP, XLOG_MISMATCH (eventual consistency)
+  - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
 * Make the workers and timeouts configurable in the config file
 * In low-space conditions, run flush/purge more often to free up space. The
   problem is that it also clogs up the workers. Maybe we need an separate

@@ -35,12 +35,13 @@ enum xerr_space {
 enum xerr_code {
 	XLOG_SUCCESS = 0,
 	XLOG_INVAL,        /* An invalid value was obtained */
-	XLOG_NOSLAB,       /* Requested slab doesn't exist */
 	XLOG_IO,           /* Something abnormal happened during I/O op */
-	XLOG_BUSY,         /* Resource/lock is busy */
 	XLOG_NAMETOOLONG,  /* File name too long */
-	XLOG_SHORTIO,      /* Data sent or received is shorter than expected */
 	XLOG_EOF,          /* End-of-file */
+
+	/* The following are temporary and the operation may be retried. */
+	XLOG_NOSLAB,       /* Requested slab doesn't exist */
+	XLOG_BUSY,         /* Resource/lock is busy */
 	XLOG_MISMATCH,     /* CRC/revision/size does not match expectations */
 	XLOG_NOSPC,        /* No space left on device */
 	XLOG_BETIMEOUT,    /* Backend timeout */

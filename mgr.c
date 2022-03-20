@@ -107,7 +107,7 @@ again:
 		return XERRF(e, XLOG_APP, XLOG_EOF, "recvmsg: eof");
 
 	if ((msg.msg_flags & MSG_TRUNC) || (msg.msg_flags & MSG_CTRUNC))
-		return XERRF(e, XLOG_APP, XLOG_SHORTIO,
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
 		    "recvmsg: control message truncated");
 
 	if (fd != NULL) {

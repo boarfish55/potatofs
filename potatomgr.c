@@ -841,7 +841,7 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 			return XERRF(e, XLOG_ERRNO, errno,
 			    "short read on slab header");
 		else
-			return XERRF(e, XLOG_APP, XLOG_SHORTIO,
+			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "short read on slab header");
 	}
 
@@ -875,7 +875,7 @@ write_hdr_again:
 			// TODO: don't try this indefinitely
 			xlog(LOG_ERR, NULL, "%s: ran out of space during; "
 			    "retrying", __func__);
-			sleep(5);
+			sleep(1);
 			goto write_hdr_again;
 		}
 		return XERRF(e, XLOG_ERRNO, errno, "write");
@@ -900,7 +900,7 @@ copy_again:
 				    "ino=%lu / base=%lu; retrying",
 				    __func__, hdr.v.f.key.ino,
 				    hdr.v.f.key.base);
-				sleep(5);
+				sleep(1);
 				goto copy_again;
 			}
 			return XERRF(e, XLOG_ERRNO, errno, "write");
@@ -984,9 +984,10 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 			 * partition to prevent the slabdb from breaking.
 			 */
 			xlog(LOG_WARNING, NULL, "%s: free space is below "
-			    "%lu%%, blocking on claim() for 3 seconds",
+			    "%lu%%, blocking on claim()",
 			    __func__, fs_config.unclaim_purge_threshold_pct);
-			sleep(5);
+			// TODO: return XLOG_ERRNO / ENOSPC
+			sleep(1);
 			continue;
 		}
 	} while(0);
@@ -1108,7 +1109,8 @@ new_slab_again:
 				    "%s: ran out of space while creating new "
 				    "slab sk=%lu/%ld; retrying",
 				    hdr.v.f.key.ino, hdr.v.f.key.base);
-				sleep(5);
+				sleep(1);
+				// TODO: return XLOG_ERRNO / ENOSPC
 				goto new_slab_again;
 			}
 			XERRF(e, XLOG_ERRNO, errno,
@@ -1196,7 +1198,7 @@ new_slab_again:
 	}
 
 get_again:
-	// TODO: max number of retries here.
+	// TODO: Eventually bubble up this error all the way to the fs
 	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key,
 	    xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
@@ -1217,7 +1219,7 @@ get_again:
 		} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
 			xlog(LOG_ERR, NULL, "%s: ran out of space during "
 			    "backend_get(); retrying", __func__);
-			sleep(5);
+			sleep(1);
 			goto get_again;
 		}
 		goto fail_close_dst;
@@ -1237,6 +1239,8 @@ get_again:
 	if (copy_incoming_slab(dst_fd, incoming_fd, v.header_crc,
 	    v.revision, e) == -1) {
 		close(incoming_fd);
+		// TODO: Eventually bubble up this error all the way to the fs
+		// Eventual consistency?
 		if (xerr_is(e, XLOG_APP, XLOG_MISMATCH)) {
 			xlog(LOG_ERR, e, "%s: retrying; ", __func__);
 			sleep(5);
