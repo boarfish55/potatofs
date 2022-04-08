@@ -129,20 +129,25 @@ struct slab_itbl_hdr {
 
 struct oslab {
 	/*
-	 * All the following fields are protected by the global 'owned_slabs'
-	 * mutex, and cannot be modified outside that context.
+	 * The following fields are protected by the global 'owned_slabs'
+	 * mutex, and cannot be modified outside that context:
+	 *    - entry
+	 *    - lru_entry
+	 *    - itbl_entry
+	 *    - refcnt
+	 *    - open_since
 	 */
 
 	SPLAY_ENTRY(oslab) entry;
 	TAILQ_ENTRY(oslab) lru_entry;
 	TAILQ_ENTRY(oslab) itbl_entry;
-
-	struct slab_hdr    hdr;
 	uint64_t           refcnt;
-	int                fd;
 
 	/* Only meaningful when unclaiming slabs */
 	struct timespec    open_since;
+
+	struct slab_hdr    hdr;
+	int                fd;
 
 	/*
 	 * The lock is only for the fields in this structure and
@@ -246,10 +251,16 @@ void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
             size_t *, int *, int);
 
 /*
- * Indicate that this slab was modified. Acquires the inode lock.
+ * Indicate that this slab was modified. Acquires the slab lock.
  * Does nothing for slabs opened with OSLAB_SYNC.
  */
 void    slab_set_dirty(struct oslab *);
+
+/*
+ * Increment / decrement the slab refcnt, which can be used to force
+ * a local slab to remain local. Acquires the owned_slabs lock.
+ */
+void    slab_refcnt(struct oslab *, int);
 
 /* Returns the size of the slab in bytes, minus the header. */
 off_t   slab_size(struct oslab *, struct xerr *);

@@ -713,6 +713,12 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 	if (oi->ino.v.f.mode & S_IFDIR)
 		oi->oflags |= INODE_OSYNC;
 
+	/*
+	 * Make sure to keep this inode table local for as long as we
+	 * have the inode in-memory.
+	 */
+	slab_refcnt(b, 1);
+
 	if (slab_close_itbl(b, xerrz(e)) == -1)
 		goto fail_destroy_lock;
 
@@ -781,8 +787,11 @@ inode_unload(struct oinode *oi, struct xerr *e)
 		}
 
 		if (oi->refcnt == 0) {
-			if (inode_flush(oi, 0, xerrz(e)) == -1)
+			if (inode_flush(oi, INODE_FLUSH_RELEASE,
+			    xerrz(e)) == -1) {
+				XERR_PREPENDFN(e);
 				goto end;
+			}
 
 			SPLAY_REMOVE(ino_tree, &open_inodes.head, &needle);
 			LK_LOCK_DESTROY(&oi->bytes_lock);
@@ -846,34 +855,36 @@ inode_sync(struct oinode *oi, struct xerr *e)
 }
 
 /*
- * Write inode to underlying file; if 'data_only' is non-zero,
+ * Write inode to underlying file; if flag INODE_FLUSH_DATA_ONLY is set,
  * we only write inline data, thus waiving the inode lock requirement.
- *
- * If data_only is 0, we flush the entire inode, both inline data and metadata,
+ * Otherwise, we flush the entire inode, both inline data and metadata,
  * meaning the caller must acquire the inode lock.
+ *
+ * If INODE_FLUSH_RELEASE is set, we decrement the slab's refcnt to inform
+ * the mgr that it is safe to purge the slab to free up space.
  *
  * We still get the bytes_lock, no matter what. This is typically called
  * on fd close().
  */
 int
-inode_flush(struct oinode *oi, int data_only, struct xerr *e)
+inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 {
 	struct oslab    *b;
-	ssize_t          s;
-	ino_t            ino;
+	ssize_t          w;
 	off_t            sz_off;
 	struct slab_key  sk;
+	ino_t            ino = oi->ino.v.f.inode;
+	struct xerr      e_close_itbl;
+
+	xlog_dbg(XLOG_INODE, "%s: ino=%lu (%p); flags=%u",
+	    __func__, ino, oi, flags);
 
 	LK_WRLOCK(&oi->bytes_lock);
 	if (!oi->dirty && !oi->bytes_dirty) {
 		LK_UNLOCK(&oi->bytes_lock);
-		return 0;
+		if (!(flags & INODE_FLUSH_RELEASE))
+			return 0;
 	}
-
-	ino = oi->ino.v.f.inode;
-
-	xlog_dbg(XLOG_INODE, "%s: ino=%lu (%p); data_only=%d",
-	    __func__, ino, oi, data_only);
 
 	if ((b = slab_load_itbl(slab_key(&sk, 0, ino),
 	    LK_LOCK_RW, xerrz(e))) == NULL) {
@@ -881,7 +892,10 @@ inode_flush(struct oinode *oi, int data_only, struct xerr *e)
 		return -1;
 	}
 
-	if (data_only) {
+	if (!oi->dirty && !oi->bytes_dirty)
+		goto end;
+
+	if (flags & INODE_FLUSH_DATA_ONLY) {
 		/*
 		 * Syncing data only means it is safe to do so without the
 		 * inode lock. Note that inode table slabs are always O_SYNC,
@@ -893,13 +907,13 @@ inode_flush(struct oinode *oi, int data_only, struct xerr *e)
 		 * inline data that immediately follows.
 		 */
 		sz_off = (char *)&oi->ino.v.f.size - (char *)&oi->ino;
-		if ((s = slab_write(b, &oi->ino.v.f.size,
+		if ((w = slab_write(b, &oi->ino.v.f.size,
 		    ((ino - b->hdr.v.f.key.base) * sizeof(struct inode))
 		    + sz_off, sizeof(struct inode) - sz_off, xerrz(e))) ==
 		    (sizeof(struct inode) - sz_off))
 			oi->bytes_dirty = 0;
 	} else {
-		if ((s = slab_write(b, &oi->ino,
+		if ((w = slab_write(b, &oi->ino,
 		    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
 		    sizeof(struct inode), xerrz(e))) == sizeof(struct inode)) {
 			oi->bytes_dirty = 0;
@@ -908,18 +922,20 @@ inode_flush(struct oinode *oi, int data_only, struct xerr *e)
 	}
 	LK_UNLOCK(&oi->bytes_lock);
 
-	if (s == -1) {
+	if (w == -1) {
 		goto end;
-	} else if (s < ((data_only)
+	} else if (w < ((flags & INODE_FLUSH_DATA_ONLY)
 	    ?  inode_max_inline_b()
 	    : sizeof(struct inode))) {
 		XERRF(e, XLOG_APP, XLOG_IO,
 		    "short write while saving inode %lu", ino);
 		goto end;
 	}
-
 end:
-	slab_close_itbl(b, xerrz(e));
+	if (!xerr_fail(e) && (flags & INODE_FLUSH_RELEASE))
+		slab_refcnt(b, -1);
+	if (slab_close_itbl(b, xerrz(&e_close_itbl)) == -1)
+		xlog(LOG_ERR, &e_close_itbl, __func__);
 	// TODO: save to lost & found ?
 	return xerr_fail(e);
 }
@@ -962,7 +978,7 @@ inode_shutdown()
 				xlog(LOG_ERR, &e, __func__);
 		}
 
-		if (inode_flush(oi, 0, xerrz(&e)) == -1)
+		if (inode_flush(oi, INODE_FLUSH_RELEASE, xerrz(&e)) == -1)
 			xlog(LOG_ERR, &e, __func__);
 
 		LK_LOCK_DESTROY(&oi->bytes_lock);
@@ -1004,7 +1020,7 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 		if (inode_incr_size(oi, offset, written, xerrz(e)) == -1)
 			return -1;
 		if ((oi->oflags & INODE_OSYNC) &&
-		    inode_flush(oi, 1, xerrz(e)) == -1)
+		    inode_flush(oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)
 			return -1;
 	}
 
@@ -1278,7 +1294,7 @@ inode_splice_end_write(struct inode_splice_bufvec *si,
 	if (si->offset < inode_max_inline_b()) {
 		inode_set_bytes_dirty(si->oi);
 		if ((si->oi->oflags & INODE_OSYNC) &&
-		    inode_flush(si->oi, 1, xerrz(e)) == -1)
+		    inode_flush(si->oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)
 			goto fail;
 	}
 

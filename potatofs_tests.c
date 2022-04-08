@@ -506,6 +506,30 @@ test_parent_mtime_after_mknod()
 }
 
 char *
+test_atime()
+{
+	char        *p = makepath("atime");
+	struct stat  st;
+	int          fd;
+	char         buf[1];
+
+	if (mknod(p, 0640, 0) == -1)
+		return ERR("", errno);
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+
+	xnanosleep();
+
+	if ((fd = open(p, O_RDONLY)) == -1)
+		return ERR("", errno);
+	if (read(fd, buf, sizeof(buf)) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	return check_utime_gte(p, &st.st_atim, ST_ATIME);
+}
+
+char *
 test_unlink()
 {
 	struct stat  st;
@@ -1602,6 +1626,17 @@ inode_reuse()
 }
 
 char *
+test_clock_gettime()
+{
+	struct timespec tp;
+	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
+		return ERR("CLOCK_REALTIME", errno);
+	if (clock_gettime(CLOCK_MONOTONIC, &tp) == -1)
+		return ERR("CLOCK_MONOTONIC", errno);
+	return NULL;
+}
+
+char *
 test_xlog_over_line_max()
 {
 	int         i;
@@ -1831,6 +1866,10 @@ struct potatofs_test {
 		&test_slab_size
 	},
 	{
+		"clock_gettime",
+		&test_clock_gettime
+	},
+	{
 		"long (truncated) error message",
 		&test_xlog_over_line_max
 	},
@@ -1853,6 +1892,10 @@ struct potatofs_test {
 	{
 		"utimes file",
 		&test_utimes_file
+	},
+	{
+		"atime",
+		&test_atime
 	},
 	{
 		"chmod",

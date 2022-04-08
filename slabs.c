@@ -155,8 +155,12 @@ slab_unclaim(struct oslab *b)
 	struct timespec tp = {1, 0};
 
 	if (b->fd == -1) {
-		xlog(LOG_ERR, NULL, "%s: fd is -1", __func__);
+		xlog(LOG_ERR, NULL, "%s: fd is -1 on slab sk=%lu/%ld",
+		    __func__, b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
 		fs_error_set();
+		LK_LOCK_DESTROY(&b->lock);
+		LK_LOCK_DESTROY(&b->bytes_lock);
+		free(b);
 		return;
 	}
 
@@ -931,6 +935,21 @@ slab_forget(struct oslab *b, struct xerr *e)
 	}
 	MTX_UNLOCK(&owned_slabs.lock);
 	return xerr_fail(e);
+}
+
+void
+slab_refcnt(struct oslab *b, int refcnt_incr)
+{
+	MTX_LOCK(&owned_slabs.lock);
+	if (refcnt_incr < 0 && abs(refcnt_incr) > b->refcnt) {
+		xlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
+		    "slab sk=%lu/%ld; tried to decrement refcnt %lu by %d",
+		    __func__, b->hdr.v.f.key.ino, b->hdr.v.f.key.base,
+		    b->refcnt, refcnt_incr);
+		b->refcnt = 0;
+	} else
+		b->refcnt += refcnt_incr;
+	MTX_UNLOCK(&owned_slabs.lock);
 }
 
 ssize_t

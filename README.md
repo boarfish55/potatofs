@@ -134,13 +134,20 @@ KNOWN ISSUES
   never be truncated. We probably need to keep a log of pending truncations
   and resume when the backend is up again. The scrubber could probably
   handle this if it could access that information somewhere (slabdb?)
+  => Add a "needs_truncation" bool in slabdb, which the scrubber can
+     loop over and perform in the background.
+     We may need a new index over slabs needing truncation, ordered
+     by sk, so that we can do it in batches without holding the lock.
 
 
 TODO
 ====
 
+* claim => try no lock...
+* slab_unclaim ops in the fs are not so critical. If the mgr cannot be
+  reached, we could just close the slab after a few retries without setting
+  the fs_error flag. The scrubber will pick it up later.
 * Add a test to try out the last possible inode, 2^63
-* Doublecheck that atime is working as intended, add a test
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. They should retry the operations
   but check for interrupt in-between with fuse_req_interrupted(req).
@@ -152,6 +159,15 @@ TODO
     is holding a lock; retryable)
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
+  We should make sure only the claim operations return those, not unclaim.
+  We should also make sure unloading inodes does not trigger a claim. To do
+  this we need to make sure:
+  - inode_shutdown / inode_unload do only delayed truncation
+  - inode table slabs for in-memory inodes remain local
+  - Eventually might be nice to just keep a ref to the inode table inside
+    the oinode struct. Would avoid a bunch of lookups inside the inode tables,
+    and implicitly make sure we keep it loaded as long as the open inode is
+    loaded.
 * Make the workers and timeouts configurable in the config file
 * In low-space conditions, run flush/purge more often to free up space. The
   problem is that it also clogs up the workers. Maybe we need an separate

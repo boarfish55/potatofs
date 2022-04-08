@@ -54,8 +54,9 @@ struct inode {
 			struct timespec ctime;
 			struct timespec mtime;
 			/*
-			 * Keep size and data close by,
-			 * since they use the same lock.
+			 * Keep size and data last and in this order,
+			 * since when flushing inodes we flush both
+			 * together with a single write.
 			 */
 			off_t           size;
 
@@ -166,7 +167,9 @@ int            inode_unload(struct oinode *, struct xerr *);
  * acquire the bytes_lock internally.
  */
 int inode_setattr(struct oinode *, struct stat *, uint32_t, struct xerr *);
-int inode_flush(struct oinode *, int, struct xerr *);
+#define INODE_FLUSH_DATA_ONLY 0x01
+#define INODE_FLUSH_RELEASE   0x02
+int inode_flush(struct oinode *, uint8_t, struct xerr *);
 
 /*
  * The following do not acquire the inode lock. It's up to the caller
