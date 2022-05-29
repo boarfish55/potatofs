@@ -1395,10 +1395,10 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	entry.generation = oi->ino.v.f.generation;
 	entry.attr_timeout = fs_config.entry_timeouts;
 	entry.entry_timeout = fs_config.entry_timeouts;
-	inode_cp_stat(&entry.attr, &oi->ino);
 	inode_nlookup(oi, 1);
 	inode_nlink(oi, 1);
 	fs_set_time(oi, INODE_ATTR_CTIME);
+	inode_cp_stat(&entry.attr, &oi->ino);
 
 	if (di_mkdirent(parent_oi, &new_de, NULL, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
