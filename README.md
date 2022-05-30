@@ -144,12 +144,6 @@ TODO
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
   We should make sure only the claim operations return those, not unclaim.
-* Eventually might be nice to just keep a ref to the inode table inside
-  the oinode struct. Would avoid a bunch of lookups inside the inode tables,
-  and implicitly make sure we keep it loaded as long as the open inode is
-  loaded. ... meh. Not sure it's all that useful. If already in memory,
-  it's just a splay lookup. Used during inode_flush,
-  therefore inode_sync and inode_unload, and OSYNC writes.
 * Make the workers and timeouts configurable in the config file
 * Investigate whether it's possible to exploit a race condition in
   unlink/truncate to read previous file data.

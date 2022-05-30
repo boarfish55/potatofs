@@ -208,9 +208,13 @@ int           slab_forget(struct oslab *, struct xerr *);
 /*
  * Similar to the above, but specifically used to load inode tables.
  */
-struct oslab *slab_load_itbl(const struct slab_key *, rwlk_flags,
-                  struct xerr *);
-int           slab_close_itbl(struct oslab *, struct xerr *);
+struct oslab *slab_load_itbl(const struct slab_key *, struct xerr *);
+
+/*
+ * Lock/unlock a slab's bytes. Useful with inode tables.
+ */
+void          slab_lock_bytes(struct oslab *, rwlk_flags);
+void          slab_unlock_bytes(struct oslab *);
 
 /*
  * Return n inode table bases, which is provided by the caller.
@@ -257,12 +261,6 @@ void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
  * Does nothing for slabs opened with OSLAB_SYNC.
  */
 void    slab_set_dirty(struct oslab *);
-
-/*
- * Increment / decrement the slab refcnt, which can be used to force
- * a local slab to remain local. Acquires the owned_slabs lock.
- */
-void    slab_refcnt(struct oslab *, int);
 
 /* Returns the size of the slab in bytes, minus the header. */
 off_t   slab_size(struct oslab *, struct xerr *);

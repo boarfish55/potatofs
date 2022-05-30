@@ -111,6 +111,11 @@ struct oinode {
 	rwlk                 bytes_lock;
 	int                  bytes_dirty;
 
+	/*
+	 * The inode table slab in which we are stored.
+	 */
+	struct oslab        *itbl;
+
 	uint32_t             oflags;
 #define INODE_OSYNC  0x00000001
 #define INODE_ORO    0x00000002

@@ -487,16 +487,10 @@ slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
  * An inode lock must never be acquired while holding the itbl lock.
  */
 struct oslab *
-slab_load_itbl(const struct slab_key *sk, rwlk_flags lkf, struct xerr *e)
+slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 {
 	struct oslab         *b;
 	struct slab_itbl_hdr *ihdr;
-
-	if (!(lkf & (LK_LOCK_RD|LK_LOCK_RW))) {
-		XERRF(e, XLOG_APP, XLOG_INVAL,
-		    "neither read nor write lock requested");
-		return NULL;
-	}
 
 	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL) {
 		XERR_PREPENDFN(e);
@@ -513,16 +507,19 @@ slab_load_itbl(const struct slab_key *sk, rwlk_flags lkf, struct xerr *e)
 	}
 	LK_UNLOCK(&b->bytes_lock);
 
-	LK_LOCK(&b->bytes_lock, lkf);
-
 	return b;
 }
 
-int
-slab_close_itbl(struct oslab *b, struct xerr *e)
+void
+slab_lock_bytes(struct oslab *b, rwlk_flags lkf)
+{
+	LK_LOCK(&b->bytes_lock, lkf);
+}
+
+void
+slab_unlock_bytes(struct oslab *b)
 {
 	LK_UNLOCK(&b->bytes_lock);
-	return slab_forget(b, e);
 }
 
 ino_t
@@ -935,21 +932,6 @@ slab_forget(struct oslab *b, struct xerr *e)
 	}
 	MTX_UNLOCK(&owned_slabs.lock);
 	return xerr_fail(e);
-}
-
-void
-slab_refcnt(struct oslab *b, int refcnt_incr)
-{
-	MTX_LOCK(&owned_slabs.lock);
-	if (refcnt_incr < 0 && abs(refcnt_incr) > b->refcnt) {
-		xlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
-		    "slab sk=%lu/%ld; tried to decrement refcnt %lu by %d",
-		    __func__, b->hdr.v.f.key.ino, b->hdr.v.f.key.base,
-		    b->refcnt, refcnt_incr);
-		b->refcnt = 0;
-	} else
-		b->refcnt += refcnt_incr;
-	MTX_UNLOCK(&owned_slabs.lock);
 }
 
 ssize_t
