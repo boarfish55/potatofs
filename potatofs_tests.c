@@ -1552,7 +1552,7 @@ test_truncate_large()
 char *
 test_delayed_truncate_large()
 {
-	int                fd, i;
+	int                fd, slab_fd, i;
 	char              *p = makepath("delayed_truncate_large");
 	struct stat        st;
 	char               path[PATH_MAX];
@@ -1578,21 +1578,31 @@ test_delayed_truncate_large()
 		i += r;
 	}
 
-	/*
-	 * The slab_purger thread in the fs runs every 10 seconds,
-	 * so this should be enough to make sure the slabs are
-	 * no longer in memory, therefore forcing a delayed truncate.
-	 *
-	 * TODO: Instead of sleeping for that many seconds, instead
-	 * look at the slabs and try to acquire a lock. If the lock
-	 * works, then they are no longer in-memory.
-	 */
-	sleep(11);
-
-	if (ftruncate(fd, 0) == -1)
+	if (fstat(fd, &st) == -1)
 		return ERR("", errno);
 
-	if (fstat(fd, &st) == -1)
+	/*
+	 * Wait for each slab involved in our large file to be
+	 * released by the fs, then truncate. This should be
+	 * sufficient to trigger a delayed truncation.
+	 */
+	for (i = 0; i < sz; i += slab_get_max_size()) {
+		if (slab_path(path, sizeof(path),
+		    slab_key(&sk, st.st_ino, i), 0, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab path", 0);
+		}
+		if ((slab_fd = open(path, O_RDONLY)) == -1)
+			return ERR("", errno);
+
+		/* Wait for the fs/mgr to release the claim on the slab. */
+		if (flock(slab_fd, LOCK_EX) == -1)
+			return ERR("", errno);
+
+		close(slab_fd);
+	}
+
+	if (ftruncate(fd, 0) == -1)
 		return ERR("", errno);
 
 	close(fd);
