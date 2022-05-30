@@ -461,9 +461,20 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	 * Then ftruncate() or unlink() anything unnecessary in the backing
 	 * files.
 	 */
-	for (c_off = offset; c_off <= old_size; c_off += slab_get_max_size()) {
-		if (c_off > oi->ino.v.f.size &&
-		    c_off - oi->ino.v.f.size > slab_get_max_size())
+	for (c_off = offset;
+	    old_size > inode_max_inline_b() && c_off <= old_size;
+	    c_off += slab_get_max_size()) {
+		/*
+		 * Only the slab within which the new offset falls should be
+		 * truncated to a value that's not a multiple of
+		 * slab_get_max_size().
+		 *
+		 * Anything else after should be truncated to zero.
+		 *
+		 * Also, if all bytes of the inode now fit inline in the
+		 * inode, just truncate the first slab to zero as well.
+		 */
+		if (c_off > offset || oi->ino.v.f.size <= inode_max_inline_b())
 			truncate_to = 0;
 		else
 			truncate_to = c_off % slab_get_max_size();

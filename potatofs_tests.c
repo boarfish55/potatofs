@@ -1476,10 +1476,10 @@ test_fallocate_large()
 }
 
 char *
-test_truncate_large()
+test_truncate()
 {
 	int              fd, i;
-	char            *p = makepath("truncate_large");
+	char            *p = makepath("truncate");
 	struct stat      st, st_want;
 	char             path[PATH_MAX];
 	char             msg[PATH_MAX + 1024];
@@ -1493,23 +1493,25 @@ test_truncate_large()
 	struct slab_hdr  hdr;
 	ino_t            ino;
 
-	sz = (slab_get_max_size() * 2) + (slab_get_max_size() / 2);
+	sz = slab_get_max_size() * 3;
 	st_want.st_nlink = 1;
-	st_want.st_size = 0;
+	st_want.st_size = slab_get_max_size() + (slab_get_max_size() / 2);
 
 	for (i = 0; i < sizeof(buf); i++)
 		buf[i] = 'a';
 	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
 		return ERR("", errno);
 
-	/* 2.5x slab size, so we truncate from different offsets */
 	while (i < sz) {
 		if ((r = write(fd, buf, sizeof(buf))) == -1)
 			return ERR("", errno);
 		i += r;
 	}
 
-	if (ftruncate(fd, 0) == -1)
+	/*
+	 * Truncate halfway through the second slab.
+	 */
+	if (ftruncate(fd, st_want.st_size) == -1)
 		return ERR("", errno);
 
 	if (fstat(fd, &st) == -1)
@@ -1527,7 +1529,110 @@ test_truncate_large()
 		}
 
 		if ((data = slab_disk_inspect(slab_key(&sk, ino,
-		    sz), &hdr, &slab_sz, &e)) == NULL) {
+		    off), &hdr, &slab_sz, &e)) == NULL) {
+			xerr_print(&e);
+			return ERR("failed to inspect slab", 0);
+		}
+		free(data);
+
+		if (stat(path, &st) == -1) {
+			snprintf(msg, sizeof(msg),
+			    "failed to stat slab %s at offset %lu: ",
+			    path, off);
+			return ERR(msg, errno);
+		}
+
+		if (off == 0) {
+			if (st.st_size <
+			    (sizeof(struct slab_hdr) + slab_get_max_size()))
+				return ERR("first slab is less than its "
+				    "full size; we truncated the "
+				    "wrong slab!", 0);
+			if (hdr.v.f.flags & SLAB_REMOVED)
+				return ERR("slab marked as removed, "
+				    "but should not", 0);
+		} else if (off > st_want.st_size) {
+			if (st.st_size > sizeof(struct slab_hdr))
+				return ERR("truncated slab is larger "
+				    "than the slab header", 0);
+			if (!(hdr.v.f.flags & SLAB_REMOVED))
+				return ERR("slab should be marked as removed, "
+				    "but isn't", 0);
+		} else {
+			if (st.st_size !=
+			    (sizeof(struct slab_hdr) +
+			     (st_want.st_size % slab_get_max_size())))
+				return ERR("truncated slab is the "
+				    "wrong size", 0);
+			if (hdr.v.f.flags & SLAB_REMOVED)
+				return ERR("slab marked as removed, "
+				    "but should not", 0);
+		}
+	}
+
+	return check_stat(p, &st_want, ST_NLINK|ST_SIZE);
+}
+
+char *
+test_truncate_less_than_inline()
+{
+	int              fd, i;
+	char            *p = makepath("truncate_less_than_inline");
+	struct stat      st, st_want;
+	char             path[PATH_MAX];
+	char             msg[PATH_MAX + 1024];
+	char             buf[BUFSIZ];
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct slab_key  sk;
+	ssize_t          r;
+	off_t            sz, off;
+	size_t           slab_sz;
+	void            *data;
+	struct slab_hdr  hdr;
+	ino_t            ino;
+
+	sz = (slab_get_max_size() * 2) + (slab_get_max_size() / 2);
+	st_want.st_nlink = 1;
+	st_want.st_size = 5;
+
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'a';
+	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
+		return ERR("", errno);
+
+	/* 2.5x slab size, so we truncate from different offsets */
+	while (i < sz) {
+		if ((r = write(fd, buf, sizeof(buf))) == -1)
+			return ERR("", errno);
+		i += r;
+	}
+
+	/*
+	 * Truncate to 5. We explicitly don't pick zero, because
+	 * we want to confirm that the slab is truncated to zero
+	 * anyway. This is because all 5 bytes now fit within the inode's
+	 * inline bytes and therefore the underlying slab isn't useful,
+	 * and should essentially be marked for removal.
+	 */
+	if (ftruncate(fd, st_want.st_size) == -1)
+		return ERR("", errno);
+
+	if (fstat(fd, &st) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	ino = st.st_ino;
+
+	for (off = 0; off < sz; off += slab_get_max_size()) {
+		if (slab_path(path, sizeof(path),
+		    slab_key(&sk, ino, off), 0, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab path", 0);
+		}
+
+		if ((data = slab_disk_inspect(slab_key(&sk, ino,
+		    off), &hdr, &slab_sz, &e)) == NULL) {
 			xerr_print(&e);
 			return ERR("failed to inspect slab", 0);
 		}
@@ -1577,7 +1682,6 @@ test_delayed_truncate_large()
 	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
 		return ERR("", errno);
 
-	/* 2.5x slab size, so we truncate from different offsets */
 	while (i < sz) {
 		if ((r = write(fd, buf, sizeof(buf))) == -1)
 			return ERR("", errno);
@@ -2146,7 +2250,12 @@ struct potatofs_test {
 	},
 	{
 		"truncate file spanning multiple slabs",
-		&test_truncate_large
+		&test_truncate
+	},
+	{
+		"truncate file spanning multiple slabs, "
+		    "to a size less than an inode's inline bytes",
+		&test_truncate_less_than_inline
 	},
 	{
 		"delayed truncation spanning multiple slabs",
