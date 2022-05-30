@@ -71,7 +71,6 @@ fail:
 			break;
 		nanosleep(&tp, NULL);
 	}
-	/* Never reached. */
 	return -1;
 }
 

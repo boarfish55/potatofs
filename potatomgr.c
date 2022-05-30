@@ -970,7 +970,7 @@ copy_again:
  *   XLOG_APP   / XLOG_MISMATCH: unexpected revision/CRC/version on slabs
  *                  or fs_info structure
  *   XLOG_APP   / XLOG_BUSY: Those should be sent back to the user and
- *                  converted to EAGAIN.
+ *                  converted to EAGAIN?
  *                  - DB lock could not be acquired
  *                  - Contention / deadlock avoided for a slab
  *                  - Backend keeps reporting the slab does not exist
@@ -980,7 +980,7 @@ copy_again:
  *   XLOG_APP   / XLOG_BEERROR: Backend script fails, possibly due to timeout.
  *   XLOG_APP   / XLOG_BETIMEOUT: Backend script failed to return within
  *                    set timeout.
- *   XLOG_APP   / XLOG_NOSPC: Those should be exposed as ENOSPC to the user.
+ *   XLOG_FS&APP/ XLOG_NOSPC: Those should be exposed as ENOSPC to the user.
  *                  - Out of space on the backend; this should be reported
  *                    back to the user.
  *                  - Out of space on the cache partition even after waiting

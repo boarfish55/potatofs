@@ -131,9 +131,6 @@ KNOWN ISSUES
 TODO
 ====
 
-* slab_unclaim ops in the fs are not so critical. If the mgr cannot be
-  reached, we could just close the slab after a few retries without setting
-  the fs_error flag. The scrubber will pick it up later.
 * Add a test to try out the last possible inode, 2^63
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. They should retry the operations

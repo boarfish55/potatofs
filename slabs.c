@@ -148,7 +148,7 @@ static void
 slab_unclaim(struct oslab *b)
 {
 	struct xerr     e = XLOG_ERR_INITIALIZER;
-	int             mgr = -1;
+	int             mgr = -1, i;
 	struct mgr_msg  m;
 	struct timespec tp = {1, 0};
 
@@ -162,8 +162,12 @@ slab_unclaim(struct oslab *b)
 		return;
 	}
 
-	for (;;) {
-		if ((mgr = mgr_connect(1, &e)) == -1) {
+	/*
+	 * Retry a few times, but don't block here forever since
+	 * failed unclaims can always be cleaned up by scrub later.
+	 */
+	for (i = 0; i < 3; i++) {
+		if ((mgr = mgr_connect(0, &e)) == -1) {
 			xlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
@@ -205,13 +209,7 @@ slab_unclaim(struct oslab *b)
 			    b->hdr.v.f.key.base, m.v.unclaim.key.base);
 			goto fail;
 		}
-
-		close(mgr);
-		close(b->fd);
-		LK_LOCK_DESTROY(&b->lock);
-		LK_LOCK_DESTROY(&b->bytes_lock);
-		free(b);
-		return;
+		break;
 fail:
 		/*
 		 * Disowning is important and hard to recover from
@@ -220,9 +218,13 @@ fail:
 		 */
 		if (mgr != -1)
 			close(mgr);
-		fs_error_set();
 		nanosleep(&tp, NULL);
 	}
+	close(mgr);
+	close(b->fd);
+	LK_LOCK_DESTROY(&b->lock);
+	LK_LOCK_DESTROY(&b->bytes_lock);
+	free(b);
 }
 
 static void *
@@ -1090,7 +1092,7 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 	}
 
 	for (;;) {
-		if ((mgr = mgr_connect(1, e)) == -1) {
+		if ((mgr = mgr_connect(0, e)) == -1) {
 			xlog(LOG_ERR, e, __func__);
 			goto fail;
 		}
@@ -1106,22 +1108,22 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 
 		if (mgr_recv(mgr, NULL, &m, e) == -1) {
 			xlog(LOG_ERR, e, "%s: failed to receive response "
-			    "for truncate of slab sk=%lu/%lu", __func__,
+			    "for truncate of slab sk=%lu/%ld", __func__,
 			    sk->ino, sk->base);
 			goto fail;
 		} else if (m.m == MGR_MSG_TRUNCATE_NOENT) {
 			xlog_dbg(XLOG_SLAB,
-			    "%s: tried to truncate slab sk=%lu/%lu which does "
+			    "%s: tried to truncate slab sk=%lu/%ld which does "
 			    "no exist, continuing", __func__,
 			    sk->ino, sk->base);
 		} else if (m.m == MGR_MSG_TRUNCATE_ERR) {
 			xlog(LOG_ERR, &m.v.err,
-			    "%s: failed to truncate slab sk=%lu/%lu: mgr_recv",
+			    "%s: failed to truncate slab sk=%lu/%ld: mgr_recv",
 			    __func__, sk->ino, sk->base);
 			goto fail;
 		} else if (m.m != MGR_MSG_TRUNCATE_OK) {
 			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
-			    "unexpected response: %d for slab sk=%lu/%lu",
+			    "unexpected response: %d for slab sk=%lu/%ld",
 			    __func__, m.m, sk->ino, sk->base);
 			goto fail;
 		} else if (memcmp(&m.v.truncate.key, sk,
@@ -1130,13 +1132,16 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 			xlog(LOG_ERR, NULL,
 			    "%s: bad manager response for truncate; "
 			    "ino: expected=%lu, received=%lu"
-			    "base: expected=%lu, received=%lu", __func__,
+			    "base: expected=%ld, received=%ld", __func__,
 			    sk->ino, m.v.truncate.key.ino,
 			    sk->base, m.v.truncate.key.base);
 			goto fail;
+		} else {
+			xlog_dbg(XLOG_SLAB, "%s: marked slab sk=%lu/%ld",
+			    __func__, sk->ino, sk->base);
+			counter_incr(COUNTER_FS_DELAYED_TRUNCATE);
 		}
 
-		counter_incr(COUNTER_FS_DELAYED_TRUNCATE);
 		close(mgr);
 		break;
 fail:
