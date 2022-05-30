@@ -998,12 +998,12 @@ copy_again:
  *   XLOG_DB    / multiple: from slabdb_*()
  */
 static int
-claim(int c, struct mgr_msg *m, struct xerr *e)
+claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 {
 	char              name[NAME_MAX + 1];
 	char              in_path[PATH_MAX], out_path[PATH_MAX], dst[PATH_MAX];
 	int               fd_flags = O_RDWR|O_CREAT;
-	int               dst_fd, incoming_fd, outgoing_fd;
+	int               incoming_fd, outgoing_fd;
 	size_t            in_bytes;
 	struct slab_hdr   hdr;
 	struct stat       st;
@@ -1012,11 +1012,9 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	struct fs_info    fs_info;
 
 	do {
-		if (statvfs(fs_config.data_dir, &stv) == -1) {
-			XERRF(e, XLOG_APP, XLOG_IO,
+		if (statvfs(fs_config.data_dir, &stv) == -1)
+			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "statvfs: %s", strerror(errno));
-			goto fail;
-		}
 
 		if (stv.f_bfree < stv.f_blocks *
 		    (100 - fs_config.unclaim_purge_threshold_pct) / 100) {
@@ -1033,38 +1031,24 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		}
 	} while(0);
 
-	if (slab_key_valid(&m->v.claim.key, e) == -1) {
-		xerr_prepend(e, __func__);
-		goto fail;
-	}
+	if (slab_key_valid(sk, e) == -1)
+		return XERR_PREPENDFN(e);
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
 	 * a new entry will be allocated and returned.
 	 */
-	if (slabdb_get(&m->v.claim.key, &v, m->v.claim.oflags, e) == -1) {
-		if (m->v.claim.oflags & OSLAB_NOCREATE &&
-		    xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
-			m->m = MGR_MSG_CLAIM_NOENT;
-			if (mgr_send(c, -1, m, xerrz(e)) == -1) {
-				xerr_prepend(e, __func__);
-				return -1;
-			}
-			return 0;
-		}
-		goto fail;
-	}
+	if (slabdb_get(sk, &v, oflags, e) == -1)
+		return XERR_PREPENDFN(e);
 
 	/*
 	 * TODO: compare owners; need to reach consensus about who really
 	 * owns this slab. If the owner is another instance, we'll need
 	 * to relay bytes instead. For now, we just fail.
 	 */
-	if (uuid_compare(v.owner, instance_id) != 0) {
-		XERRF(e, XLOG_APP, XLOG_IO,
+	if (uuid_compare(v.owner, instance_id) != 0)
+		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "consensus for ownership not implemented");
-		goto fail;
-	}
 
 	/*
 	 * We compute the absolute path for the destination path. We use
@@ -1075,13 +1059,11 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	 * is validated, then copied to dst_fd. dst is unlinked after
 	 * successfully copying.
 	 */
-	if (slab_path(dst, sizeof(dst), &m->v.claim.key, 0, e) == -1 ||
-	    slab_path(name, sizeof(name), &m->v.claim.key, 1, e) == -1) {
-		xerr_prepend(e, __func__);
-		goto fail;
-	}
+	if (slab_path(dst, sizeof(dst), sk, 0, e) == -1 ||
+	    slab_path(name, sizeof(name), sk, 1, e) == -1)
+		return XERR_PREPENDFN(e);
 
-	if (m->v.claim.oflags & OSLAB_SYNC)
+	if (oflags & OSLAB_SYNC)
 		fd_flags |= O_SYNC;
 
 	/*
@@ -1103,8 +1085,9 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 	 * locking around the claimed slab and would never claim the same slab
 	 * if it already has a claim on it.
 	 */
-	if ((dst_fd = open_wflock(dst, fd_flags, 0600,
-	    LOCK_EX, flock_timeout)) == -1) {
+	if ((*dst_fd = open_wflock(dst, fd_flags, 0600,
+	    ((oflags & OSLAB_NONBLOCK) ? (LOCK_NB|LOCK_EX) : LOCK_EX),
+	    ((oflags & OSLAB_NONBLOCK) ? 0 : flock_timeout))) == -1) {
 		if (errno == EWOULDBLOCK)
 			XERRF(e, XLOG_APP, XLOG_BUSY,
 			    "open_wflock() timed out after multiple "
@@ -1115,20 +1098,20 @@ claim(int c, struct mgr_msg *m, struct xerr *e)
 		else
 			XERRF(e, XLOG_ERRNO, errno,
 			    "open_wflock: slab %s", dst);
-		goto fail;
+		return -1;
 	}
 
 new_slab_again:
 	if (v.revision == 0) {
 		if (fs_info_read(&fs_info, e) == -1) {
-			xerr_prepend(e, __func__);
-			goto fail;
+			XERR_PREPENDFN(e);
+			goto fail_close_dst;
 		}
 
 		if (fs_info.stats.f_bfree < fs_info.stats.f_blocks / 100) {
 			XERRF(e, XLOG_FS, ENOSPC,
 			    "backend is at 99%% capacity");
-			goto fail;
+			goto fail_close_dst;
 		}
 
 		/*
@@ -1140,11 +1123,11 @@ new_slab_again:
 		 */
 		bzero(&hdr, sizeof(hdr));
 		hdr.v.f.slab_version = SLAB_VERSION;
-		memcpy(&hdr.v.f.key, &m->v.claim.key, sizeof(struct slab_key));
+		memcpy(&hdr.v.f.key, sk, sizeof(struct slab_key));
 		hdr.v.f.flags = SLAB_DIRTY;
 		hdr.v.f.revision = 0;
 		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
-		if (write_x(dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
+		if (write_x(*dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
 			if (errno == ENOSPC) {
 				xlog(LOG_ERR, NULL,
 				    "%s: ran out of space while creating new "
@@ -1162,20 +1145,20 @@ new_slab_again:
 		 * Make sure to fsync() if the file wasn't opened
 		 * with O_SYNC initially.
 		 */
-		if (!(m->v.claim.oflags & OSLAB_SYNC) && fsync(dst_fd) == -1) {
+		if (!(oflags & OSLAB_SYNC) && fsync(*dst_fd) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "fsync");
 			goto fail_close_dst;
 		}
 		goto end;
 	}
 
-	if (fstat(dst_fd, &st) == -1) {
+	if (fstat(*dst_fd, &st) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "fstat");
 		goto fail_close_dst;
 	}
 
 	if (st.st_size >= sizeof(hdr) &&
-	    pread_x(dst_fd, &hdr, sizeof(hdr), 0) == sizeof(hdr)) {
+	    pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == sizeof(hdr)) {
 		/*
 		 * This is the most common case, where a slab was previously
 		 * claimed and is still present in our local disk cache.
@@ -1217,7 +1200,7 @@ new_slab_again:
 	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0,
 	    LOCK_SH, flock_timeout)) != -1) {
 		xlog_dbg(XLOG_MGR, "found slab in outgoing at %s", out_path);
-		if (copy_incoming_slab(dst_fd, outgoing_fd, v.header_crc,
+		if (copy_incoming_slab(*dst_fd, outgoing_fd, v.header_crc,
 		    v.revision, e) == 0) {
 			close(outgoing_fd);
 			goto end;
@@ -1240,8 +1223,7 @@ new_slab_again:
 
 get_again:
 	// TODO: Eventually bubble up this error all the way to the fs
-	if (backend_get(in_path, name, &in_bytes, &m->v.claim.key,
-	    xerrz(e)) == -1) {
+	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual
@@ -1277,7 +1259,7 @@ get_again:
 		    "after successful backend_get of %s", __func__, in_path);
 		goto fail_close_dst;
 	}
-	if (copy_incoming_slab(dst_fd, incoming_fd, v.header_crc,
+	if (copy_incoming_slab(*dst_fd, incoming_fd, v.header_crc,
 	    v.revision, e) == -1) {
 		close(incoming_fd);
 		// TODO: Eventually bubble up this error all the way to the fs
@@ -1294,7 +1276,7 @@ get_again:
 	close(incoming_fd);
 
 end:
-	if (!(m->v.claim.oflags & OSLAB_EPHEMERAL)) {
+	if (!(oflags & OSLAB_EPHEMERAL)) {
 		/*
 		 * We don't update last_claimed for "ephemeral" slabs,
 		 * since we don't mind if they get purged shortly after.
@@ -1309,7 +1291,7 @@ end:
 	uuid_copy(v.owner, instance_id);
 
 	if (v.flags & SLABDB_FLAG_TRUNCATE) {
-		if (pread_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
+		if (pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "%s: pread_x");
 			xlog_strerror(LOG_ERR, errno, "%s: pread_x",
 			    __func__);
@@ -1318,14 +1300,14 @@ end:
 		hdr.v.f.flags |= SLAB_DIRTY;
 		if (v.truncate_offset == 0)
 			hdr.v.f.flags |= SLAB_REMOVED;
-		if ((ftruncate(dst_fd,
+		if ((ftruncate(*dst_fd,
 		    v.truncate_offset + sizeof(struct slab_hdr))) == -1) {
 			xlog_strerror(LOG_CRIT, errno,
 			    "%s: ftruncate", __func__);
 			goto fail_close_dst;
 		}
 
-		if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
+		if (pwrite_x(*dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 			set_fs_error();
 			XERRF(e, XLOG_ERRNO, errno, "%s: pwrite_x");
 			xlog_strerror(LOG_ERR, errno, "%s: pwrite_x",
@@ -1339,7 +1321,7 @@ end:
 		 * right time could leave previous slab data accessible
 		 * to processes.
 		 */
-		if (!(fd_flags & O_SYNC) && fsync(dst_fd) == -1) {
+		if (!(fd_flags & O_SYNC) && fsync(*dst_fd) == -1) {
 			set_fs_error();
 			XERRF(e, XLOG_ERRNO, errno, "%s: fsync");
 			xlog_strerror(LOG_ERR, errno, "%s: fsync", __func__);
@@ -1350,29 +1332,45 @@ end:
 		v.truncate_offset = 0;
 	}
 
-	if (slabdb_put(&m->v.claim.key, &v, SLABDB_PUT_ALL, e) == -1)
+	if (slabdb_put(sk, &v, SLABDB_PUT_ALL, e) == -1)
 		goto fail_close_dst;
 
-	m->m = MGR_MSG_CLAIM_OK;
-	if (mgr_send(c, dst_fd, m, e) == -1) {
-		xerr_prepend(e, __func__);
-		close(dst_fd);
-		return -1;
-	}
-	close(dst_fd);
 	return 0;
-
 fail_close_dst:
 	unlink(dst);
-	close(dst_fd);
-fail:
-	if (xerr_fail(e)) {
-		memcpy(&m->v.err, &e, sizeof(struct xerr));
-		xlog(LOG_ERR, e, __func__);
-	}
-	m->m = MGR_MSG_CLAIM_ERR;
-	mgr_send(c, -1, m, xerrz(e));
+	close(*dst_fd);
 	return -1;
+}
+
+static int
+client_claim(int c, struct mgr_msg *m, struct xerr *e)
+{
+	int dst_fd = -1;
+
+	if (claim(&m->v.claim.key, &dst_fd, m->v.claim.oflags, e) == -1) {
+		if ((m->v.claim.oflags & OSLAB_NOCREATE) &&
+		    xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
+			m->m = MGR_MSG_CLAIM_NOENT;
+		} else {
+			memcpy(&m->v.err, e, sizeof(struct xerr));
+			xlog(LOG_ERR, e, __func__);
+			m->m = MGR_MSG_CLAIM_ERR;
+			if (mgr_send(c, -1, m, xerrz(e)) == -1)
+				xlog(LOG_ERR, e, __func__);
+			return -1;
+		}
+	} else
+		m->m = MGR_MSG_CLAIM_OK;
+
+	if (mgr_send(c, dst_fd, m, xerrz(e)) == -1) {
+		if (dst_fd != -1)
+			close(dst_fd);
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	if (dst_fd != -1)
+		close(dst_fd);
+	return 0;
 }
 
 /*
@@ -1403,7 +1401,7 @@ claim_next_itbls(int c, struct mgr_msg *m, struct xerr *e)
 	claim_msg.v.claim.key.ino = 0;
 	claim_msg.v.claim.key.base = base;
 
-	return claim(c, &claim_msg, e);
+	return client_claim(c, &claim_msg, e);
 fail:
 	m->m = MGR_MSG_CLAIM_NEXT_ITBL_ERR;
 	mgr_send(c, -1, m, xerrz(e));
@@ -1650,7 +1648,7 @@ fail:
 }
 
 static void
-scrub(const char *path)
+scrub_local_slab(const char *path)
 {
 	struct slab_hdr   hdr;
 	int               fd;
@@ -1776,13 +1774,13 @@ delayed_truncate(const struct slab_key *sk, const struct slabdb_val *v,
 }
 
 static void
-bg_scrubber()
+scrub()
 {
 	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct delayed_truncates to_truncate;
 
 	bzero(&to_truncate, sizeof(to_truncate));
-	if (slab_loop_files(&scrub, &e) == -1)
+	if (slab_loop_files(&scrub_local_slab, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
 
 	if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
@@ -1795,6 +1793,7 @@ bg_scrubber()
 	// First start by trying a non-blocking lock on the destination
 	// slab to make sure no one else is already claiming it. Be careful
 	// of locking.
+	// oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_EPHEMERAL
 }
 
 static int
@@ -1989,7 +1988,7 @@ worker(int lsock)
 
 			switch (m.m) {
 			case MGR_MSG_CLAIM:
-				claim(c, &m, xerrz(&e));
+				client_claim(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_UNCLAIM:
 				unclaim(c, &m, fd, xerrz(&e));
@@ -2293,7 +2292,7 @@ main(int argc, char **argv)
 	workers++;
 
 	if (scrubber_interval) {
-		bgworker("scrubber", &bg_scrubber, scrubber_interval);
+		bgworker("scrubber", &scrub, scrubber_interval);
 		workers++;
 	}
 	if (purger_interval) {

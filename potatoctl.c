@@ -986,7 +986,7 @@ claim(int argc, char **argv)
 	struct mgr_msg m;
 	struct oslab   b;
 	struct xerr    e;
-	uint32_t       oflags = OSLAB_NOCREATE;
+	uint32_t       oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK;
 
 	if (argc < 2) {
 		usage();

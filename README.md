@@ -131,7 +131,6 @@ KNOWN ISSUES
 TODO
 ====
 
-* claim => try no lock...
 * slab_unclaim ops in the fs are not so critical. If the mgr cannot be
   reached, we could just close the slab after a few retries without setting
   the fs_error flag. The scrubber will pick it up later.

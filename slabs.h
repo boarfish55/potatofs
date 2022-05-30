@@ -169,6 +169,7 @@ struct oslab {
 #define OSLAB_NOCREATE  0x00000001
 #define OSLAB_SYNC      0x00000002
 #define OSLAB_EPHEMERAL 0x00000004
+#define OSLAB_NONBLOCK  0x00000008
 };
 
 int slab_configure(rlim_t, time_t, struct xerr *);
