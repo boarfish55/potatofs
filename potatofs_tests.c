@@ -18,6 +18,7 @@
 #include "fs_info.h"
 #include "inodes.h"
 #include "slabdb.h"
+#include "mgr.h"
 
 char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
@@ -1552,17 +1553,22 @@ test_truncate_large()
 char *
 test_delayed_truncate_large()
 {
-	int                fd, slab_fd, i;
+	int                fd, slab_fd, i, mgr;
 	char              *p = makepath("delayed_truncate_large");
 	struct stat        st;
 	char               path[PATH_MAX];
 	char               buf[BUFSIZ];
+	char               msg[PATH_MAX + 1024];
 	struct xerr        e = XLOG_ERR_INITIALIZER;
 	struct slab_key    sk;
 	ssize_t            r;
 	off_t              sz, off;
+	size_t             slab_sz;
 	ino_t              ino;
 	struct slabdb_val  v;
+	struct mgr_msg     m;
+	void              *data;
+	struct slab_hdr    hdr;
 
 	sz = (slab_get_max_size() * 2) + (slab_get_max_size() / 2);
 
@@ -1628,7 +1634,55 @@ test_delayed_truncate_large()
 		}
 	}
 
-	// TODO: schedule a scrub pass
+	/*
+	 * Call for an explicit scrub pass to ensure delayed
+	 * truncations are processed.
+	 */
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		return ERR("failed to connect to mgr", 0);
+	}
+	m.m = MGR_MSG_SCRUB;
+	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return ERR("failed to send to mgr", 0);
+	}
+	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return ERR("failed to recv from mgr", 0);
+	}
+	close(mgr);
+
+	/*
+	 * Check that slabs are actually truncated.
+	 */
+	for (off = 0; off < sz; off += slab_get_max_size()) {
+		if (slab_path(path, sizeof(path),
+		    slab_key(&sk, ino, off), 0, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab path", 0);
+		}
+
+		if ((data = slab_disk_inspect(slab_key(&sk, ino,
+		    sz), &hdr, &slab_sz, &e)) == NULL) {
+			xerr_print(&e);
+			return ERR("failed to inspect slab", 0);
+		}
+		free(data);
+		if (!(hdr.v.f.flags & SLAB_REMOVED))
+			return ERR("slab should be marked as removed, "
+			    "but isn't", 0);
+		if (stat(path, &st) == -1) {
+			snprintf(msg, sizeof(msg),
+			    "failed to stat slab %s at offset %lu: ",
+			    path, off);
+			return ERR(msg, errno);
+		}
+
+		if (st.st_size > sizeof(struct slab_hdr))
+			return ERR("truncated slab is larger "
+			    "than the slab header", 0);
+	}
 
 	return NULL;
 }
@@ -2162,6 +2216,7 @@ main(int argc, char **argv)
 	}
 
 	config_read();
+	mgr_init(fs_config.mgr_sock_path);
 
 	if (optind >= argc) {
 		usage();

@@ -1315,6 +1315,8 @@ end:
 			goto fail_close_dst;
 		}
 
+		v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+
 		/*
 		 * Even if we're not in O_SYNC, fsync now because
 		 * truncation is important for security. A crash at the
@@ -1323,9 +1325,12 @@ end:
 		 */
 		if (!(fd_flags & O_SYNC) && fsync(*dst_fd) == -1) {
 			set_fs_error();
-			XERRF(e, XLOG_ERRNO, errno, "%s: fsync");
-			xlog_strerror(LOG_ERR, errno, "%s: fsync", __func__);
-			goto fail_close_dst;
+			xlog_strerror(LOG_CRIT, errno, "%s: fsync", __func__);
+			/*
+			 * Don't abort here, let the claim go through but
+			 * mark an fs error. This is so we have a consistent
+			 * slabdb that matches what we just wrote.
+			 */
 		}
 
 		v.flags &= ~SLABDB_FLAG_TRUNCATE;
@@ -1713,10 +1718,10 @@ scrub_local_slab(const char *path)
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
 		/*
-		 * This slab was improperly unclaimed. Maybe we died
-		 * because being able to increment and save to the slabdb?
+		 * This slab was unclaimed but not writtent to outgoing.
+		 * A common reason for this could be a delayed truncation.
 		 */
-		xlog(LOG_WARNING, NULL, "%s: slab %s was dirty despite "
+		xlog(LOG_INFO, NULL, "%s: slab %s was dirty despite "
 		    "being unclaimed; incrementing revision and sending "
 		    "to outgoing now", __func__, path);
 		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {
@@ -1778,22 +1783,69 @@ scrub()
 {
 	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct delayed_truncates to_truncate;
+	int                      fd, i;
+	uint32_t                 oflags;
 
-	bzero(&to_truncate, sizeof(to_truncate));
+	for (;;) {
+		bzero(&to_truncate, sizeof(to_truncate));
+		if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
+			xlog(LOG_ERR, &e, "%s", __func__);
+
+		if (to_truncate.count == 0)
+			break;
+
+		xlog(LOG_NOTICE, NULL, "%s: processing %d delayed truncations",
+		    __func__, to_truncate.count);
+
+		/*
+		 * Perform truncations by simply claiming slabs. claim() will
+		 * truncate to the desired offset prior to returning the fd.
+		 */
+
+		oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_EPHEMERAL;
+		for (i = 0; i < to_truncate.count; i++) {
+			if (claim(&to_truncate.sk[i], &fd, oflags,
+			    xerrz(&e)) == -1) {
+				if (xerr_is(&e, XLOG_APP, XLOG_BUSY))
+					continue;
+
+				if (xerr_is(&e, XLOG_APP, XLOG_NOSPC)) {
+					xlog(LOG_WARNING, &e, __func__);
+					continue;
+				}
+
+				if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
+					xlog(LOG_WARNING, &e,
+					    "%s: slab sk=%lu/%ld was marked "
+					    "for truncation but cannot be "
+					    "claimed", __func__,
+					    to_truncate.sk[i].ino,
+					    to_truncate.sk[i].base);
+					continue;
+				}
+
+				xlog(LOG_ERR, &e, __func__);
+				set_fs_error();
+				continue;
+			}
+			close(fd);
+		}
+	}
+
 	if (slab_loop_files(&scrub_local_slab, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
+}
 
-	if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
-		xlog(LOG_ERR, &e, "%s", __func__);
-
-	xlog(LOG_NOTICE, NULL, "%s: processing %d delayed truncations",
-	    __func__, to_truncate.count);
-
-	// TODO: do delayed truncations, that is, a claim.
-	// First start by trying a non-blocking lock on the destination
-	// slab to make sure no one else is already claiming it. Be careful
-	// of locking.
-	// oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_EPHEMERAL
+static int
+client_scrub(int c, struct mgr_msg *m, struct xerr *e)
+{
+	scrub();
+	m->m = MGR_MSG_SCRUB_OK;
+	if (mgr_send(c, -1, m, xerrz(e)) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	return 0;
 }
 
 static int
@@ -2020,6 +2072,9 @@ worker(int lsock)
 				break;
 			case MGR_MSG_RCV_COUNTERS:
 				rcv_counters(c, &m, xerrz(&e));
+				break;
+			case MGR_MSG_SCRUB:
+				client_scrub(c, &m, xerrz(&e));
 				break;
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
