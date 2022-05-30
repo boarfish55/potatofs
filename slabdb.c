@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <sqlite3.h>
 #include <string.h>
+#include <stdlib.h>
 #include <uuid/uuid.h>
 #include "slabdb.h"
 
@@ -35,22 +36,27 @@
 
 static uuid_t   instance_id;
 static sqlite3 *db;
+static int      db_version = 0;
 
 const int   qry_busy_timeout = 15000;
 
+const char *qry_create_version_table = "create table if not exists version"
+	        " as select " SLABDB_VERSION " as version";
+const char *qry_check_version = "select version from version";
+
 const char *qry_create_table = "create table if not exists slabs("
-                "ino int not null, "
-		"base int not null, "
-		"revision int not null, "
-		"header_crc int not null, "
-		"owner blob, "
-		"last_claimed_sec int not null, "
-		"last_claimed_nsec int not null, "
-		"flags int not null, "
-		"truncate_offset int not null, "
-                "primary key(ino, base))";
+	        "ino int not null, "
+	        "base int not null, "
+	        "revision int not null, "
+	        "header_crc int not null, "
+	        "owner blob, "
+	        "last_claimed_sec int not null, "
+	        "last_claimed_nsec int not null, "
+	        "flags int not null, "
+	        "truncate_offset int not null, "
+	        "primary key(ino, base))";
 const char *qry_create_index = "create index if not exists by_v2 on "
-                "slabs (last_claimed_sec, last_claimed_nsec asc)";
+	        "slabs (last_claimed_sec, last_claimed_nsec asc)";
 
 struct {
 	sqlite3_stmt *stmt;
@@ -692,6 +698,17 @@ fail:
 	return -1;
 }
 
+static int
+slabdb_check_version(void *unused, int col_count, char **val, char **columns)
+{
+	int i;
+	for (i = 0; i < col_count; i++) {
+		if (strcmp(columns[i], "version") == 0 && val[i])
+			db_version = atoi(val[i]);
+	}
+	return 0;
+}
+
 int
 slabdb_init(uuid_t id, struct xerr *e)
 {
@@ -714,6 +731,24 @@ slabdb_init(uuid_t id, struct xerr *e)
 	if ((r = sqlite3_busy_timeout(db, 60000))) {
 		XERRF(e, XLOG_DB, r, "sqlite3_busy_timeout: %s",
 		    sqlite3_errmsg(db));
+		goto fail;
+	}
+
+	if ((r = sqlite3_exec(db, qry_create_version_table, NULL, NULL, NULL))) {
+		XERRF(e, XLOG_DB, r, "sqlite3_exec: %s", sqlite3_errmsg(db));
+		goto fail;
+	}
+
+	if ((r = sqlite3_exec(db, qry_check_version, slabdb_check_version,
+	    NULL, NULL))) {
+		XERRF(e, XLOG_DB, r, "sqlite3_exec: %s", sqlite3_errmsg(db));
+		goto fail;
+	}
+
+	if (db_version != atoi(SLABDB_VERSION)) {
+		XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "mismatching db_version; current=%d, wanted=%d",
+		    db_version, SLABDB_VERSION);
 		goto fail;
 	}
 

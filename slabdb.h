@@ -25,6 +25,12 @@
 #include "xlog.h"
 #include "slabs.h"
 
+/*
+ * This should be incremented any time the SQLite database structure
+ * changes (the actual DB, not the slabdb_val structure).
+ */
+#define SLABDB_VERSION "1"
+
 struct slabdb_val {
 	uint64_t        revision;
 	uint32_t        header_crc;
