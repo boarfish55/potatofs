@@ -60,6 +60,11 @@ struct fs_usage {
 	fsblkcnt_t     used_blocks;
 };
 
+struct delayed_truncates {
+	struct slab_key sk[128];
+	int             count;
+};
+
 char                *dbg_spec = NULL;
 struct timeval       socket_timeout = {60, 0};
 extern char        **environ;
@@ -571,6 +576,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		}
 	}
 
+	bzero(&v, sizeof(v));
 	v.revision = hdr.v.f.revision;
 	v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 	if (purge)
@@ -582,7 +588,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
 	    e) == -1) {
 		set_fs_error();
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail;
 	}
 
@@ -614,6 +620,41 @@ fail:
 	memcpy(&m->v.err, e, sizeof(struct xerr));
 	m->m = MGR_MSG_UNCLAIM_ERR;
 	close(fd);
+	return mgr_send(c, -1, m, xerrz(e));
+}
+
+static int
+truncate_slab(int c, struct mgr_msg *m, struct xerr *e)
+{
+	struct slabdb_val v;
+	if (slab_key_valid(&m->v.truncate.key, e) == -1) {
+		XERR_PREPENDFN(e);
+		goto fail;
+	}
+
+	bzero(&v, sizeof(v));
+	v.flags |= SLABDB_FLAG_TRUNCATE;
+	v.truncate_offset = m->v.truncate.offset;
+	if (slabdb_put(&m->v.truncate.key, &v, SLABDB_PUT_TRUNCATE, e) == -1) {
+		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
+			m->m = MGR_MSG_TRUNCATE_NOENT;
+		} else {
+			XERR_PREPENDFN(e);
+			set_fs_error();
+			goto fail;
+		}
+	} else {
+		xlog_dbg(XLOG_MGR,
+		    "%s: slab sk=%lu/%lu marked for delayed truncation",
+		    __func__, m->v.truncate.key.ino, m->v.truncate.key.base);
+		m->m = MGR_MSG_TRUNCATE_OK;
+	}
+
+	return mgr_send(c, -1, m, xerrz(e));
+fail:
+	xlog(LOG_ERR, e, NULL);
+	memcpy(&m->v.err, e, sizeof(struct xerr));
+	m->m = MGR_MSG_TRUNCATE_ERR;
 	return mgr_send(c, -1, m, xerrz(e));
 }
 
@@ -1207,7 +1248,7 @@ get_again:
 			 * consistentcy? Or the backend actually lost data.
 			 */
 			xlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
-			    "but backend_get() claims is doesn't exist; "
+			    "but backend_get() claims it doesn't exist; "
 			    "retrying", __func__, name);
 			sleep(5);
 			goto get_again;
@@ -1266,6 +1307,49 @@ end:
 		}
 	}
 	uuid_copy(v.owner, instance_id);
+
+	if (v.flags & SLABDB_FLAG_TRUNCATE) {
+		if (pread_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
+			XERRF(e, XLOG_ERRNO, errno, "%s: pread_x");
+			xlog_strerror(LOG_ERR, errno, "%s: pread_x",
+			    __func__);
+			goto fail_close_dst;
+		}
+		hdr.v.f.flags |= SLAB_DIRTY;
+		if (v.truncate_offset == 0)
+			hdr.v.f.flags |= SLAB_REMOVED;
+		if ((ftruncate(dst_fd,
+		    v.truncate_offset + sizeof(struct slab_hdr))) == -1) {
+			xlog_strerror(LOG_CRIT, errno,
+			    "%s: ftruncate", __func__);
+			goto fail_close_dst;
+		}
+
+		if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
+			set_fs_error();
+			XERRF(e, XLOG_ERRNO, errno, "%s: pwrite_x");
+			xlog_strerror(LOG_ERR, errno, "%s: pwrite_x",
+			    __func__);
+			goto fail_close_dst;
+		}
+
+		/*
+		 * Even if we're not in O_SYNC, fsync now because
+		 * truncation is important for security. A crash at the
+		 * right time could leave previous slab data accessible
+		 * to processes.
+		 */
+		if (!(fd_flags & O_SYNC) && fsync(dst_fd) == -1) {
+			set_fs_error();
+			XERRF(e, XLOG_ERRNO, errno, "%s: fsync");
+			xlog_strerror(LOG_ERR, errno, "%s: fsync", __func__);
+			goto fail_close_dst;
+		}
+
+		v.flags &= ~SLABDB_FLAG_TRUNCATE;
+		v.truncate_offset = 0;
+	}
+
 	if (slabdb_put(&m->v.claim.key, &v, SLABDB_PUT_ALL, e) == -1)
 		goto fail_close_dst;
 
@@ -1579,24 +1663,6 @@ scrub(const char *path)
 		return;
 	}
 
-	if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
-		if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
-			xlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
-			    "unlinking", __func__, path);
-			unlink(path);
-			return;
-		}
-		xlog(LOG_ERR, &e, "%s", __func__);
-		return;
-	}
-
-	if (uuid_compare(v.owner, instance_id) != 0) {
-		xlog(LOG_ERR, NULL, "%s: slab %s is now locally-owned; "
-		    "unlinking", __func__, path);
-		unlink(path);
-		return;
-	}
-
 	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB, 0)) == -1) {
 		if (errno == EWOULDBLOCK) {
 			xlog(LOG_INFO, NULL, "%s: slab %s is already "
@@ -1606,6 +1672,24 @@ scrub(const char *path)
 			    "to open_wflock(): %s", __func__, path);
 		}
 		return;
+	}
+
+	if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
+		if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
+			xlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
+			    "unlinking", __func__, path);
+			unlink(path);
+			goto end;
+		}
+		xlog(LOG_ERR, &e, "%s", __func__);
+		goto end;
+	}
+
+	if (uuid_compare(v.owner, instance_id) != 0) {
+		xlog(LOG_ERR, NULL, "%s: slab %s is not locally-owned; "
+		    "unlinking", __func__, path);
+		unlink(path);
+		goto end;
 	}
 
 	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
@@ -1671,13 +1755,46 @@ end:
 	close(fd);
 }
 
+static int
+delayed_truncate(const struct slab_key *sk, const struct slabdb_val *v,
+    void *data)
+{
+	struct delayed_truncates *to_truncate =
+	    (struct delayed_truncates *)data;
+
+	if (v->flags & SLABDB_FLAG_TRUNCATE) {
+		to_truncate->sk[to_truncate->count].ino = sk->ino;
+		to_truncate->sk[to_truncate->count].base = sk->base;
+		to_truncate->count++;
+	}
+
+	if ((to_truncate->count * sizeof(struct slab_key)) >=
+	    sizeof(to_truncate->sk))
+		return 1;
+
+	return 0;
+}
+
 static void
 bg_scrubber()
 {
-	struct xerr e = XLOG_ERR_INITIALIZER;
+	struct xerr              e = XLOG_ERR_INITIALIZER;
+	struct delayed_truncates to_truncate;
 
+	bzero(&to_truncate, sizeof(to_truncate));
 	if (slab_loop_files(&scrub, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
+
+	if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
+		xlog(LOG_ERR, &e, "%s", __func__);
+
+	xlog(LOG_NOTICE, NULL, "%s: processing %d delayed truncations",
+	    __func__, to_truncate.count);
+
+	// TODO: do delayed truncations, that is, a claim.
+	// First start by trying a non-blocking lock on the destination
+	// slab to make sure no one else is already claiming it. Be careful
+	// of locking.
 }
 
 static int
@@ -1876,6 +1993,9 @@ worker(int lsock)
 				break;
 			case MGR_MSG_UNCLAIM:
 				unclaim(c, &m, fd, xerrz(&e));
+				break;
+			case MGR_MSG_TRUNCATE:
+				truncate_slab(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_INFO:
 				info(c, &m, xerrz(&e));

@@ -17,6 +17,7 @@
 #include "config.h"
 #include "fs_info.h"
 #include "inodes.h"
+#include "slabdb.h"
 
 char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
@@ -34,8 +35,8 @@ fail(const char *msg, int e, const char *fn, int line)
 {
 	char *m;
 
-	if (asprintf(&m, "%s%s (%s:%d)", msg,
-	    (e) ? strerror_l(e, log_locale) : "", fn, line) == -1)
+	if (asprintf(&m, "%s%s (errno=%d; %s:%d)", msg,
+	    (e) ? strerror_l(e, log_locale) : "", e, fn, line) == -1)
 		err(1, "asprintf");
         return m;
 }
@@ -1549,6 +1550,80 @@ test_truncate_large()
 }
 
 char *
+test_delayed_truncate_large()
+{
+	int                fd, i;
+	char              *p = makepath("delayed_truncate_large");
+	struct stat        st;
+	char               path[PATH_MAX];
+	char               buf[BUFSIZ];
+	struct xerr        e = XLOG_ERR_INITIALIZER;
+	struct slab_key    sk;
+	ssize_t            r;
+	off_t              sz, off;
+	ino_t              ino;
+	struct slabdb_val  v;
+
+	sz = (slab_get_max_size() * 2) + (slab_get_max_size() / 2);
+
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'a';
+	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
+		return ERR("", errno);
+
+	/* 2.5x slab size, so we truncate from different offsets */
+	while (i < sz) {
+		if ((r = write(fd, buf, sizeof(buf))) == -1)
+			return ERR("", errno);
+		i += r;
+	}
+
+	/*
+	 * The slab_purger thread in the fs runs every 10 seconds,
+	 * so this should be enough to make sure the slabs are
+	 * no longer in memory, therefore forcing a delayed truncate.
+	 *
+	 * TODO: Instead of sleeping for that many seconds, instead
+	 * look at the slabs and try to acquire a lock. If the lock
+	 * works, then they are no longer in-memory.
+	 */
+	sleep(11);
+
+	if (ftruncate(fd, 0) == -1)
+		return ERR("", errno);
+
+	if (fstat(fd, &st) == -1)
+		return ERR("", errno);
+
+	close(fd);
+
+	ino = st.st_ino;
+
+	for (off = 0; off < sz; off += slab_get_max_size()) {
+		if (slab_path(path, sizeof(path),
+		    slab_key(&sk, ino, off), 0, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab path", 0);
+		}
+
+		if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
+			xerr_print(&e);
+			return ERR("failed to get slab from slabdb", 0);
+		}
+
+		if (!(v.flags & SLABDB_FLAG_TRUNCATE) ||
+		    v.truncate_offset != 0) {
+			return ERR("slab not marked for truncation at "
+			    "0 offset", 0);
+		}
+	}
+
+	// TODO: schedule a scrub pass
+
+	return NULL;
+}
+
+char *
 test_many_inodes()
 {
 	char           path[PATH_MAX];
@@ -2010,6 +2085,10 @@ struct potatofs_test {
 		&test_truncate_large
 	},
 	{
+		"delayed truncation spanning multiple slabs",
+		&test_delayed_truncate_large
+	},
+	{
 		"inode reuse increases generation",
 		&inode_reuse
 	},
@@ -2080,6 +2159,11 @@ main(int argc, char **argv)
 	}
 
 	if (fs_info_inspect(&fs_info, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	if (slabdb_init(fs_info.instance_id, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}

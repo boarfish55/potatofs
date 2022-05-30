@@ -246,6 +246,7 @@ ssize_t slab_read(struct oslab *, void *, off_t,
             size_t, struct xerr *);
 int     slab_unlink(struct oslab *, struct xerr *);
 int     slab_truncate(struct oslab *, off_t, struct xerr *);
+int     slab_delayed_truncate(struct slab_key *, off_t, struct xerr *);
 int     slab_sync(struct oslab *, struct xerr *);
 void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
             size_t *, int *, int);

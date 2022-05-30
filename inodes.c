@@ -433,9 +433,10 @@ inode_fallocate(struct oinode *oi, off_t offset, off_t len,
 int
 inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 {
-	char         *f_data = inode_data(&oi->ino);
-	struct oslab *b;
-	off_t         old_size, zero_start, c_off;
+	char            *f_data = inode_data(&oi->ino);
+	struct oslab    *b;
+	off_t            old_size, zero_start, c_off, truncate_to;
+	struct slab_key  sk;
 
 	LK_WRLOCK(&oi->bytes_lock);
 	old_size = oi->ino.v.f.size;
@@ -461,38 +462,14 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	 * files.
 	 */
 	for (c_off = offset; c_off <= old_size; c_off += slab_get_max_size()) {
-		b = slab_at(oi, c_off, OSLAB_NOCREATE, xerrz(e));
-		if (b == NULL) {
-			if (!xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
-				fs_error_set();
-				xerr_prepend(e, __func__);
-				goto end;
-			}
-			xerrz(e);
-			continue;
-		}
+		if (c_off > oi->ino.v.f.size &&
+		    c_off - oi->ino.v.f.size > slab_get_max_size())
+			truncate_to = 0;
+		else
+			truncate_to = c_off % slab_get_max_size();
 
-		/*
-		 * We only need to truncate the first file; trash the
-		 * rest.
-		 */
-		if ((c_off / slab_get_max_size())
-		    > (oi->ino.v.f.size / slab_get_max_size())
-		    || (c_off % slab_get_max_size() == 0)) {
-			if (slab_unlink(b, xerrz(e)) == -1) {
-				fs_error_set();
-				xerr_prepend(e, __func__);
-				goto end;
-			}
-		} else {
-			if (slab_truncate(b,
-			    c_off % slab_get_max_size(), xerrz(e)) == -1) {
-				fs_error_set();
-				xerr_prepend(e, __func__);
-				goto end;
-			}
-		}
-		if (slab_forget(b, xerrz(e)) == -1) {
+		if (slab_delayed_truncate(slab_key(&sk, oi->ino.v.f.inode,
+		    c_off), truncate_to, xerrz(e)) == -1) {
 			fs_error_set();
 			xerr_prepend(e, __func__);
 			goto end;

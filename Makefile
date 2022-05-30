@@ -20,7 +20,7 @@ CTLSRCS = potatoctl.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c util.c \
 CTLOBJS = $(CTLSRCS:.c=.o)
 
 TESTSRCS = potatofs_tests.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c \
-	util.c fs_error.c fs_info.c counters.c mgr.c config.c
+	util.c fs_error.c fs_info.c counters.c mgr.c config.c slabdb.c
 TESTOBJS = $(TESTSRCS:.c=.o)
 
 all: potatofs potatoctl potatofs_tests potatomgr

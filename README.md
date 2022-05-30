@@ -127,18 +127,6 @@ KNOWN ISSUES
   situations is questionable at best and needs to be reviewed. We can't
   properly interrupt I/O ops in flight at this time.
 
-  This includes cases where we need to truncate slabs present only on the
-  backend. This would happen at FS shutdown where we download the slabs
-  in question and truncate them before unloading the inode structures.
-  If the backend is unavailable, this will be lost and the slabs will
-  never be truncated. We probably need to keep a log of pending truncations
-  and resume when the backend is up again. The scrubber could probably
-  handle this if it could access that information somewhere (slabdb?)
-  => Add a "needs_truncation" bool in slabdb, which the scrubber can
-     loop over and perform in the background.
-     We may need a new index over slabs needing truncation, ordered
-     by sk, so that we can do it in batches without holding the lock.
-
 
 TODO
 ====
@@ -160,15 +148,15 @@ TODO
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
   We should make sure only the claim operations return those, not unclaim.
-  We should also make sure unloading inodes does not trigger a claim. To do
-  this we need to make sure:
-  - inode_shutdown / inode_unload do only delayed truncation
-  - inode table slabs for in-memory inodes remain local
-  - Eventually might be nice to just keep a ref to the inode table inside
-    the oinode struct. Would avoid a bunch of lookups inside the inode tables,
-    and implicitly make sure we keep it loaded as long as the open inode is
-    loaded.
+* Eventually might be nice to just keep a ref to the inode table inside
+  the oinode struct. Would avoid a bunch of lookups inside the inode tables,
+  and implicitly make sure we keep it loaded as long as the open inode is
+  loaded. ... meh. Not sure it's all that useful. If already in memory,
+  it's just a splay lookup. Used during inode_flush,
+  therefore inode_sync and inode_unload, and OSYNC writes.
 * Make the workers and timeouts configurable in the config file
+* Investigate whether it's possible to exploit a race condition in
+  unlink/truncate to read previous file data.
 * In low-space conditions, run flush/purge more often to free up space. The
   problem is that it also clogs up the workers. Maybe we need an separate
   control socket that's used by non-workers. Would also solve the

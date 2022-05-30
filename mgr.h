@@ -34,6 +34,11 @@ struct mgr_msg {
 		MGR_MSG_CLAIM_NOENT,
 		MGR_MSG_CLAIM_ERR,
 
+		MGR_MSG_TRUNCATE,
+		MGR_MSG_TRUNCATE_OK,
+		MGR_MSG_TRUNCATE_NOENT,
+		MGR_MSG_TRUNCATE_ERR,
+
 		MGR_MSG_UNCLAIM,
 		MGR_MSG_UNCLAIM_OK,
 		MGR_MSG_UNCLAIM_ERR,
@@ -77,6 +82,11 @@ struct mgr_msg {
 		struct {
 			struct slab_key key;
 		} unclaim;
+
+		struct {
+			struct slab_key key;
+			off_t           offset;
+		} truncate;
 
 		struct {
 			pid_t          mgr_pid;

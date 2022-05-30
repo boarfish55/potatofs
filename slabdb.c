@@ -46,6 +46,8 @@ const char *qry_create_table = "create table if not exists slabs("
 		"owner blob, "
 		"last_claimed_sec int not null, "
 		"last_claimed_nsec int not null, "
+		"flags int not null, "
+		"truncate_offset int not null, "
                 "primary key(ino, base))";
 const char *qry_create_index = "create index if not exists by_v2 on "
                 "slabs (last_claimed_sec, last_claimed_nsec asc)";
@@ -60,12 +62,15 @@ struct {
 	int           i_owner;
 	int           i_last_claimed_sec;
 	int           i_last_claimed_nsec;
+	int           i_flags;
+	int           i_truncate_offset;
 } qry_put = {
 	NULL,
 	"insert or replace into slabs(ino, base, revision, header_crc, "
-	    "owner, last_claimed_sec, last_claimed_nsec) "
-	    "values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-	1, 2, 3, 4, 5, 6, 7
+	    "owner, last_claimed_sec, last_claimed_nsec, flags, "
+	    "truncate_offset) "
+	    "values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+	1, 2, 3, 4, 5, 6, 7, 8, 9
 };
 
 struct {
@@ -80,12 +85,14 @@ struct {
 	int           o_owner;
 	int           o_last_claimed_sec;
 	int           o_last_claimed_nsec;
+	int           o_flags;
+	int           o_truncate_offset;
 } qry_get = {
 	NULL,
 	"select ino, base, revision, header_crc, owner, "
-	    "last_claimed_sec, last_claimed_nsec "
+	    "last_claimed_sec, last_claimed_nsec, flags, truncate_offset "
 	    "from slabs where ino = ?1 and base = ?2",
-	1, 2, 0, 1, 2, 3, 4, 5, 6
+	1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8
 };
 
 struct {
@@ -110,12 +117,15 @@ struct {
 	int           o_owner;
 	int           o_last_claimed_sec;
 	int           o_last_claimed_nsec;
+	int           o_flags;
+	int           o_truncate_offset;
 } qry_loop_lru = {
 	NULL,
 	"select ino, base, revision, header_crc, owner, "
-	    "last_claimed_sec, last_claimed_nsec from slabs "
+	    "last_claimed_sec, last_claimed_nsec, "
+	    "flags, truncate_offset from slabs "
 	    "order by last_claimed_sec, last_claimed_nsec asc",
-	0, 1, 2, 3, 4, 5, 6
+	0, 1, 2, 3, 4, 5, 6, 7, 8
 };
 
 struct {
@@ -182,7 +192,10 @@ slabdb_put_nolock(const struct slab_key *sk, struct slabdb_val *v,
 	    (r = sqlite3_bind_int64(qry_put.stmt,
 	    qry_put.i_last_claimed_sec, v->last_claimed.tv_sec)) ||
 	    (r = sqlite3_bind_int64(qry_put.stmt,
-	    qry_put.i_last_claimed_nsec, v->last_claimed.tv_nsec))) {
+	    qry_put.i_last_claimed_nsec, v->last_claimed.tv_nsec)) ||
+	    (r = sqlite3_bind_int(qry_put.stmt, qry_put.i_flags, v->flags)) ||
+	    (r = sqlite3_bind_int64(qry_put.stmt,
+	    qry_put.i_truncate_offset, v->truncate_offset))) {
 		XERRF(e, XLOG_DB, r,
 		    "sqlite3_bind_int/int64: %s", sqlite3_errmsg(db));
 		goto fail;
@@ -230,17 +243,10 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 	if (slabdb_begin_txn(e) == -1)
 		goto fail;
 
-	if (slabdb_get_nolock(sk, &r_v, e) == -1) {
-		if (!xerr_is(e, XLOG_APP, XLOG_NOSLAB))
-			goto fail;
+	if (slabdb_get_nolock(sk, &r_v, e) == -1)
+		goto fail;
 
-		xerrz(e);
-		if (slabdb_put_nolock(sk, v, e) == -1)
-			goto fail;
-
-		if (slabdb_commit_txn(e) == -1)
-			goto fail;
-	} else if (
+	if (
 	    ((flags & SLABDB_PUT_REVISION) &&
 	     r_v.revision == v->revision) &&
 
@@ -252,7 +258,13 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 
 	    ((flags & SLABDB_PUT_LAST_CLAIMED) &&
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
-	     sizeof(struct timespec) == 0))) {
+	     sizeof(struct timespec) == 0)) &&
+
+	    ((flags & SLABDB_PUT_TRUNCATE) &&
+	     ((r_v.flags & SLABDB_FLAG_TRUNCATE) ==
+	     (v->flags & SLABDB_FLAG_TRUNCATE)) &&
+	     (r_v.truncate_offset == v->truncate_offset))) {
+
 		/* Same value, no need to update */
 		if (slabdb_rollback_txn(xerrz(e)) == -1)
 			return -1;
@@ -269,6 +281,12 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
 		if (!(flags & SLABDB_PUT_LAST_CLAIMED))
 			memcpy(&v->last_claimed, &r_v.last_claimed, 
 			    sizeof(struct timespec));
+
+		if (!(flags & SLABDB_PUT_TRUNCATE)) {
+			v->flags &= ~SLABDB_FLAG_TRUNCATE;
+			v->flags |= (r_v.flags & SLABDB_FLAG_TRUNCATE);
+			v->truncate_offset = r_v.truncate_offset;
+		}
 
 		if (slabdb_put_nolock(sk, v, e) == -1)
 			goto fail;
@@ -308,6 +326,10 @@ slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
 		    qry_get.stmt, qry_get.o_last_claimed_sec);
 		v->last_claimed.tv_nsec = sqlite3_column_int64(
 		    qry_get.stmt, qry_get.o_last_claimed_nsec);
+		v->flags = (uint32_t)sqlite3_column_int(qry_get.stmt,
+		    qry_get.o_flags);
+		v->truncate_offset = (uint64_t)sqlite3_column_int64(
+		    qry_get.stmt, qry_get.o_truncate_offset);
 
 		if (sqlite3_column_bytes(qry_get.stmt, qry_get.o_owner) == 0)
 			uuid_clear(v->owner);
@@ -363,6 +385,8 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		xerrz(e);
 		v->revision = 0;
 		v->header_crc = 0L;
+		v->flags = 0;
+		v->truncate_offset = 0;
 		uuid_copy(v->owner, instance_id);
 		if (clock_gettime(CLOCK_REALTIME, &v->last_claimed) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
@@ -475,6 +499,11 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 			v.last_claimed.tv_nsec = sqlite3_column_int64(
 			    qry_loop_lru.stmt,
 			    qry_loop_lru.o_last_claimed_nsec);
+			v.flags = sqlite3_column_int(
+			    qry_loop_lru.stmt, qry_loop_lru.o_flags);
+			v.truncate_offset = sqlite3_column_int64(
+			    qry_loop_lru.stmt,
+			    qry_loop_lru.o_truncate_offset);
 
 			if (sqlite3_column_bytes(qry_loop_lru.stmt,
 			    qry_loop_lru.o_owner) == 0) {

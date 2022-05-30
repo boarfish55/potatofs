@@ -133,8 +133,6 @@ slab_set_dirty_hdr(struct oslab *b, struct xerr *e)
 static int
 slab_realloc(struct oslab *b, struct xerr *e)
 {
-	if ((ftruncate(b->fd, sizeof(b->hdr))) == -1)
-		return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
 	b->hdr.v.f.flags &= ~SLAB_REMOVED;
 	if (slab_write_hdr_nolock(b, e) == -1)
 		return -1;
@@ -1054,6 +1052,108 @@ slab_read(struct oslab *b, void *buf, off_t offset,
 	if ((r = pread_x(b->fd, buf, count, offset)) == -1)
 		return XERRF(e, XLOG_ERRNO, errno, "pread_x");
 	return r;
+}
+
+int
+slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
+{
+	int             mgr, truncated = 0;
+	struct mgr_msg  m;
+	struct oslab    needle, *b;
+	struct timespec tp = {5, 0};
+
+	if (slab_key_valid(sk, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	/*
+	 * If we have the slab loaded in-memory, just truncate now.
+	 */
+	memcpy(&needle.hdr.v.f.key, sk, sizeof(struct slab_key));
+	MTX_LOCK(&owned_slabs.lock);
+	if ((b = SPLAY_FIND(slab_tree, &owned_slabs.head, &needle)) != NULL) {
+		LK_WRLOCK(&b->lock);
+		if (offset == 0)
+			b->hdr.v.f.flags |= SLAB_REMOVED;
+		if ((ftruncate(b->fd, offset + sizeof(b->hdr))) == -1)
+			return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
+		if (slab_write_hdr_nolock(b, e) != -1)
+			truncated = 1;
+		LK_UNLOCK(&b->lock);
+	}
+
+	/*
+	 * Unless slab_write_hdr_nolock() failed, we can just stop here.
+	 */
+	if (truncated) {
+		MTX_UNLOCK(&owned_slabs.lock);
+		return 0;
+	}
+
+	for (;;) {
+		if ((mgr = mgr_connect(1, e)) == -1) {
+			xlog(LOG_ERR, e, __func__);
+			goto fail;
+		}
+
+		m.m = MGR_MSG_TRUNCATE;
+		m.v.truncate.offset = offset;
+		memcpy(&m.v.truncate.key, sk, sizeof(struct slab_key));
+
+		if (mgr_send(mgr, -1, &m, e) == -1) {
+			xlog(LOG_ERR, e, __func__);
+			goto fail;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, e) == -1) {
+			xlog(LOG_ERR, e, "%s: failed to receive response "
+			    "for truncate of slab sk=%lu/%lu", __func__,
+			    sk->ino, sk->base);
+			goto fail;
+		} else if (m.m == MGR_MSG_TRUNCATE_NOENT) {
+			xlog_dbg(XLOG_SLAB,
+			    "%s: tried to truncate slab sk=%lu/%lu which does "
+			    "no exist, continuing", __func__,
+			    sk->ino, sk->base);
+		} else if (m.m == MGR_MSG_TRUNCATE_ERR) {
+			xlog(LOG_ERR, &m.v.err,
+			    "%s: failed to truncate slab sk=%lu/%lu: mgr_recv",
+			    __func__, sk->ino, sk->base);
+			goto fail;
+		} else if (m.m != MGR_MSG_TRUNCATE_OK) {
+			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
+			    "unexpected response: %d for slab sk=%lu/%lu",
+			    __func__, m.m, sk->ino, sk->base);
+			goto fail;
+		} else if (memcmp(&m.v.truncate.key, sk,
+		    sizeof(struct slab_key))) {
+			/* We close the fd here to avoid deadlocks. */
+			xlog(LOG_ERR, NULL,
+			    "%s: bad manager response for truncate; "
+			    "ino: expected=%lu, received=%lu"
+			    "base: expected=%lu, received=%lu", __func__,
+			    sk->ino, m.v.truncate.key.ino,
+			    sk->base, m.v.truncate.key.base);
+			goto fail;
+		}
+
+		counter_incr(COUNTER_FS_DELAYED_TRUNCATE);
+		close(mgr);
+		break;
+fail:
+		/*
+		 * Delayed truncation cannot be aborted as this could pose
+		 * security concerns where someone recreating this inode
+		 * could possibly see past file contents.
+		 * Loop until things recover, or until an external action is
+		 * taken.
+		 */
+		if (mgr != -1)
+			close(mgr);
+		fs_error_set();
+		nanosleep(&tp, NULL);
+	}
+	MTX_UNLOCK(&owned_slabs.lock);
+	return 0;
 }
 
 int

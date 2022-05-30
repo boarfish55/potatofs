@@ -959,11 +959,14 @@ slabdb(int argc, char **argv)
 	for (entry = head; entry != NULL; entry = entry->next) {
 		uuid_unparse(entry->sv.owner, u);
 		printf("%s: sk=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
-		    " last_claimed=%lu.%lu\n", __func__,
+		    " last_claimed=%lu.%lu, flags=%u, truncate_offset=%lu\n",
+		    __func__,
 		    entry->sk.ino, entry->sk.base,
 		    entry->sv.revision, entry->sv.header_crc, u,
 		    entry->sv.last_claimed.tv_sec,
-		    entry->sv.last_claimed.tv_nsec);
+		    entry->sv.last_claimed.tv_nsec,
+		    entry->sv.flags,
+		    entry->sv.truncate_offset);
 	}
 
 	slabdb_shutdown();
