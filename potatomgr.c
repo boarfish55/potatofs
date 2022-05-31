@@ -1090,11 +1090,8 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	    ((oflags & OSLAB_NONBLOCK) ? 0 : flock_timeout))) == -1) {
 		if (errno == EWOULDBLOCK)
 			XERRF(e, XLOG_APP, XLOG_BUSY,
-			    "open_wflock() timed out after multiple "
-			    "retries for slab %s; this should not happen if "
-			    "the fs process is properly managing open slabs. "
-			    "Unless someone is attempting to claim this slab "
-			    "from another process?", dst);
+			    "open_wflock() failed to acquire lock "
+			    "for slab %s (EWOULDBLOCK)", dst);
 		else
 			XERRF(e, XLOG_ERRNO, errno,
 			    "open_wflock: slab %s", dst);

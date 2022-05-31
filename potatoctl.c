@@ -1021,6 +1021,10 @@ claim(int argc, char **argv)
 		errx(1, "failed to claim slab for inode %lu "
 		    "at base %lu: no such slab", ino, base);
 	else if (m.m == MGR_MSG_CLAIM_ERR) {
+		if (xerr_is(&m.v.err, XLOG_APP, XLOG_BUSY)) {
+			errx(1, "%s: could not claim slab; already locked",
+			    __func__);
+		}
 		xerr_print(&m.v.err);
 		exit(1);
 	} else if (m.m != MGR_MSG_CLAIM_OK)
