@@ -55,7 +55,7 @@ const char *qry_create_table = "create table if not exists slabs("
 	        "flags int not null, "
 	        "truncate_offset int not null, "
 	        "primary key(ino, base))";
-const char *qry_create_index = "create index if not exists by_v2 on "
+const char *qry_create_index = "create index if not exists by_last_claimed on "
 	        "slabs (last_claimed_sec, last_claimed_nsec asc)";
 
 struct {

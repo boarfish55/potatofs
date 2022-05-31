@@ -95,6 +95,38 @@ struct fsck_stats {
 	uint64_t errors;
 };
 
+struct found_inode {
+	ino_t                 ino;
+	RB_ENTRY(found_inode) entry;
+};
+
+static struct {
+	RB_HEAD(scanned_inode_tree, found_inode) head;
+} scanned_inodes = {
+	RB_INITIALIZER(&inode_tree.head)
+};
+
+static struct {
+	RB_HEAD(scanned_dirent_inode_tree, found_inode) head;
+} scanned_dirent_inodes = {
+	RB_INITIALIZER(&inode_tree.head)
+};
+
+static int
+found_inode_cmp(struct found_inode *f1, struct found_inode *f2)
+{
+	if (f1->ino < f2->ino)
+		return -1;
+	if (f1->ino > f2->ino)
+		return 1;
+	return 0;
+}
+
+RB_PROTOTYPE(scanned_inode_tree, found_inode, entry, found_inode_cmp);
+RB_GENERATE(scanned_inode_tree, found_inode, entry, found_inode_cmp);
+RB_PROTOTYPE(scanned_dirent_inode_tree, found_inode, entry, found_inode_cmp);
+RB_GENERATE(scanned_dirent_inode_tree, found_inode, entry, found_inode_cmp);
+
 struct slabdb_entry {
 	struct slab_key      sk;
 	struct slabdb_val    sv;
@@ -242,11 +274,12 @@ int
 fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
     struct fsck_stats *stats)
 {
-	struct dir_entry *de;
-	char             *dir;
-	size_t            dir_sz;
-	struct xerr       e;
-	int               dirty = 0;
+	struct dir_entry   *de;
+	char               *dir;
+	size_t              dir_sz;
+	struct xerr         e;
+	int                 dirty = 0;
+	struct found_inode *fino;
 
 	fsck_printf("  inode: %lu", ino);
 	if (unallocated) {
@@ -259,12 +292,6 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			return -1;
 		}
 	} else {
-		// TODO: pile up allocated inodes in a data structure
-		// so we can look them up when we scan directories. As we
-		// find them linked somewhere, we can remove them from the
-		// data structure. Anything left in that structure at the
-		// end means it's not linked anywhere.
-
 		if (inode == NULL) {
 			warnx("missing inode %lu; bitmap says it's allocated, "
 			    "but inode table ends at a lower offset", ino);
@@ -275,6 +302,19 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			    "but nlink is 0", ino);
 			stats->errors++;
 			return -1;
+		}
+
+		/*
+		 * Keep track of all allocated inodes to later verify
+		 * if they are properly linked in a directory somewhere.
+		 */
+		if ((fino = calloc(1, sizeof(struct found_inode))) == NULL)
+			err(1, "calloc");
+		fino->ino = inode->v.f.inode;
+		if (RB_INSERT(scanned_inode_tree, &scanned_inodes.head,
+		    fino) != NULL) {
+			free(fino);
+			err(1, "RB_INSERT");
 		}
 	}
 
@@ -298,6 +338,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			fsck_printf("    dirent: %lu (%s)",
 			    de->inode, de->name);
 			stats->n_dirents++;
+
 			if (!valid_inode(mgr, de->inode)) {
 				stats->errors++;
 
@@ -308,6 +349,24 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 						xerr_print(&e);
 					else
 						dirty = 1;
+				}
+				continue;
+			}
+
+			/*
+			 * Keep track of all linked inodes to later verify
+			 * if any of them are not.
+			 */
+			if ((fino = calloc(1, sizeof(struct found_inode))) == NULL)
+				err(1, "calloc");
+			fino->ino = de->inode;
+			if (!RB_FIND(scanned_dirent_inode_tree,
+			    &scanned_dirent_inodes.head, fino)) {
+				if (RB_INSERT(scanned_dirent_inode_tree,
+				    &scanned_dirent_inodes.head, fino)
+				    != NULL) {
+					free(fino);
+					err(1, "RB_INSERT");
 				}
 			}
 		}
@@ -476,6 +535,7 @@ fsck(int argc, char **argv)
 	size_t                 n_free;
 	int                    mgr;
 	char                 **arg;
+	struct found_inode    *fino, *nfino, *dfino;
 
 	fsck_verbose = 1;
 
@@ -544,6 +604,23 @@ fsck(int argc, char **argv)
 		free(itbl);
 	}
 	close(mgr);
+	for (fino = RB_MIN(scanned_inode_tree, &scanned_inodes.head);
+	    fino != NULL;
+	    fino = nfino) {
+		nfino = RB_NEXT(scanned_inode_tree, &scanned_inodes.head, fino);
+		RB_REMOVE(scanned_inode_tree, &scanned_inodes.head, fino);
+		if ((dfino = RB_FIND(scanned_dirent_inode_tree,
+		    &scanned_dirent_inodes.head, fino))) {
+			RB_REMOVE(scanned_dirent_inode_tree,
+			    &scanned_dirent_inodes.head, dfino);
+			free(dfino);
+		} else {
+			warnx("%s: inode %lu is not referenced in any "
+			    "directory", __func__, fino->ino);
+			stats.errors++;
+		}
+		free(fino);
+	}
 end:
 	printf("Filesystem statistics:\n");
 	printf("    inodes:      %lu\n", stats.n_inodes);

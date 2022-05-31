@@ -130,8 +130,7 @@ KNOWN ISSUES
 
 TODO
 ====
-
-* Add a test to try out the last possible inode, 2^63
+* Add missing fsck functionality where we check for unref'd inodes, see TODO.
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. They should retry the operations
   but check for interrupt in-between with fuse_req_interrupted(req).
@@ -143,7 +142,7 @@ TODO
     is holding a lock; retryable)
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
-  We should make sure only the claim operations return those, not unclaim.
+* Add a test to try out the last possible inode, 2^63
 * Make the workers and timeouts configurable in the config file
 * Investigate whether it's possible to exploit a race condition in
   unlink/truncate to read previous file data.
@@ -154,13 +153,12 @@ TODO
 * Add a "rm" handler in backend scripts, though mention this will only
   be used by fsck, therefore is optional.
 * Add a "wide" option to top
-* Purging also needs to cleanup the backend of unreferenced slabs? Or
-  maybe just fsck.
+* fsck should cleanup unreferenced slabs on the backend.
+* Add a format field for dirinodes; they need to be optimized to locate
+  free slots. This is way too slow on large directories.
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
   all entries in a directory, or the size of an inode. Useful to
   to do manual claims and all.
-* Add a format field for dirinodes; they need to be optimized to locate
-  free slots. This is way too slow on large directories.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
