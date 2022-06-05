@@ -1618,9 +1618,10 @@ bg_flush()
 			continue;
 		}
 
-		if (backend_put(path, basename(path), &out_bytes, &sk, &e) == -1) {
-			xlog(LOG_ERR, &e, "%s: failed but will retry; "
-			    "reason: ", __func__);
+		if (backend_put(path, basename(path), &out_bytes,
+		    &sk, &e) == -1) {
+			xlog(LOG_ERR, &e, "%s: failed but will retry",
+			    __func__);
 			close(fd);
 			continue;
 		}
