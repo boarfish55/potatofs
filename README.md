@@ -130,7 +130,6 @@ KNOWN ISSUES
 
 TODO
 ====
-* Add missing fsck functionality where we check for unref'd inodes, see TODO.
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. They should retry the operations
   but check for interrupt in-between with fuse_req_interrupted(req).
@@ -142,6 +141,8 @@ TODO
     is holding a lock; retryable)
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
+* Add a format field for dirinodes; they need to be optimized to locate
+  free slots. This is way too slow on large directories.
 * Add a test to try out the last possible inode, 2^63
 * Make the workers and timeouts configurable in the config file
 * Investigate whether it's possible to exploit a race condition in
@@ -154,8 +155,6 @@ TODO
   be used by fsck, therefore is optional.
 * Add a "wide" option to top
 * fsck should cleanup unreferenced slabs on the backend.
-* Add a format field for dirinodes; they need to be optimized to locate
-  free slots. This is way too slow on large directories.
 * Add a way for potatoctl to dump inode fields in JSON, such as to list
   all entries in a directory, or the size of an inode. Useful to
   to do manual claims and all.
