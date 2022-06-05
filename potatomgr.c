@@ -1233,7 +1233,7 @@ get_again:
 			goto get_again;
 		} else if (xerr_is(e, XLOG_APP, XLOG_BEERROR)) {
 			xlog(LOG_ERR, e, "%s: backend script failed, "
-			    "will retry; reason: %s", __func__);
+			    "will retry", __func__);
 			sleep(5);
 			goto get_again;
 		} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
@@ -1262,7 +1262,7 @@ get_again:
 		// TODO: Eventually bubble up this error all the way to the fs
 		// Eventual consistency?
 		if (xerr_is(e, XLOG_APP, XLOG_MISMATCH)) {
-			xlog(LOG_ERR, e, "%s: retrying; ", __func__);
+			xlog(LOG_ERR, e, "%s: retrying", __func__);
 			sleep(5);
 			goto get_again;
 		}
