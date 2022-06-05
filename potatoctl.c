@@ -622,12 +622,15 @@ fsck(int argc, char **argv)
 		free(fino);
 	}
 end:
-	printf("Filesystem statistics:\n");
-	printf("    inodes:      %lu\n", stats.n_inodes);
-	printf("    directories: %lu\n", stats.n_dirs);
-	printf("    dirents:     %lu\n", stats.n_dirents);
-	printf("    errors:      %lu\n", stats.errors);
-	printf("Scan result: %s\n", (stats.errors) ? "errors" : "clean");
+	if (fsck_verbose) {
+		printf("Filesystem statistics:\n");
+		printf("    inodes:      %lu\n", stats.n_inodes);
+		printf("    directories: %lu\n", stats.n_dirs);
+		printf("    dirents:     %lu\n", stats.n_dirents);
+		printf("    errors:      %lu\n", stats.errors);
+		printf("Scan result: %s\n",
+		    (stats.errors) ? "errors" : "clean");
+	}
 	return (stats.errors) ? 1 : 0;
 }
 
