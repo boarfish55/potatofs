@@ -618,8 +618,8 @@ char *
 test_rmdir_notempty_notdir()
 {
 	struct stat  st;
-	char        *p = makepath("rmdir-me");
-	char        *p2 = makepath("rmdir-me/notempty");
+	char        *p = makepath("rmdir-me2");
+	char        *p2 = makepath("rmdir-me2/notempty");
 	struct stat  st_want;
 
 	st_want.st_mode = (S_IFDIR | 0711);
@@ -638,6 +638,36 @@ test_rmdir_notempty_notdir()
 		return ERR("rmdir() on non-directory failed to return "
 		    "ENOTDIR", 0);
 	errno = 0;
+
+	if (rmdir(p) != -1 || errno != ENOTEMPTY)
+		return ERR("rmdir() on non-empty directory failed to return "
+		    "ENOTEMPTY", 0);
+
+	if (access(p, R_OK|X_OK) == -1)
+		return ERR("directory should still exist after rmdir", 0);
+
+	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
+}
+
+char *
+test_rmdir_contains_dir()
+{
+	struct stat  st;
+	char        *p = makepath("rmdir-me3");
+	char        *p2 = makepath("rmdir-me3/notempty");
+	struct stat  st_want;
+
+	st_want.st_mode = (S_IFDIR | 0711);
+	st_want.st_nlink = 3;
+	st_want.st_uid = getuid();
+	st_want.st_gid = getgid();
+
+	if (mkdir(p, 0711) == -1)
+		return ERR("", errno);
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+	if (mkdir(p2, 0700) == -1)
+		return ERR("", errno);
 
 	if (rmdir(p) != -1 || errno != ENOTEMPTY)
 		return ERR("rmdir() on non-empty directory failed to return "
@@ -2167,6 +2197,10 @@ struct potatofs_test {
 	{
 		"rmdir on non-empty dir, or non-directory",
 		&test_rmdir_notempty_notdir
+	},
+	{
+		"rmdir on non-empty dir that contains another dir",
+		&test_rmdir_contains_dir
 	},
 	{
 		"symlink",

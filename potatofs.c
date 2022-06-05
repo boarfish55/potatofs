@@ -959,7 +959,13 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
 			goto end;
 		}
-	} else if (oi->ino.v.f.nlink <= 2) {
+	} else if (oi->ino.v.f.nlink > 2) {
+		/* If nlink > 2, we have child directories */
+		FUSE_REPLY(&r_sent,
+		    fuse_reply_err(req, ENOTEMPTY));
+		goto end;
+	} else {
+		/* Finally, see if we have any files in this dir */
 		switch (di_isempty(oi, &e)) {
 		case 0:
 			FUSE_REPLY(&r_sent,
@@ -1275,9 +1281,12 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 		return;
 	}
 
-	if (inode_fallocate(oi, offset, length, mode, &e) == -1)
-		FS_ERR(&r_sent, req, &e);
-	else
+	if (inode_fallocate(oi, offset, length, mode, &e) == -1) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+	} else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 
 	if (inode_unload(oi, xerrz(&e)) == -1)
