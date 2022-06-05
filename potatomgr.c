@@ -1559,7 +1559,8 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	while (!shutdown_requested) {
 		fn();
-		nanosleep(&tp, NULL);
+		if (!shutdown_requested)
+			nanosleep(&tp, NULL);
 	}
 	xlog(LOG_INFO, NULL, "exiting");
 	slabdb_shutdown();
