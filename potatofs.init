@@ -28,13 +28,6 @@ case $1 in
 		$binpath/potatomgr -c $conf
 		echo "OK."
 
-		# TODO: we need to make sure fsck doesn't update the slabs
-		# that it downloads, and doesn't update last_claimed so that
-		# they can quickly be purged as we loop over them to
-		# compute their checksum.
-		#
-		# We also need a "fast" fsck mode that only validates inodes,
-		# so that we can leave the file slabs alone.
 		echo -n "* fsck..."
 		$binpath/potatoctl -c $conf fsck quiet || exit 1
 		echo "OK."
