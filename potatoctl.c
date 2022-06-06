@@ -291,6 +291,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			stats->errors++;
 			return -1;
 		}
+		return 0;
 	} else {
 		if (inode == NULL) {
 			warnx("missing inode %lu; bitmap says it's allocated, "
