@@ -937,9 +937,14 @@ test_hardlink_dir()
 char *
 test_rename()
 {
-	struct stat  st_want;
+	struct stat  st_want, st_root;
+	char        *root = makepath("");
 	char        *p = makepath("before_move");
 	char        *p2 = makepath("after_move");
+	char        *r;
+
+	if (stat(root, &st_root) == -1)
+		return ERR("", errno);
 
 	if (mknod(p, 0444, 0) == -1)
 		return ERR("", errno);
@@ -949,14 +954,17 @@ test_rename()
 
 	if (rename(p, p2) == -1)
 		return ERR("", errno);
-	return check_stat(p2, &st_want,
-	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
+
+	if ((r = check_stat(p2, &st_want,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE)) != NULL)
+		return r;
+	return check_stat(root, &st_root, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
 char *
 test_rename_to_self()
 {
-	struct stat  st_want, st_parent;
+	struct stat  st_want, st_root;
 	char        *p = makepath("move_self");
 	char        *root = makepath("");
 	char        *r;
@@ -966,29 +974,33 @@ test_rename_to_self()
 
 	if (stat(p, &st_want) == -1)
 		return ERR("", errno);
-	if (stat(root, &st_parent) == -1)
+	if (stat(root, &st_root) == -1)
 		return ERR("", errno);
 
 	if (rename(p, p) == -1)
 		return ERR("", errno);
-	r = check_stat(p, &st_want,
-	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
-	if (r != NULL)
-		return r;
 
-	return check_stat(root, &st_parent,
+	if ((r = check_stat(p, &st_want,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE)) != NULL)
+		return r;
+	return check_stat(root, &st_root,
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
 char *
 test_rename_replace()
 {
-	struct stat  st_want, st_unlink;
+	struct stat  st_want, st_unlink, st_root;
+	char        *root = makepath("");
 	char        *p1 = makepath("before_move_replace");
 	char        *p2 = makepath("after_move_replace");
 	ino_t        gone;
 	struct xerr  e = XLOG_ERR_INITIALIZER;
 	int          i = 0;
+	char        *r;
+
+	if (stat(root, &st_root) == -1)
+		return ERR("", errno);
 
 	if (mknod(p1, 0444, 0) == -1)
 		return ERR("", errno);
@@ -1021,14 +1033,16 @@ test_rename_replace()
 	if (i == 0)
 		return ERR("file still exists on-disk after unlink", 0);
 
-	return check_stat(p2, &st_want,
-	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
+	if ((r = check_stat(p2, &st_want,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE)) != NULL)
+		return r;
+	return check_stat(root, &st_root, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
 char *
 test_rename_crossdir()
 {
-	struct stat      st_want;
+	struct stat      st_want, st_want_d1, st_want_d2;
 	char            *d1 = makepath("crossdir1");
 	char            *d2 = makepath("crossdir2");
 	char            *p1 = makepath("crossdir1/moved");
@@ -1046,11 +1060,71 @@ test_rename_crossdir()
 	if (stat(p1, &st_want) == -1)
 		return ERR("", errno);
 
+	if (stat(d1, &st_want_d1) == -1)
+		return ERR("", errno);
+	if (stat(d2, &st_want_d2) == -1)
+		return ERR("", errno);
+
 	xnanosleep();
 	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
 		return ERR("", errno);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
+
+	if ((r = check_stat(d1, &st_want_d1,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID)) != NULL)
+		return r;
+	if ((r = check_stat(d2, &st_want_d2,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID)) != NULL)
+		return r;
+
+	if ((r = check_utime_gte(p2, &tp, ST_CTIME)) != NULL)
+		return r;
+
+	return check_stat(p2, &st_want,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
+}
+
+char *
+test_rename_dir_crossdir()
+{
+	struct stat      st_want, st_want_d1, st_want_d2;
+	char            *d1 = makepath("dir_crossdir1");
+	char            *d2 = makepath("dir_crossdir2");
+	char            *p1 = makepath("dir_crossdir1/moved");
+	char            *p2 = makepath("dir_crossdir2/moved");
+	char            *r;
+	struct timespec  tp;
+
+	if (mkdir(d1, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(d2, 0700) == -1)
+		return ERR("", errno);
+
+	if (mkdir(p1, 0700) == -1)
+		return ERR("", errno);
+	if (stat(p1, &st_want) == -1)
+		return ERR("", errno);
+
+	if (stat(d1, &st_want_d1) == -1)
+		return ERR("", errno);
+	if (stat(d2, &st_want_d2) == -1)
+		return ERR("", errno);
+
+	xnanosleep();
+	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
+		return ERR("", errno);
+	if (rename(p1, p2) == -1)
+		return ERR("", errno);
+
+	st_want_d1.st_nlink--;
+	if ((r = check_stat(d1, &st_want_d1,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID)) != NULL)
+		return r;
+	st_want_d2.st_nlink++;
+	if ((r = check_stat(d2, &st_want_d2,
+	    ST_MODE|ST_NLINK|ST_UID|ST_GID)) != NULL)
+		return r;
 
 	if ((r = check_utime_gte(p2, &tp, ST_CTIME)) != NULL)
 		return r;
@@ -1068,7 +1142,7 @@ test_rename_replace_crossdir()
 	char             *p1 = makepath("crossdir_replace1/x");
 	char             *p2 = makepath("crossdir_replace2/y");
 	ino_t             gone;
-	struct xerr  e = XLOG_ERR_INITIALIZER;
+	struct xerr       e = XLOG_ERR_INITIALIZER;
 	int               i = 0;
 
 	if (mkdir(d1, 0700) == -1)
@@ -1191,6 +1265,57 @@ test_rename_nondir_to_dir()
 		return NULL;
 	}
 	return ERR("rename from non-dir to dir should fail with EISDIR", 0);
+}
+
+char *
+test_rename_dir_to_existing_emtpy_dir()
+{
+	char        *d = makepath("rename_dir_to_dir");
+	char        *p1 = makepath("rename_dir_to_dir/x");
+	char        *p2 = makepath("rename_dir_to_dir/d");
+	struct stat  st_want;
+
+	if (mkdir(d, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(p1, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(p2, 0700) == -1)
+		return ERR("", errno);
+
+	if (stat(d, &st_want) == -1)
+		return ERR("", errno);
+
+	if (rename(p1, p2) == -1)
+		return ERR("", errno);
+	st_want.st_nlink--;
+
+	return check_stat(d, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
+}
+
+char *
+test_rename_dir_to_existing_nonemtpy_dir()
+{
+	char        *d = makepath("rename_dir_to_nonempty_dir");
+	char        *p1 = makepath("rename_dir_to_nonempty_dir/x");
+	char        *p2 = makepath("rename_dir_to_nonempty_dir/d");
+	char        *p3 = makepath("rename_dir_to_nonempty_dir/d/x");
+
+	if (mkdir(d, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(p1, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(p2, 0700) == -1)
+		return ERR("", errno);
+	if (mknod(p3, 0400, 0) == -1)
+		return ERR("", errno);
+
+	if (rename(p1, p2) == -1) {
+		if (errno == ENOTEMPTY)
+			return NULL;
+		return ERR("", errno);
+	}
+
+	return ERR("replacing non-empty dir should fail", 0);
 }
 
 char *
@@ -2247,6 +2372,10 @@ struct potatofs_test {
 		&test_rename_crossdir
 	},
 	{
+		"rename dir, cross dir",
+		&test_rename_dir_crossdir
+	},
+	{
 		"rename w/replace, cross dir",
 		&test_rename_replace_crossdir
 	},
@@ -2261,6 +2390,14 @@ struct potatofs_test {
 	{
 		"rename, fails on non-dir to dir with EISDIR",
 		&test_rename_nondir_to_dir
+	},
+	{
+		"rename dir over another empty dir",
+		&test_rename_dir_to_existing_emtpy_dir
+	},
+	{
+		"rename dir over another non-empty dir",
+		&test_rename_dir_to_existing_nonemtpy_dir
 	},
 	{
 		"rename, to/from root inode fails with EBUSY / EXDEV",

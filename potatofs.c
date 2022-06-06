@@ -1615,6 +1615,27 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		goto end;
 	}
 
+	/* We can't rename a dir over a non-empty dir */
+	if (new_oi != NULL && inode_isdir(oi) && inode_isdir(new_oi)) {
+		if (new_oi->ino.v.f.nlink > 2) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTEMPTY));
+			goto end;
+		}
+
+		switch (di_isempty(new_oi, &e)) {
+		case 0:
+			FUSE_REPLY(&r_sent,
+			    fuse_reply_err(req, ENOTEMPTY));
+			goto end;
+		case 1:
+			break;
+		default:
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+			goto end;
+		}
+	}
+
 	if (inode_ino(oi) == FS_ROOT_INODE ||
 	    (new_oi != NULL && inode_ino(new_oi) == FS_ROOT_INODE)) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EBUSY));
@@ -1738,25 +1759,25 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			xerrz(&e);
 			goto end;
 		}
-		/*
-		 * If we're replacing a file with our directory,
-		 * the new parent should have an increased link count.
-		 */
-		if (new_oi && !inode_isdir(new_oi)) {
-			inode_nlink(new_doi, 1);
+		inode_nlink(new_doi, 1);
+		if (inode_flush(new_doi, 0, &e) == -1) {
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+		}
+	}
+
+	if (replaced.inode != 0) {
+		inode_nlink(new_oi, inode_isdir(new_oi) ? -2 : -1);
+		if (inode_flush(new_oi, 0, &e) == -1) {
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+		}
+		if (inode_isdir(new_oi)) {
+			inode_nlink(new_doi, -1);
 			if (inode_flush(new_doi, 0, &e) == -1) {
 				FS_ERR(&r_sent, req, &e);
 				xerrz(&e);
 			}
-		}
-
-	}
-
-	if (replaced.inode != 0) {
-		inode_nlink(new_oi, -1);
-		if (inode_flush(new_oi, 0, &e) == -1) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
 		}
 	}
 
