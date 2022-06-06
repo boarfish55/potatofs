@@ -5,6 +5,10 @@ fatal() {
 	exit 1
 }
 
+warn() {
+	echo "error: $1" >&2
+}
+
 ulimit -c unlimited
 
 export BACKEND_DATA_PATH="$(mktemp -d /dev/shm/potatofs_backend.XXXXXX)"
@@ -66,7 +70,7 @@ echo ""
 
 echo "*** fsck ***"
 ./potatomgr -c "$conf" -w 1 -W 1 -T 3600
-./potatoctl -c "$conf" fsck quiet
+./potatoctl -c "$conf" fsck quiet || warn "fsck had errors"
 ./potatoctl -c "$conf" shutdown
 echo ""
 
