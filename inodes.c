@@ -678,7 +678,7 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		goto fail_close_itbl;
 	}
 
-	if ((oi = malloc(sizeof(struct oinode))) == NULL) {
+	if ((oi = calloc(1, sizeof(struct oinode))) == NULL) {
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		goto fail_close_itbl;
 	}
@@ -693,9 +693,6 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 	oi->refcnt = 1;
 	oi->oflags = oflags;
 	oi->itbl = b;
-	xlog_dbg(XLOG_INODE, "%s: loaded inode %lu refcnt %llu nlookup %lu",
-	    __func__, ino, oi->refcnt, oi->nlookup);
-
 	r = slab_read(b, &oi->ino,
 	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
 	    sizeof(struct inode), xerrz(e));
@@ -714,6 +711,10 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		XERRF(e, XLOG_APP, XLOG_IO, "inode already loaded %lu", ino);
 		goto fail_destroy_lock;
 	}
+
+	xlog_dbg(XLOG_INODE, "%s: loaded inode %lu refcnt %llu nlookup %lu "
+	    "nlink %ld", __func__, ino, oi->refcnt, oi->nlookup,
+	    oi->ino.v.f.nlink);
 
 	counter_incr(COUNTER_N_OPEN_INODES);
 
@@ -759,8 +760,8 @@ inode_unload(struct oinode *oi, struct xerr *e)
 	ino = oi->ino.v.f.inode;
 
 	oi->refcnt--;
-	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu nlookup %lu",
-	    __func__, ino, oi->refcnt, oi->nlookup);
+	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu nlookup %lu nlink %ld",
+	    __func__, ino, oi->refcnt, oi->nlookup, oi->ino.v.f.nlink);
 
 	if (oi->nlookup == 0) {
 		bzero(&needle, sizeof(needle));
