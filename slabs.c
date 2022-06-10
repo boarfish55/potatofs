@@ -234,9 +234,9 @@ slab_purge(void *unused)
 	struct oslab    *b, *b2;
 	struct timespec  now, t = {10, 0};
 	struct statvfs   stv;
-	int              purge;
+	int              purge, do_shutdown = 0;
 
-	while (!owned_slabs.do_shutdown) {
+	do {
 		for (;;) {
 			if (nanosleep(&t, NULL) == 0)
 				break;
@@ -282,8 +282,10 @@ slab_purge(void *unused)
 			counter_decr(COUNTER_N_OPEN_SLABS);
 			b = b2;
 		}
+		if (owned_slabs.do_shutdown)
+			do_shutdown = 1;
 		MTX_UNLOCK(&owned_slabs.lock);
-	}
+	} while (!do_shutdown);
 	return NULL;
 }
 

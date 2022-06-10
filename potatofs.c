@@ -302,8 +302,8 @@ fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	int            r_sent = 0;
 	struct oinode *oi;
 
-	counter_incr(COUNTER_FS_GETATTR);
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_GETATTR);
 
 	bzero(&st, sizeof(st));
 
@@ -346,9 +346,9 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	struct oinode   *oi = NULL;
 	int              r_sent = 0;
 
-	counter_incr(COUNTER_FS_SETATTR);
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_SETATTR);
 
 	memcpy(&st, attr, sizeof(st));
 
@@ -501,8 +501,8 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	struct open_file *of;
 	int               r_sent = 0, is_dir;
 
-	counter_incr(COUNTER_FS_OPENDIR);
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_OPENDIR);
 
 	if ((of = openfile_alloc(ino, 0, &e)) == NULL) {
 		if (e.sp == XLOG_FS)
@@ -547,8 +547,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	int               r_sent = 0;
 	off_t             de_off;
 
-	counter_incr(COUNTER_FS_READDIR);
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_READDIR);
 
 	oi = ((struct open_file *)fi->fh)->oi;
 
@@ -865,8 +865,8 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 
 	xlog_dbg(XLOG_OP, "%s: req=%p, parent_ino=%lu, name=%s",
 	    __func__, req, parent, name);
-	counter_incr(COUNTER_FS_LOOKUP);
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_LOOKUP);
 
 	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
 		if (e.sp == XLOG_FS)
@@ -926,9 +926,9 @@ unlock:
 static void
 fs_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode)
 {
-	counter_incr(COUNTER_FS_MKDIR);
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
+	counter_incr(COUNTER_FS_MKDIR);
 	fs_mknod(req, parent, name, mode | S_IFDIR, 0);
 	LK_UNLOCK(&fs_tree_lock);
 }
@@ -1048,17 +1048,17 @@ unlock:
 static void
 fs_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-	counter_incr(COUNTER_FS_RMDIR);
 	if (FS_RO_ON_ERR(req)) return;
 	fs_rmnod(req, parent, name, 1);
+	counter_incr(COUNTER_FS_RMDIR);
 }
 
 static void
 fs_unlink(fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-	counter_incr(COUNTER_FS_UNLINK);
 	if (FS_RO_ON_ERR(req)) return;
 	fs_rmnod(req, parent, name, 0);
+	counter_incr(COUNTER_FS_UNLINK);
 }
 
 static void

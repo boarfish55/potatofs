@@ -34,19 +34,27 @@
 #include "mgr.h"
 #include "util.h"
 
-struct counter   counters[COUNTER_LAST];
-static pthread_t counters_flush;
-static int       counters_shutdown = 0;
+struct counter         counters[COUNTER_LAST];
+static pthread_t       counters_flush;
+static int             counters_shutdown = 0;
+static pthread_mutex_t counters_shutdown_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void *
 counter_flush(void *unused)
 {
 	struct timespec t = {1, 0};
-	int             c, mgr;
+	int             c, mgr, do_shutdown = 0;
 	struct xerr     e;
 	struct mgr_msg  m;
 
-	while (!counters_shutdown) {
+	for (;;) {
+		MTX_LOCK(&counters_shutdown_lock);
+		if (counters_shutdown)
+			do_shutdown = 1;
+		MTX_UNLOCK(&counters_shutdown_lock);
+		if (do_shutdown)
+			break;
+
 		if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 			xlog(LOG_ERR, &e, __func__);
 			goto fail;
@@ -114,7 +122,9 @@ counter_shutdown(struct xerr *e)
 {
 	int r;
 
+	MTX_LOCK(&counters_shutdown_lock);
 	counters_shutdown = 1;
+	MTX_UNLOCK(&counters_shutdown_lock);
 	if ((r = pthread_join(counters_flush, NULL)) != 0)
 		return XERRF(e, XLOG_ERRNO, r, "pthread_join");
 	return 0;
