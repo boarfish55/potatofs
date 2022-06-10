@@ -172,6 +172,7 @@ slab_unclaim(struct oslab *b)
 			goto fail;
 		}
 
+		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_UNCLAIM;
 		memcpy(&m.v.unclaim.key, &b->hdr.v.f.key,
 		    sizeof(struct slab_key));
@@ -783,6 +784,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 	if ((mgr = mgr_connect(1, e)) == -1)
 		goto fail_destroy_locks;
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = oflags;
@@ -1325,10 +1327,11 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		return NULL;
 	}
 
-	if ((b = calloc(1, sizeof(struct oslab))) == NULL) {
-		XERRF(e, XLOG_ERRNO, errno, "calloc");
+	if ((b = malloc(sizeof(struct oslab))) == NULL) {
+		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		return NULL;
 	}
+	bzero(b, sizeof(struct oslab));
 
 	b->fd = fd;
 

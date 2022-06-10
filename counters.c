@@ -52,6 +52,7 @@ counter_flush(void *unused)
 			goto fail;
 		}
 
+		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_SND_COUNTERS;
 		for (c = 0; c < COUNTER_LAST; c++)
 			m.v.snd_counters.c[c] = counter_get(c);

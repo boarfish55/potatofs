@@ -48,8 +48,9 @@ makepath(const char *p)
 {
 	struct path *path, *prev;
 
-	if ((path = calloc(1, sizeof(struct path))) == NULL)
-		err(1, "calloc");
+	if ((path = malloc(sizeof(struct path))) == NULL)
+		err(1, "malloc");
+	path->next = NULL;
 
 	if (snprintf(path->p, sizeof(path->p), "%s/%s", mnt, p)
 	    >= sizeof(path->p))

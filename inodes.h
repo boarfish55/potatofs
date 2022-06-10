@@ -195,13 +195,13 @@ int     inode_splice_begin_write(struct inode_splice_bufvec *, struct oinode *,
             off_t, size_t, struct xerr *);
 int     inode_splice_end_write(struct inode_splice_bufvec *, size_t,
             struct xerr *);
+void    inode_cp_stat(struct stat *, const struct inode *);
 
 /*
  * The following must be called with the inode write-lock held.
  */
 int   inode_isdir(struct oinode *);
 int   inode_sync(struct oinode *, struct xerr *);
-void  inode_cp_stat(struct stat *, const struct inode *);
 ino_t inode_ino(struct oinode *);
 
 /*
@@ -210,10 +210,10 @@ ino_t inode_ino(struct oinode *);
 nlink_t       inode_nlink(struct oinode *, int);
 unsigned long inode_nlookup(struct oinode *, int);
 
-/* Locking calls; calls interacting on an ino_t get a lock on the inode. */
-int inode_nlookup_ino(ino_t, int, struct xerr *);
-int inode_nlink_ino(ino_t, int, struct xerr *);
-int inode_cp_ino(ino_t, struct inode *, struct xerr *);
+/* The following a lock on the inode. */
+int  inode_nlookup_ino(ino_t, int, struct xerr *);
+int  inode_nlink_ino(ino_t, int, struct xerr *);
+void inode_stat(struct oinode *, struct stat *);
 
 /* Free all remaining inodes at filesystem shutdown. No locks required. */
 void inode_shutdown();

@@ -175,6 +175,7 @@ mgr_send_shutdown(struct xerr *e)
 	if ((mgr = mgr_connect(0, xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_SHUTDOWN;
 	// TODO: unused at the moment
 	m.v.shutdown.grace_period = 0;
@@ -211,6 +212,7 @@ mgr_fs_info(struct fs_info *fs_info, struct xerr *e)
 	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
 		close(mgr);

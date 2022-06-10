@@ -29,7 +29,7 @@ case $1 in
 		echo "OK."
 
 		echo -n "* fsck..."
-		$binpath/potatoctl -c $conf fsck quiet || exit 1
+		$binpath/potatoctl -c $conf fsck quiet || fatal "fsck had errors"
 		echo "OK."
 
 		echo "* Mounting..."

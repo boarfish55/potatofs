@@ -297,17 +297,17 @@ fs_set_time(struct oinode *oi, uint32_t what)
 static void
 fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
-	struct stat  st;
-	struct xerr  e = XLOG_ERR_INITIALIZER;
-	struct inode inode;
-	int          r_sent = 0;
+	struct stat    st;
+	struct xerr    e;
+	int            r_sent = 0;
+	struct oinode *oi;
 
 	counter_incr(COUNTER_FS_GETATTR);
 	LK_RDLOCK(&fs_tree_lock);
 
 	bzero(&st, sizeof(st));
 
-	if (inode_cp_ino(ino, &inode, &e) == -1) {
+	if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS) {
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		} else {
@@ -316,7 +316,18 @@ fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 		goto unlock;
 	}
 
-	inode_cp_stat(&st, &inode);
+	inode_lock(oi, LK_LOCK_RD);
+	inode_stat(oi, &st);
+	inode_unlock(oi);
+
+	if (inode_unload(oi, xerrz(&e)) == -1) {
+		if (e.sp == XLOG_FS) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		} else {
+			FS_ERR(&r_sent, req, &e);
+		}
+		goto unlock;
+	}
 
 	FUSE_REPLY(&r_sent, fuse_reply_attr(req, &st,
 	    fs_config.entry_timeouts));
@@ -524,9 +535,8 @@ static void
 fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     struct fuse_file_info *fi)
 {
-	struct xerr       e = XLOG_ERR_INITIALIZER;
-	struct oinode    *oi;
-	struct inode      inode;
+	struct xerr       e;
+	struct oinode    *oi, *de_oi;
 	struct dir_entry  dirs[64];
 	ssize_t           r;
 	int               i;
@@ -542,11 +552,12 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 
 	oi = ((struct open_file *)fi->fh)->oi;
 
-	inode_lock(oi, LK_LOCK_RD);
-
 	for (;;) {
+		inode_lock(oi, LK_LOCK_RD);
 		r = di_readdir(oi, dirs, &off,
-		    sizeof(dirs) / sizeof(struct dir_entry), &e);
+		    sizeof(dirs) / sizeof(struct dir_entry), xerrz(&e));
+		inode_unlock(oi);
+
 		if (r == -1) {
 			if (e.sp == XLOG_FS)
 				FUSE_REPLY(&r_sent,
@@ -561,18 +572,27 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		    i < r; i++, de_off += sizeof(struct dir_entry)) {
 			bzero(&st, sizeof(st));
 
-			if (dirs[i].inode != inode_ino(oi)) {
-				if (inode_cp_ino(dirs[i].inode, &inode,
-				    &e) == -1) {
-					if (!xerr_is(&e, XLOG_FS, ENOENT)) {
-						FS_ERR(&r_sent, req, &e);
-						goto fail;
-					}
+			if ((de_oi = inode_load(dirs[i].inode, 0, xerrz(&e))) == NULL) {
+				if (xerr_is(&e, XLOG_FS, ENOENT))
 					continue;
-				}
-				inode_cp_stat(&st, &inode);
-			} else
-				inode_cp_stat(&st, &oi->ino);
+				if (e.sp == XLOG_FS)
+					FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+				else
+					FS_ERR(&r_sent, req, &e);
+				goto fail;
+			}
+
+			inode_lock(de_oi, LK_LOCK_RD);
+			inode_stat(de_oi, &st);
+			inode_unlock(de_oi);
+
+			if (inode_unload(de_oi, xerrz(&e)) == -1) {
+				if (e.sp == XLOG_FS)
+					FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+				else
+					FS_ERR(&r_sent, req, &e);
+				goto fail;
+			}
 
 			need = fuse_add_direntry(req, NULL, 0,
 			    dirs[i].name, NULL, 0);
@@ -591,7 +611,6 @@ end:
 	else
 		FUSE_REPLY(&r_sent, fuse_reply_buf(req, buf, buf_used));
 fail:
-	inode_unlock(oi);
 	LK_UNLOCK(&fs_tree_lock);
 }
 
@@ -883,7 +902,7 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	entry.generation = oi->ino.v.f.generation;
 	entry.attr_timeout = fs_config.entry_timeouts;
 	entry.entry_timeout = fs_config.entry_timeouts;
-	inode_cp_stat(&entry.attr, &oi->ino);
+	inode_stat(oi, &entry.attr);
 	inode_nlookup(oi, 1);
 
 end:
@@ -1079,6 +1098,8 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		{ ".", 0, sizeof(struct dir_entry) },
 		{ "..", parent, 0 }
 	};
+
+	bzero(&de, sizeof(de));
 
 	if (strlen(name) > FS_NAME_MAX)
 		return XERRF(e, XLOG_FS, ENAMETOOLONG,
@@ -1355,6 +1376,8 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	struct fuse_entry_param  entry;
 	int                      r_sent = 0;
 
+	bzero(&new_de, sizeof(new_de));
+
 	counter_incr(COUNTER_FS_LINK);
 	if (FS_RO_ON_ERR(req)) return;
 
@@ -1407,7 +1430,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	inode_nlookup(oi, 1);
 	inode_nlink(oi, 1);
 	fs_set_time(oi, INODE_ATTR_CTIME);
-	inode_cp_stat(&entry.attr, &oi->ino);
+	inode_stat(oi, &entry.attr);
 
 	if (di_mkdirent(parent_oi, &new_de, NULL, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
@@ -1821,6 +1844,7 @@ end:
 			FS_ERR(&r_sent, req, &e);
 	}
 	if (new_oi) {
+		// TODO: not always locked???
 		inode_unlock(new_oi);
 		if (inode_unload(new_oi, &e) == -1)
 			FS_ERR(&r_sent, req, &e);

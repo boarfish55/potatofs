@@ -375,36 +375,25 @@ inode_cp_stat(struct stat *dst, const struct inode *ino)
 	dst->st_nlink = ino->v.f.nlink;
 	dst->st_uid = ino->v.f.uid;
 	dst->st_gid = ino->v.f.gid;
-
-	// TODO: support devices ... Maybe?
-	dst->st_rdev = ino->v.f.rdev;
+	dst->st_blksize = FS_BLOCK_SIZE;
 
 	dst->st_size = ino->v.f.size;
-	dst->st_blksize = FS_BLOCK_SIZE;
 	dst->st_blocks = ino->v.f.blocks;
+
 	memcpy(&dst->st_atim, &ino->v.f.atime, sizeof(dst->st_atim));
 	memcpy(&dst->st_mtim, &ino->v.f.mtime, sizeof(dst->st_mtim));
 	memcpy(&dst->st_ctim, &ino->v.f.ctime, sizeof(dst->st_ctim));
+
+	// TODO: support devices ... Maybe?
+	dst->st_rdev = ino->v.f.rdev;
 }
 
-int
-inode_cp_ino(ino_t ino, struct inode *inode, struct xerr *e)
+void
+inode_stat(struct oinode *oi, struct stat *st)
 {
-	struct oinode *oi;
-
-	if ((oi = inode_load(ino, 0, xerrz(e))) == NULL)
-		return -1;
-
-	LK_RDLOCK(&oi->lock);
 	LK_RDLOCK(&oi->bytes_lock);
-	memcpy(inode, &oi->ino, sizeof(struct inode));
+	inode_cp_stat(st, &oi->ino);
 	LK_UNLOCK(&oi->bytes_lock);
-	LK_UNLOCK(&oi->lock);
-
-	if (inode_unload(oi, xerrz(e)) == -1)
-		return -1;
-
-	return 0;
 }
 
 /*
@@ -678,18 +667,16 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		goto fail_close_itbl;
 	}
 
-	if ((oi = calloc(1, sizeof(struct oinode))) == NULL) {
+	if ((oi = malloc(sizeof(struct oinode))) == NULL) {
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		goto fail_close_itbl;
 	}
+	bzero(oi, sizeof(struct oinode));
 
 	if (LK_LOCK_INIT(&oi->bytes_lock, xerrz(e)) == -1)
 		goto fail_free_oi;
 	if (LK_LOCK_INIT(&oi->lock, xerrz(e)) == -1)
 		goto fail_destroy_bytes_lock;
-	oi->nlookup = 0;
-	oi->dirty = 0;
-	oi->bytes_dirty = 0;
 	oi->refcnt = 1;
 	oi->oflags = oflags;
 	oi->itbl = b;
@@ -759,7 +746,12 @@ inode_unload(struct oinode *oi, struct xerr *e)
 
 	ino = oi->ino.v.f.inode;
 
-	oi->refcnt--;
+	if (oi->refcnt == 0) {
+		xlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
+		    "ino=%lu (%p); tried to decrement refcnt 0 by 1",
+		    __func__, oi->ino.v.f.inode, oi);
+	} else
+		oi->refcnt--;
 	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu nlookup %lu nlink %ld",
 	    __func__, ino, oi->refcnt, oi->nlookup, oi->ino.v.f.nlink);
 
