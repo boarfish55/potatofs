@@ -127,9 +127,12 @@ KNOWN ISSUES
   situations is questionable at best and needs to be reviewed. We can't
   properly interrupt I/O ops in flight at this time.
 
-
 TODO
 ====
+* fsck doesn't seem to detect all cases of lost directories and files. For
+  example:
+  - Leaving an unreferenced directory with nlink 1.
+  - nlink count on a directory based on how many child directories there are.
 * All the fuse fs_ functions will need to handle backend timeouts gracefully
   and bubble up a nicer error to processes. They should retry the operations
   but check for interrupt in-between with fuse_req_interrupted(req).
