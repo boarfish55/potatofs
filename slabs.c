@@ -1083,6 +1083,7 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 			goto fail;
 		}
 
+		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_TRUNCATE;
 		m.v.truncate.offset = offset;
 		memcpy(&m.v.truncate.key, sk, sizeof(struct slab_key));
