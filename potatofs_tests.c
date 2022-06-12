@@ -1269,6 +1269,79 @@ test_rename_nondir_to_dir()
 }
 
 char *
+test_rename_dir_to_nondir()
+{
+	char *d = makepath("rename_dir_to_nondir");
+	char *p1 = makepath("rename_dir_to_nondir/x");
+	char *p2 = makepath("rename_dir_to_nondir/d");
+
+	if (mkdir(d, 0700) == -1)
+		return ERR("", errno);
+	if (mknod(p1, 0400, 0) == -1)
+		return ERR("", errno);
+	if (mkdir(p2, 0700) == -1)
+		return ERR("", errno);
+
+	if (rename(p1, p2) == -1) {
+		if (errno != EISDIR)
+			return ERR("", errno);
+		return NULL;
+	}
+	return ERR("rename from dir to non-dir should fail with "
+	    "ENOTDIR (or EISDIR if FUSE handles it)", 0);
+}
+
+char *
+test_rename_crossdir_nondir_to_dir()
+{
+	char *d1 = makepath("rename_crossdir_nondir_to_dir1");
+	char *d2 = makepath("rename_crossdir_nondir_to_dir2");
+	char *p1 = makepath("rename_crossdir_nondir_to_dir1/x");
+	char *p2 = makepath("rename_crossdir_nondir_to_dir2/d");
+
+	if (mkdir(d1, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(d2, 0700) == -1)
+		return ERR("", errno);
+	if (mknod(p1, 0400, 0) == -1)
+		return ERR("", errno);
+	if (mkdir(p2, 0700) == -1)
+		return ERR("", errno);
+
+	if (rename(p1, p2) == -1) {
+		if (errno != EISDIR)
+			return ERR("", errno);
+		return NULL;
+	}
+	return ERR("rename from non-dir to dir should fail with EISDIR", 0);
+}
+
+char *
+test_rename_crossdir_dir_to_nondir()
+{
+	char *d1 = makepath("rename_crossdir_dir_to_nondir1");
+	char *d2 = makepath("rename_crossdir_dir_to_nondir2");
+	char *p1 = makepath("rename_crossdir_dir_to_nondir1/d");
+	char *p2 = makepath("rename_crossdir_dir_to_nondir2/x");
+
+	if (mkdir(d1, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(d2, 0700) == -1)
+		return ERR("", errno);
+	if (mkdir(p1, 0700) == -1)
+		return ERR("", errno);
+	if (mknod(p2, 0400, 0) == -1)
+		return ERR("", errno);
+
+	if (rename(p1, p2) == -1) {
+		if (errno != ENOTDIR)
+			return ERR("", errno);
+		return NULL;
+	}
+	return ERR("rename from non-dir to dir should fail with ENOTDIR", 0);
+}
+
+char *
 test_rename_dir_to_existing_emtpy_dir()
 {
 	char        *d = makepath("rename_dir_to_dir");
@@ -2285,6 +2358,14 @@ struct potatofs_test {
 		&test_mknod
 	},
 	{
+		"file name > FS_NAME_MAX",
+		&test_name_max
+	},
+	{
+		"path >= FS_PATH_MAX",
+		&test_path_max
+	},
+	{
 		"mknod fails with EEXIST",
 		&test_mknod_exists
 	},
@@ -2393,6 +2474,18 @@ struct potatofs_test {
 		&test_rename_nondir_to_dir
 	},
 	{
+		"rename, fails on dir to non-dir with ENOTDIR",
+		&test_rename_dir_to_nondir
+	},
+	{
+		"rename, fails on non-dir to dir with EISDIR, cross directory",
+		&test_rename_crossdir_nondir_to_dir
+	},
+	{
+		"rename, fails on dir to non-dir with ENOTDIR, cross directory",
+		&test_rename_crossdir_dir_to_nondir
+	},
+	{
 		"rename dir over another empty dir",
 		&test_rename_dir_to_existing_emtpy_dir
 	},
@@ -2442,15 +2535,7 @@ struct potatofs_test {
 		&test_many_inodes
 	},
 	{
-		"file name > FS_NAME_MAX",
-		&test_name_max
-	},
-	{
-		"path >= FS_PATH_MAX",
-		&test_path_max
-	},
-	{
-		"claim from backend (this test may take a few minutes)",
+		"claim from backend",
 		&test_claim_from_backend
 	},
 

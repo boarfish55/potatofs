@@ -96,6 +96,10 @@ static void fs_fsync(fuse_req_t, fuse_ino_t, int, struct fuse_file_info *);
 static void fs_fsyncdir(fuse_req_t, fuse_ino_t, int, struct fuse_file_info *);
 static void fs_rename(fuse_req_t, fuse_ino_t, const char *, fuse_ino_t,
                 const char *);
+static void fs_rename_local(fuse_req_t, fuse_ino_t, const char *, fuse_ino_t,
+                const char *);
+static void fs_rename_crossdir(fuse_req_t, fuse_ino_t, const char *, fuse_ino_t,
+                const char *);
 static void fs_link(fuse_req_t, fuse_ino_t, fuse_ino_t, const char *);
 static void fs_symlink(fuse_req_t, const char *, fuse_ino_t, const char *);
 static void fs_readlink(fuse_req_t, fuse_ino_t);
@@ -604,7 +608,11 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		}
 	}
 end:
-	fs_set_time(oi, INODE_ATTR_ATIME);
+	if (fs_config.noatime) {
+		fs_set_time(oi, INODE_ATTR_ATIME);
+		if (inode_flush(oi, 0, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+	}
 
 	if (buf_used == 0)
 		FUSE_REPLY(&r_sent, fuse_reply_buf(req, NULL, buf_used));
@@ -707,7 +715,11 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		}
 		counter_add(COUNTER_READ_BYTES, fuse_buf_size(bv));
 		inode_lock(of->oi, LK_LOCK_RW);
-		fs_set_time(of->oi, INODE_ATTR_ATIME);
+		if (fs_config.noatime) {
+			fs_set_time(of->oi, INODE_ATTR_ATIME);
+			if (inode_flush(of->oi, 0, xerrz(&e)) == -1)
+				FS_ERR(&r_sent, req, &e);
+		}
 		inode_unlock(of->oi);
 		FUSE_REPLY(&r_sent, fuse_reply_data(req, bv,
 		    FUSE_BUF_FORCE_SPLICE));
@@ -1539,7 +1551,12 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 	}
 	link[offset] = '\0';
 
-	fs_set_time(oi, INODE_ATTR_ATIME);
+	if (fs_config.noatime) {
+		fs_set_time(oi, INODE_ATTR_ATIME);
+		if (inode_flush(oi, 0, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+	}
+
 	inode_unlock(oi);
 
 	if (inode_unload(oi, &e) == -1)
@@ -1551,28 +1568,20 @@ unlock:
 }
 
 static void
-fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
+fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct xerr       e;
 	struct dir_entry  de, new_de, replaced;
 	struct oinode    *old_doi = NULL, *new_doi = NULL;
-	struct oinode    *oi = NULL, *new_oi = NULL, *p_oi;
+	struct oinode    *oi = NULL, *new_oi = NULL, *p_oi = NULL;
 	int               r_sent = 0;
 	int               oldparent_depth = 0, newparent_depth = 0;
 	ino_t             p;
 
-	counter_incr(COUNTER_FS_RENAME);
-	if (FS_RO_ON_ERR(req)) return;
-
-	if (strlen(newname) > FS_NAME_MAX) {
-		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
-		return;
-	}
-
 	LK_WRLOCK(&fs_tree_lock);
 
-	if ((old_doi = inode_load(oldparent, 0, &e)) == NULL) {
+	if ((old_doi = inode_load(oldparent, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1580,172 +1589,164 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		goto unlock;
 	}
 
-	if (oldparent == newparent) {
-		new_doi = old_doi;
-	} else if ((new_doi = inode_load(newparent, 0, &e)) == NULL) {
+	if ((new_doi = inode_load(newparent, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
 	}
 
-	if (di_lookup(old_doi, &de, oldname, &e) == -1) {
+	if (di_lookup(old_doi, &de, oldname, xerrz(&e)) == -1) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
-	} else if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
+	} else if ((oi = inode_load(de.inode, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
 	}
 
-	if (di_lookup(new_doi, &new_de, newname, &e) == -1) {
-		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-			goto end;
-		}
-		xerrz(&e);
-	} else if ((new_oi = inode_load(new_de.inode, 0, &e)) == NULL) {
-		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
-		goto end;
-	}
-
-	if (new_oi == oi) {
-		/*
-		 * We do this out of completeness, but FUSE already
-		 * catches this for us.
-		 */
-		goto end;
-	}
-
-	if (new_oi != NULL &&
-	    !inode_isdir(oi) && inode_isdir(new_oi)) {
-		/*
-		 * We do this out of completeness, but FUSE already
-		 * catches this for us.
-		 */
-		FUSE_REPLY(&r_sent, fuse_reply_err(req, EISDIR));
-		goto end;
-	}
-
-	/* We can't rename a dir over a non-empty dir */
-	if (new_oi != NULL && inode_isdir(oi) && inode_isdir(new_oi)) {
-		if (new_oi->ino.v.f.nlink > 2) {
-			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTEMPTY));
-			goto end;
-		}
-
-		switch (di_isempty(new_oi, &e)) {
-		case 0:
-			FUSE_REPLY(&r_sent,
-			    fuse_reply_err(req, ENOTEMPTY));
-			goto end;
-		case 1:
-			break;
-		default:
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-			goto end;
-		}
-	}
-
-	if (inode_ino(oi) == FS_ROOT_INODE ||
-	    (new_oi != NULL && inode_ino(new_oi) == FS_ROOT_INODE)) {
+	if (inode_ino(oi) == FS_ROOT_INODE) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EBUSY));
 		goto end;
 	}
 
-	if (oldparent == newparent) {
-		inode_lock(old_doi, LK_LOCK_RW);
-	} else {
-		/*
-		 * We can't move in one of our descendants. Walk back from
-		 * the new parent to the root, and if we see the moved inode
-		 * in the chain, return EINVAL.
-		 */
-		for (p = newparent; p != FS_ROOT_INODE; newparent_depth++) {
-			if ((p_oi = inode_load(p, 0, &e)) == NULL) {
-				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
-				goto end;
-			}
-			if ((p = di_parent(p_oi, &e)) == -1) {
-				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
-			}
-			if (inode_unload(p_oi, &e) == -1) {
-				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
+	/*
+	 * We can't move in one of our descendants. Walk back from
+	 * the new parent to the root, and if we see the moved the
+	 * target over our new parent, return EINVAL.
+	 */
+	for (p = newparent; p != FS_ROOT_INODE; newparent_depth++) {
+		if ((p_oi = inode_load(p, 0, xerrz(&e))) == NULL) {
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+			goto end;
+		}
+		if ((p = di_parent(p_oi, xerrz(&e))) == -1) {
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+		}
+		if (inode_unload(p_oi, xerrz(&e)) == -1) {
+			FS_ERR(&r_sent, req, &e);
+			xerrz(&e);
+			goto end;
+		}
+
+		if (p == -1)
+			goto end;
+
+		if (p == inode_ino(oi)) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, EINVAL));
+			goto end;
+		}
+	}
+
+	if (di_lookup(new_doi, &new_de, newname, xerrz(&e)) == -1) {
+		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
+			FS_ERR(&r_sent, req, &e);
+			goto end;
+		}
+	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
+		FS_ERR(&r_sent, req, &e);
+		goto end;
+	}
+
+	/*
+	 * We can't replace one of our ancestors. Walk back
+	 * from the old parent to the root, and if we see the
+	 * moved the target over an ancestor, return ENOTEMPTY.
+	 */
+	if (new_oi != NULL) {
+		if (new_oi == oi) {
+			/*
+			 * We do this out of completeness, but FUSE already
+			 * catches this for us.
+			 */
+			goto end;
+		}
+
+		if (inode_ino(new_oi) == FS_ROOT_INODE) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, EBUSY));
+			goto end;
+		}
+
+		if (!inode_isdir(oi) && inode_isdir(new_oi)) {
+			/*
+			 * We do this out of completeness, but FUSE already
+			 * catches this for us.
+			 */
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, EISDIR));
+			goto end;
+		}
+		if (inode_isdir(oi) && !inode_isdir(new_oi)) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
+			goto end;
+		}
+
+		/* We can't rename a dir over a non-empty dir */
+		if (inode_isdir(oi) && inode_isdir(new_oi)) {
+			if (new_oi->ino.v.f.nlink > 2) {
+				FUSE_REPLY(&r_sent, fuse_reply_err(req,
+				    ENOTEMPTY));
 				goto end;
 			}
 
-			if (p == -1)
-				goto end;
-
-			if (p == inode_ino(oi)) {
+			switch (di_isempty(new_oi, xerrz(&e))) {
+			case 0:
 				FUSE_REPLY(&r_sent,
-				    fuse_reply_err(req, EINVAL));
+				    fuse_reply_err(req, ENOTEMPTY));
+				goto end;
+			case 1:
+				break;
+			default:
+				FS_ERR(&r_sent, req, &e);
 				goto end;
 			}
 		}
 
-		/*
-		 * We can't replace one of our ancestors. Walk back
-		 * from the old parent to the root, and if we see the
-		 * moved inode int he chain, return ENOTEMPTY.
-		 */
 		for (p = oldparent; p != FS_ROOT_INODE; oldparent_depth++) {
-			if ((p_oi = inode_load(p, 0, &e)) == NULL) {
+			if ((p_oi = inode_load(p, 0, xerrz(&e))) == NULL) {
 				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
 				goto end;
 			}
-			if ((p = di_parent(p_oi, &e)) == -1) {
+			if ((p = di_parent(p_oi, xerrz(&e))) == -1)
 				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
-			}
-			if (inode_unload(p_oi, &e) == -1) {
+			if (inode_unload(p_oi, xerrz(&e)) == -1) {
 				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
 				goto end;
 			}
 
 			if (p == -1)
 				goto end;
 
-			if (new_oi != NULL && p == inode_ino(new_oi)) {
+			if (p == inode_ino(new_oi)) {
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, ENOTEMPTY));
 				goto end;
 			}
 		}
+	}
 
-		if (oldparent_depth == newparent_depth) {
-			/* Always lock directories in pointer ascending order */
-			if (old_doi < new_doi) {
-				inode_lock(old_doi, LK_LOCK_RW);
-				inode_lock(new_doi, LK_LOCK_RW);
-			} else {
-				inode_lock(new_doi, LK_LOCK_RW);
-				inode_lock(old_doi, LK_LOCK_RW);
-			}
-		} else if (oldparent_depth < newparent_depth) {
+	if (oldparent_depth == newparent_depth) {
+		/* Always lock directories in pointer ascending order */
+		if (old_doi < new_doi) {
 			inode_lock(old_doi, LK_LOCK_RW);
 			inode_lock(new_doi, LK_LOCK_RW);
 		} else {
 			inode_lock(new_doi, LK_LOCK_RW);
 			inode_lock(old_doi, LK_LOCK_RW);
 		}
+	} else if (oldparent_depth < newparent_depth) {
+		inode_lock(old_doi, LK_LOCK_RW);
+		inode_lock(new_doi, LK_LOCK_RW);
+	} else {
+		inode_lock(new_doi, LK_LOCK_RW);
+		inode_lock(old_doi, LK_LOCK_RW);
 	}
 
 	if (new_oi == NULL) {
@@ -1758,100 +1759,334 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 		inode_lock(oi, LK_LOCK_RW);
 	}
 
+	/*
+	 * Increase our link count temporarily to avoid losing
+	 * the inode in case of fs crash.
+	 */
 	inode_nlink(oi, 1);
-	if (inode_flush(oi, 0, &e) == -1) {
+	if (inode_flush(oi, 0, xerrz(&e)) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
+		goto unlock_inodes;
 	}
 
 	new_de.inode = de.inode;
 	strlcpy(new_de.name, newname, sizeof(new_de.name));
 	new_de.name[sizeof(new_de.name) - 1] = '\0';
 
-	if (di_mkdirent(new_doi, &new_de, &replaced, &e) == -1) {
+	/*
+	 * Make our entry in the new parent dir, set mtime.
+	 */
+	if (di_mkdirent(new_doi, &new_de, &replaced, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
+		goto unlock_inodes;
+	}
+	fs_set_time(new_doi, INODE_ATTR_MTIME);
+
+	/*
+	 * If the moved inode is a directory:
+	 *   - Adjust its ".." entry to point to the new parent
+	 *   - Increase the new parent's link count
+	 *   - Set the new parent's ctime
+	 */
+	if (inode_isdir(oi)) {
+		if (di_setparent(oi, inode_ino(new_doi), xerrz(&e)) == -1) {
+			FS_ERR(&r_sent, req, &e);
+			goto unlock_inodes;
+		}
+		if (new_oi == NULL) {
+			inode_nlink(new_doi, 1);
+			fs_set_time(new_doi, INODE_ATTR_CTIME);
+		}
+	}
+
+	/*
+	 * Make sure the new parent's ctime/nlink is flushed.
+	 */
+	if (inode_flush(new_doi, 0, xerrz(&e)) == -1) {
+		FS_ERR(&r_sent, req, &e);
+		goto unlock_inodes;
+	}
+
+	/*
+	 * Remove the entry from the old parent, set the old
+	 * parent's mtime.
+	 */
+	if (di_unlink(old_doi, &de, xerrz(&e)) == -1) {
+		FS_ERR(&r_sent, req, &e);
+		goto unlock_inodes;
+	}
+	fs_set_time(old_doi, INODE_ATTR_MTIME);
+
+	/*
+	 * If the moved inode is a directory:
+	 *   - Decrease the link count in the parent, since ".." in
+	 *     the moved inode now points to the new parent.
+	 *   - Set old parent's ctime.
+	 */
+	if (inode_isdir(oi)) {
+		inode_nlink(old_doi, -1);
+		fs_set_time(old_doi, INODE_ATTR_CTIME);
+	}
+
+	/*
+	 * Flush the old parent's ctime/nlink.
+	 */
+	if (inode_flush(old_doi, 0, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+
+	/*
+	 * Unlink the replaced inode. Drop nlink by:
+	 *   - 1 if this is a regular file
+	 *   - 2 if this is a directory, since there was a
+	 *     second link in its "." entry.
+	 */
+	if (new_oi != NULL) {
+		inode_nlink(new_oi, inode_isdir(new_oi) ? -2 : -1);
+		if (inode_flush(new_oi, 0, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+	}
+
+	/*
+	 * Finally, there is no risk of losing our new inode
+	 * at this point, so we can restore nlink to what it
+	 * was at the start of this operation.
+	 */
+	inode_nlink(oi, -1);
+	fs_set_time(oi, INODE_ATTR_CTIME);
+	if (inode_flush(oi, 0, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+unlock_inodes:
+	if (old_doi)
+		inode_unlock(old_doi);
+	if (new_doi)
+		inode_unlock(new_doi);
+	if (oi)
+		inode_unlock(oi);
+	if (new_oi)
+		inode_unlock(new_oi);
+end:
+	if (old_doi && inode_unload(old_doi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	if (new_doi && inode_unload(new_doi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	if (oi && inode_unload(oi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	if (new_oi && inode_unload(new_oi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
+unlock:
+	LK_UNLOCK(&fs_tree_lock);
+}
+
+static void
+fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
+    fuse_ino_t newparent, const char *newname)
+{
+	struct xerr       e;
+	struct dir_entry  de, new_de, replaced;
+	struct oinode    *d_oi;
+	struct oinode    *oi = NULL, *new_oi = NULL;
+	int               r_sent = 0;
+
+	LK_RDLOCK(&fs_tree_lock);
+
+	if ((d_oi = inode_load(oldparent, 0, xerrz(&e))) == NULL) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+		goto unlock;
+	}
+
+	inode_lock(d_oi, LK_LOCK_RW);
+
+	if (di_lookup(d_oi, &de, oldname, xerrz(&e)) == -1) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+		goto end;
+	} else if ((oi = inode_load(de.inode, 0, xerrz(&e))) == NULL) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto end;
 	}
 
-	/* Adjust the links for directory ".." entries. */
-	if (inode_isdir(oi)) {
-		if (di_setparent(oi, inode_ino(new_doi), &e) == -1) {
+	if (di_lookup(d_oi, &new_de, newname, xerrz(&e)) == -1) {
+		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
 			goto end;
 		}
-		inode_nlink(new_doi, 1);
-		if (inode_flush(new_doi, 0, &e) == -1) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
+	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
+		FS_ERR(&r_sent, req, &e);
+		goto end;
 	}
 
-	if (replaced.inode != 0) {
-		inode_nlink(new_oi, inode_isdir(new_oi) ? -2 : -1);
-		if (inode_flush(new_oi, 0, &e) == -1) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
+	/*
+	 * Make sure we lock inodes in pointer order.
+	 */
+	if (new_oi != NULL) {
+		if (new_oi == oi) {
+			/*
+			 * We do this out of completeness, but FUSE already
+			 * catches this for us.
+			 */
+			goto end;
 		}
-		if (inode_isdir(new_oi)) {
-			inode_nlink(new_doi, -1);
-			if (inode_flush(new_doi, 0, &e) == -1) {
-				FS_ERR(&r_sent, req, &e);
-				xerrz(&e);
+		if (new_oi < oi) {
+			inode_lock(new_oi, LK_LOCK_RW);
+			inode_lock(oi, LK_LOCK_RW);
+		} else {
+			inode_lock(oi, LK_LOCK_RW);
+			inode_lock(new_oi, LK_LOCK_RW);
+		}
+	} else {
+		inode_lock(oi, LK_LOCK_RW);
+	}
+
+	if (inode_ino(oi) == FS_ROOT_INODE) {
+		FUSE_REPLY(&r_sent, fuse_reply_err(req, EBUSY));
+		goto unlock_inodes;
+	}
+
+	if (new_oi != NULL) {
+		if (inode_ino(new_oi) == FS_ROOT_INODE) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, EBUSY));
+			goto unlock_inodes;
+		}
+
+		/*
+		 * Trying to replace a directory with a non-directory
+		 * should return EISDIR.
+		 */
+		if (!inode_isdir(oi) && inode_isdir(new_oi)) {
+			/*
+			 * We do this out of completeness, but FUSE already
+			 * catches this for us.
+			 */
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, EISDIR));
+			goto unlock_inodes;
+		}
+		if (inode_isdir(oi) && !inode_isdir(new_oi)) {
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
+			goto unlock_inodes;
+		}
+
+		/* We can't rename a dir over a non-empty dir */
+		if (inode_isdir(oi) && inode_isdir(new_oi)) {
+			if (new_oi->ino.v.f.nlink > 2) {
+				FUSE_REPLY(&r_sent, fuse_reply_err(req,
+				    ENOTEMPTY));
+				goto unlock_inodes;
+			}
+
+			switch (di_isempty(new_oi, &e)) {
+			case 0:
+				FUSE_REPLY(&r_sent,
+				    fuse_reply_err(req, ENOTEMPTY));
+				goto unlock_inodes;
+			case 1:
+				break;
+			default:
+				FS_ERR(&r_sent, req, xerrz(&e));
+				goto unlock_inodes;
 			}
 		}
 	}
 
-	if (di_unlink(old_doi, &de, &e) == -1) {
+	/*
+	 * Temporarily increase nlink to make sure our inode isn't
+	 * lost on fs crash.
+	 */
+	inode_nlink(oi, 1);
+	if (inode_flush(oi, 0, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
+
+	new_de.inode = de.inode;
+	strlcpy(new_de.name, newname, sizeof(new_de.name));
+	new_de.name[sizeof(new_de.name) - 1] = '\0';
+
+	/*
+	 * Create the new entry.
+	 */
+	if (di_mkdirent(d_oi, &new_de, &replaced, xerrz(&e)) == -1) {
+		inode_nlink(oi, -1);
+		FS_ERR(&r_sent, req, &e);
+		goto unlock_inodes;
 	}
-	if (inode_isdir(oi)) {
-		inode_nlink(old_doi, -1);
-		if (inode_flush(old_doi, 0, &e) == -1) {
+
+	/*
+	 * If we're replacing an inode, decrease its nlink by:
+	 *   - 1 if it's a regular file
+	 *   - 2 if it's a directory; once for the entry in the parent,
+	 *     and once again for the ".." contained in it.
+	 */
+	if (new_oi != NULL) {
+		inode_nlink(new_oi, inode_isdir(new_oi) ? -2 : -1);
+		if (inode_flush(new_oi, 0, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
 	}
+
+	/*
+	 * Remove the old entry from the parent and update its
+	 * mtime.
+	 */
+	if (di_unlink(d_oi, &de, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	fs_set_time(d_oi, INODE_ATTR_MTIME);
+	if (new_oi != NULL && inode_isdir(new_oi))
+		inode_nlink(d_oi, -1);
+	if (inode_flush(d_oi, 0, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+
+	/*
+	 * Finally, restore the inode's nlink to what
+	 * it was at the start of this operation, and
+	 * update the ctime.
+	 */
 	inode_nlink(oi, -1);
-	if (inode_flush(oi, 0, &e) == -1) {
+	fs_set_time(oi, INODE_ATTR_CTIME);
+	if (inode_flush(oi, 0, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
-	}
-end:
-	if (old_doi) {
-		fs_set_time(old_doi, INODE_ATTR_MTIME);
-		inode_unlock(old_doi);
-		if (inode_unload(old_doi, &e) == -1) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
-	}
-	if (oldparent != newparent && new_doi != NULL) {
-		fs_set_time(new_doi, INODE_ATTR_MTIME);
-		inode_unlock(new_doi);
-		if (inode_unload(new_doi, &e) == -1) {
-			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
-	}
-	if (oi) {
-		fs_set_time(oi, INODE_ATTR_CTIME);
+unlock_inodes:
+	if (oi)
 		inode_unlock(oi);
-		if (inode_unload(oi, &e) == -1)
-			FS_ERR(&r_sent, req, &e);
-	}
-	if (new_oi) {
-		// TODO: not always locked???
+	if (new_oi)
 		inode_unlock(new_oi);
-		if (inode_unload(new_oi, &e) == -1)
-			FS_ERR(&r_sent, req, &e);
-	}
+end:
+	inode_unlock(d_oi);
+	if (inode_unload(d_oi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	if (oi && inode_unload(oi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
+	if (new_oi && inode_unload(new_oi, xerrz(&e)) == -1)
+		FS_ERR(&r_sent, req, &e);
 	FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 unlock:
 	LK_UNLOCK(&fs_tree_lock);
+}
+
+static void
+fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
+    fuse_ino_t newparent, const char *newname)
+{
+	int r_sent = 0;
+
+	counter_incr(COUNTER_FS_RENAME);
+	if (FS_RO_ON_ERR(req)) return;
+
+	if (strlen(newname) > FS_NAME_MAX) {
+		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
+		return;
+	}
+
+	if (oldparent == newparent)
+		fs_rename_local(req, oldparent, oldname, newparent, newname);
+	else
+		fs_rename_crossdir(req, oldparent, oldname, newparent, newname);
 }
 
 int

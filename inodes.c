@@ -547,7 +547,7 @@ inode_setattr(struct oinode *oi, struct stat *st, uint32_t mask,
 		oi->dirty = 1;
 	}
 
-	inode_cp_stat(st, &oi->ino);
+	inode_stat(oi, st);
 	return 0;
 }
 
