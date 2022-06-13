@@ -23,6 +23,11 @@
 #include "config.h"
 #include "inodes.h"
 
+struct dir_hdr {
+#define DIRINODE_FORMAT 1
+	uint32_t dirinode_format;
+};
+
 struct dir_entry {
 	char   name[FS_NAME_MAX + 1];
 	ino_t  inode;
@@ -31,6 +36,7 @@ struct dir_entry {
 };
 
 /* None of these acquire any lock */
+int     di_create(struct oinode *, ino_t, struct xerr *);
 ssize_t di_readdir(struct oinode *, struct dir_entry *, off_t *,
             size_t, struct xerr *);
 int     di_lookup(struct oinode *, struct dir_entry *, const char *,

@@ -450,20 +450,16 @@ fs_destroy(void *unused)
 static void
 fs_init(void *userdata, struct fuse_conn_info *conn)
 {
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct xerr       e;
 	struct fs_config *c = (struct fs_config *)userdata;
 	struct oinode    *oi;
-	struct dir_entry  default_dir[2] = {
-		{ ".", FS_ROOT_INODE, sizeof(struct dir_entry) },
-		{ "..", FS_ROOT_INODE, 0 }
-	};
 
 	xlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
 
-	if (counter_init(&e) == -1)
+	if (counter_init(xerrz(&e)) == -1)
 		goto fail;
 
-	if (slab_configure(c->max_open_slabs, c->slab_max_age, &e) == -1)
+	if (slab_configure(c->max_open_slabs, c->slab_max_age, xerrz(&e)) == -1)
 		goto fail;
 
 	if (inode_startup(&e) == -1)
@@ -472,7 +468,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	xlog(LOG_NOTICE, NULL, "noatime is %s",
 	    (c->noatime) ? "set" : "unset");
 
-	if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL) {
+	if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL) {
 		if (!xerr_is(&e, XLOG_FS, ENOENT))
 			goto fail;
 
@@ -480,17 +476,16 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 		if (inode_make(FS_ROOT_INODE, c->uid, c->gid,
 		    S_IFDIR|0755, NULL, &e) == -1)
 			goto fail;
-		if ((oi = inode_load(FS_ROOT_INODE, 0, &e)) == NULL)
+		if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL)
 			goto fail;
 		inode_nlink(oi, 2);
 
-		if (inode_write(oi, 0, default_dir,
-		    sizeof(default_dir), &e) != sizeof(default_dir))
+		if (di_create(oi, FS_ROOT_INODE, xerrz(&e)) == -1)
 			goto fail;
 	}
-	if (inode_flush(oi, 0, &e) == -1)
+	if (inode_flush(oi, 0, xerrz(&e)) == -1)
 		goto fail;
-	if (inode_unload(oi, &e) == -1)
+	if (inode_unload(oi, xerrz(&e)) == -1)
 		goto fail;
 	return;
 fail:
@@ -1098,18 +1093,12 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
     mode_t mode, mode_t mask, dev_t rdev, struct inode *inode,
     const char *data, size_t data_len, struct xerr *e)
 {
-	struct xerr       e_dealloc = XLOG_ERR_INITIALIZER;
-	struct xerr       e_unload = XLOG_ERR_INITIALIZER;
+	struct xerr       e2;
 	struct dir_entry  de;
 	struct oinode    *parent_oi, *oi;
 	int               status = 0;
 	ssize_t           w = 0;
-	int               flushed = 0;
 	int               is_dir = 0;
-	struct dir_entry  default_dir[2] = {
-		{ ".", 0, sizeof(struct dir_entry) },
-		{ "..", parent, 0 }
-	};
 
 	bzero(&de, sizeof(de));
 
@@ -1118,47 +1107,49 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		    "file name too long");
 
 	if ((inode_make(0, uid, gid, (mode & ~(mode & mask)), inode, e)) == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 
-	if ((oi = inode_load(inode->v.f.inode, 0, e)) == NULL) {
-		if (inode_dealloc(inode->v.f.inode, &e_dealloc) == -1) {
-			fs_error_set();
-			xlog(LOG_ERR, &e_dealloc, __func__);
-		}
-		return -1;
-	}
+	if ((oi = inode_load(inode->v.f.inode, 0, e)) == NULL)
+		goto dealloc;
 
 	inode_lock(oi, LK_LOCK_RW);
 	inode_nlink(oi, 1);
 	inode_nlookup(oi, 1);
 	if (inode_isdir(oi)) {
-		default_dir[0].inode = inode_ino(oi);
+		if (di_create(oi, parent, xerrz(e)) == -1) {
+			fs_error_set();
+			goto unload;
+		}
 		is_dir = 1;
 		inode_nlink(oi, 1);
-		w = inode_write(oi, 0, default_dir, sizeof(default_dir), e);
 	} else if (data) {
 		/* So far this is strictly used for symlinks */
-		w = inode_write(oi, 0, data, data_len, e);
+		if ((w = inode_write(oi, 0, data, data_len, xerrz(e))) == -1) {
+			fs_error_set();
+			goto unload;
+		}
+		if (w < data_len) {
+			fs_error_set();
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "short write on inode data: %lu < %lu",
+			    w, data_len);
+			goto unload;
+		}
 	}
-	if ((flushed = inode_flush(oi, 0, e)) == -1) {
-		xlog(LOG_ERR, e, __func__);
-		xerrz(e);
+
+	if (inode_flush(oi, 0, xerrz(e)) == -1) {
+		fs_error_set();
+		goto unload;
 	}
+
 	memcpy(inode, &oi->ino, sizeof(struct inode));
 	inode_unlock(oi);
 
-	if (w == -1) {
-		xlog(LOG_ERR, e, __func__);
-		xerrz(e);
+	if (inode_unload(oi, xerrz(e)) == -1) {
+		fs_error_set();
+		goto dealloc;
 	}
 
-	if (inode_unload(oi, e) == -1 || flushed == -1 ||
-	    (data && (w < data_len)) || (is_dir && (w < sizeof(default_dir)))) {
-		if (!xerr_fail(e))
-			XERRF(e, XLOG_APP, XLOG_IO,
-			    "short write on inline inode data or directory");
-		goto unlink;
-	}
 	oi = NULL;
 
 	de.inode = inode->v.f.inode;
@@ -1169,41 +1160,58 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		goto unlink;
 
 	inode_lock(parent_oi, LK_LOCK_RW);
+
 	/* Because of the new inode's ".." link */
 	if (is_dir)
 		inode_nlink(parent_oi, 1);
-	status = di_mkdirent(parent_oi, &de, NULL, e);
-	if ((flushed = inode_flush(parent_oi, 0, e)) == -1) {
-		xlog(LOG_ERR, e, __func__);
-		xerrz(e);
+
+	status = 0;
+	if (di_mkdirent(parent_oi, &de, NULL, xerrz(e)) == -1) {
+		if (is_dir)
+			inode_nlink(parent_oi, -1);
+		fs_error_set();
+		status = -1;
 	}
+
+	if (inode_flush(parent_oi, 0, xerrz(&e2)) == -1) {
+		status = -1;
+		fs_error_set();
+		xlog(LOG_ERR, &e2, __func__);
+	}
+
 	fs_set_time(parent_oi, INODE_ATTR_MTIME);
 	inode_unlock(parent_oi);
 
-	if (inode_unload(parent_oi, &e_unload) == -1) {
+	if (inode_unload(parent_oi, &e2) == -1) {
+		status = -1;
 		fs_error_set();
-		xlog(LOG_ERR, &e_unload, __func__);
-		goto unlink;
+		xlog(LOG_ERR, &e2, __func__);
 	}
 
-	if (status == -1 || flushed == -1) {
-		fs_error_set();
-		goto unlink;
-	}
-
-	return 0;
+	return status;
 unlink:
 	if (inode_nlink_ino(inode->v.f.inode,
-	    (is_dir) ? -2 : -1, &e_dealloc) == -1) {
+	    (is_dir) ? -2 : -1, xerrz(&e2)) == -1) {
 		fs_error_set();
-		xlog(LOG_ERR, &e_dealloc, __func__);
+		xlog(LOG_ERR, &e2, __func__);
 	}
-	xerrz(&e_dealloc);
-	if (is_dir && inode_nlink_ino(parent, -1, &e_dealloc) == -1) {
+	if (inode_dealloc(inode->v.f.inode, xerrz(&e2)) == -1) {
 		fs_error_set();
-		xlog(LOG_ERR, &e_dealloc, __func__);
+		xlog(LOG_ERR, &e2, __func__);
 	}
-	return -1;
+	return XERR_PREPENDFN(e);
+unload:
+	inode_unlock(oi);
+	if (inode_unload(oi, xerrz(&e2)) == -1) {
+		fs_error_set();
+		xlog(LOG_ERR, &e2, __func__);
+	}
+dealloc:
+	if (inode_dealloc(inode->v.f.inode, xerrz(&e2)) == -1) {
+		fs_error_set();
+		xlog(LOG_ERR, &e2, __func__);
+	}
+	return XERR_PREPENDFN(e);
 }
 
 static void

@@ -129,6 +129,7 @@ KNOWN ISSUES
 
 TODO
 ====
+* Make directory lookups faster; too slow on large directories
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
   - Leaving an unreferenced directory with nlink 1.
@@ -144,8 +145,6 @@ TODO
     is holding a lock; retryable)
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
-* Add a format field for dirinodes; they need to be optimized to locate
-  free slots. This is way too slow on large directories.
 * Add a test to try out the last possible inode, 2^63
 * Make the workers and timeouts configurable in the config file
 * Investigate whether it's possible to exploit a race condition in
