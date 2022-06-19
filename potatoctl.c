@@ -53,6 +53,7 @@ static int  dump_config(int, char **);
 static int  fs_status(int, char **);
 static int  do_shutdown(int, char **);
 static int  set_clean(int, char **);
+static int  do_scrub(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *, int *);
 static int  write_dir(int, char *, struct inode *);
@@ -75,6 +76,7 @@ struct subc {
 	{ "status", &fs_status, 0 },
 	{ "shutdown", &do_shutdown, 0 },
 	{ "set_clean", &set_clean, 0 },
+	{ "scrub", &do_scrub, 0 },
 	{ "inode_tables", &inode_tables, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -145,6 +147,7 @@ usage()
 	    "           status\n"
 	    "           shutdown\n"   // TODO: add grace_period arg
 	    "           set_clean\n"
+	    "           scrub\n"
 	    "           fsck  [quiet]\n"
 	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
@@ -428,6 +431,49 @@ verify_checksum(int fd, struct slab_hdr *hdr, struct xerr *e)
 	return 0;
 }
 
+static int
+start_scrub(int mgr, struct xerr *e)
+{
+	struct mgr_msg  m;
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_SCRUB;
+	if (mgr_send(mgr, -1, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (mgr_recv(mgr, NULL, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	return 0;
+}
+
+int
+do_scrub(int argc, char **argv)
+{
+	struct xerr    e;
+	struct fs_info fs_info;
+	int            mgr;
+
+	if (fs_info_read(&fs_info, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	if (start_scrub(mgr, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	close(mgr);
+
+	return 0;
+}
+
 /*
  * The error will be set if we ecountered an error that could
  * prevent us from checking other inode tables. If no error
@@ -537,7 +583,7 @@ fsck(int argc, char **argv)
 	struct oslab           b;
 	struct slab_itbl_hdr  *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(&b);
 	off_t                  itbl_sz;
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct xerr            e = XLOG_ERR_INITIALIZER;
 	struct fsck_stats      stats = {0, 0, 0, 0};
 	size_t                 n_free;
 	int                    mgr;
@@ -610,7 +656,14 @@ fsck(int argc, char **argv)
 		}
 		free(itbl);
 	}
+
+	if (fsck_fix && start_scrub(mgr, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		stats.errors++;
+	}
+
 	close(mgr);
+
 	for (fino = RB_MIN(scanned_inode_tree, &scanned_inodes.head);
 	    fino != NULL;
 	    fino = nfino) {

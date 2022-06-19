@@ -1785,6 +1785,8 @@ scrub()
 	int                      fd, i;
 	uint32_t                 oflags;
 
+	xlog(LOG_NOTICE, NULL, "%s: scrubbing now", __func__);
+
 	for (;;) {
 		bzero(&to_truncate, sizeof(to_truncate));
 		if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
@@ -1833,6 +1835,8 @@ scrub()
 
 	if (slab_loop_files(&scrub_local_slab, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
+
+	xlog(LOG_NOTICE, NULL, "%s: scrubbing complete", __func__);
 }
 
 static int
