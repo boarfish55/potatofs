@@ -20,18 +20,18 @@
 # See here:
 #   https://developers.google.com/identity/protocols/oauth2/limited-input-device
 
-creds=$HOME/potatofs/drive_creds
+creds=$HOME/.potatofs/drive_creds
 client_id=$(cat $creds | jq -r .installed.client_id)
 client_secret=$(cat $creds | jq -r .installed.client_secret)
-refresh_token=$(cat $HOME/potatofs/drive_refresh_token)
-token_path=$HOME/potatofs/drive_token
-folder_id_path=$HOME/potatofs/folder_id
-curlrc_head=$HOME/potatofs/curlrc.head
+refresh_token=$(cat $HOME/.potatofs/drive_refresh_token)
+token_path=$HOME/.potatofs/drive_token
+folder_id_path=$HOME/.potatofs/folder_id
+curlrc_head=$HOME/.potatofs/curlrc.head
 
 # The folder ID woud not normally change. This could be "hardcoded" here to avoid
 # an extra lookup.
 drive_folder="potatofs"
-passphrase="$HOME/potatofs/secret"
+passphrase="$HOME/.potatofs/secret"
 upload_rate="1500k"
 download_rate="40m"
 
