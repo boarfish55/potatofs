@@ -2561,6 +2561,7 @@ main(int argc, char **argv)
 	struct fs_info        fs_info;
 	int                   status = 0;
 	char                  opt;
+	char                  cfg[PATH_MAX];
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
@@ -2571,9 +2572,8 @@ main(int argc, char **argv)
 				usage();
 				exit(0);
 			case 'c':
-				if ((fs_config.cfg_path = strdup(optarg))
-				    == NULL)
-					err(1, "strdup");
+				strlcpy(cfg, optarg, sizeof(cfg));
+				fs_config.cfg_path = cfg;
 				break;
 			default:
 				usage();
@@ -2582,7 +2582,6 @@ main(int argc, char **argv)
 	}
 
 	config_read();
-	mgr_init(fs_config.mgr_sock_path);
 
 	if (optind >= argc) {
 		usage();

@@ -26,21 +26,27 @@
 #include "config.h"
 
 struct fs_config fs_config = {
-	0,                           /* uid */
-	0,                           /* gid */
-	NULL,                        /* dbg */
-	SLAB_MAX_OPEN_DEFAULT,       /* max_open_slabs */
-	FS_DEFAULT_ENTRY_TIMEOUTS,   /* entry_timeouts */
-	SLAB_MAX_AGE_DEFAULT,        /* slab_max_age */
-	SLAB_SIZE_DEFAULT,           /* slab_size */
-	FS_DEFAULT_DATA_PATH,        /* data_path */
-	0,                           /* disable atime if 1 */
-	MGR_DEFAULT_SOCKET_PATH,     /* manager socket path */
-	MGR_DEFAULT_PIDFILE_PATH,    /* PID file path of manager */
-	MGR_DEFAULT_BACKEND_EXEC,    /* manager backend executable */
-	DEFAULT_CONFIG_PATH,         /* config path */
-	DEFAULT_UNCLAIM_PURGE_PCT,   /* unclaim_purge_threshold_pct */
-	DEFAULT_PURGE_PCT            /* purge_threshold_pct */
+	DEFAULT_CONFIG_PATH,           /* config path */
+	0,                             /* uid */
+	0,                             /* gid */
+	"",                            /* dbg */
+	SLAB_MAX_OPEN_DEFAULT,         /* max_open_slabs */
+	FS_DEFAULT_ENTRY_TIMEOUTS,     /* entry_timeouts */
+	SLAB_MAX_AGE_DEFAULT,          /* slab_max_age */
+	SLAB_SIZE_DEFAULT,             /* slab_size */
+	FS_DEFAULT_DATA_PATH,          /* data_path */
+	0,                             /* disable atime if 1 */
+	MGR_DEFAULT_SOCKET_PATH,       /* manager socket path */
+	MGR_DEFAULT_PIDFILE_PATH,      /* PID file path of manager */
+	MGR_DEFAULT_BACKEND_EXEC,      /* manager backend executable */
+	MGR_DEFAULT_UNPRIV_USER,       /* unpriv_user */
+	MGR_DEFAULT_UNPRIV_GROUP,      /* unpriv_group */
+	MGR_DEFAULT_WORKERS,           /* workers */
+	MGR_DEFAULT_BGWORKERS,         /* bgworkers */
+	MGR_DEFAULT_PURGER_INTERVAL,   /* purger_interval */
+	MGR_DEFAULT_SCRUBBER_INTERVAL, /* scrubber_interval */
+	DEFAULT_UNCLAIM_PURGE_PCT,     /* unclaim_purge_threshold_pct */
+	DEFAULT_PURGE_PCT              /* purge_threshold_pct */
 };
 
 void
@@ -85,29 +91,24 @@ config_read()
 			v++;
 
 		if (strcmp(p, "data_dir") == 0) {
-			fs_config.data_dir = strdup(v);
-			if (fs_config.data_dir == NULL)
-				err(1, "data_dir");
+			strlcpy(fs_config.data_dir, v,
+			    sizeof(fs_config.data_dir));
 		} else if (strcmp(p, "mgr_socket_path") == 0) {
-			fs_config.mgr_sock_path = strdup(v);
-			if (fs_config.mgr_sock_path == NULL)
-				err(1, "mgr_sock_path");
+			strlcpy(fs_config.mgr_sock_path, v,
+			    sizeof(fs_config.mgr_sock_path));
 		} else if (strcmp(p, "pidfile_path") == 0) {
-			fs_config.pidfile_path = strdup(v);
-			if (fs_config.pidfile_path == NULL)
-				err(1, "pidfile_path");
+			strlcpy(fs_config.pidfile_path, v,
+			    sizeof(fs_config.pidfile_path));
 		} else if (strcmp(p, "backend") == 0) {
-			fs_config.mgr_exec = strdup(v);
-			if (fs_config.mgr_exec == NULL)
-				err(1, "backend");
+			strlcpy(fs_config.mgr_exec, v,
+			    sizeof(fs_config.mgr_exec));
 		} else if (strcmp(p, "slab_size") == 0) {
 			if ((fs_config.slab_size = strtoul(v, NULL, 10))
 			    == ULONG_MAX)
 				err(1, "slab_size");
 		} else if (strcmp(p, "dbg") == 0) {
-			fs_config.dbg = strdup(v);
-			if (fs_config.dbg == NULL)
-				err(1, "dbg");
+			strlcpy(fs_config.dbg, v,
+			    sizeof(fs_config.dbg));
 		} else if (strcmp(p, "noatime") == 0) {
 			if (strcmp(v, "yes") == 0)
 				fs_config.noatime = 1;
@@ -127,6 +128,32 @@ config_read()
 			if ((fs_config.purge_threshold_pct =
 			    strtol(v, NULL, 10)) == LONG_MAX)
 				err(1, "purge_threshold_pct");
+		} else if (strcmp(p, "workers") == 0) {
+			if ((fs_config.workers =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "workers");
+		} else if (strcmp(p, "bgworkers") == 0) {
+			if ((fs_config.bgworkers =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "bgworkers");
+		} else if (strcmp(p, "purger_interval") == 0) {
+			if ((fs_config.purger_interval =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "purger_interval");
+		} else if (strcmp(p, "scrubber_interval") == 0) {
+			if ((fs_config.scrubber_interval =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "scrubber_interval");
+		} else if (strcmp(p, "max_open_slabs") == 0) {
+			if ((fs_config.max_open_slabs =
+			    strtol(v, NULL, 10)) == LONG_MAX)
+				err(1, "max_open_slabs");
+		} else if (strcmp(p, "unpriv_user") == 0) {
+			strlcpy(fs_config.unpriv_user, v,
+			    sizeof(fs_config.unpriv_user));
+		} else if (strcmp(p, "unpriv_group") == 0) {
+			strlcpy(fs_config.unpriv_group, v,
+			    sizeof(fs_config.unpriv_group));
 		} else {
 			warnx("unknown parameter: %s", p);
 			continue;

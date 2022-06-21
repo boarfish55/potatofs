@@ -38,6 +38,7 @@
 #include "inodes.h"
 #include "mgr.h"
 #include "openfiles.h"
+#include "potatomgr.h"
 
 enum {
 	OPT_HELP,
@@ -48,12 +49,6 @@ enum {
 
 #define FS_OPT(t, p, v) { t, offsetof(struct fs_config, p), v }
 static struct fuse_opt fs_opts[] = {
-	/* Enable debug mode for specific modules. */
-	FS_OPT("dbg=%s", dbg, 0),
-	/* Limit on the local storage size for slabs. */
-	FS_OPT("max_open_slabs=%llu", max_open_slabs, 0),
-	FS_OPT("entry_timeouts=%u", entry_timeouts, 0),
-	FS_OPT("slab_max_age=%u", slab_max_age, 0),
 	FUSE_OPT_KEY("-h", OPT_HELP),
 	FUSE_OPT_KEY("-V", OPT_VERSION),
 	FUSE_OPT_KEY("-f", OPT_FOREGROUND),
@@ -173,36 +168,14 @@ static rwlk fs_tree_lock = RWLK_INITIALIZER;
 static int
 fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 {
-	const struct module_dbg_map_entry *dbge;
-
 	switch (key) {
 	case OPT_HELP:
 		fuse_opt_add_arg(outargs, "-h");
 		fuse_main(outargs->argc, outargs->argv, NULL, NULL);
-		fprintf(stderr, "\n"
-		    "[PotatoFS]\n"
-		    "    -o entry_timeouts=<seconds>\n"
-		    "        How long to cache inode attributes and name\n"
-		    "        entries (default: %d)\n"
-		    "\n"
-		    "    -o max_open_slabs=<int>\n"
-		    "        Maximum slabs open simultaneously. Slabs will\n"
-		    "        be closed early if we reach this amount.\n"
-		    "        (default: %d)\n"
-		    "\n"
-		    "    -o slab_max_age=<seconds>\n"
-		    "        How long to keep a slab open even when no longer\n"
-		    "        referenced. (default: %u)\n"
-		    "\n"
-		    "    -o cfg_path=<path>\n"
-		    "        PotatoFS configuration file path (default: %s)\n"
-		    "\n"
-		    "    -o dbg=<module1,module2,...>\n"
-		    "        Enable debug logging for selected modules:\n",
-		    FS_DEFAULT_ENTRY_TIMEOUTS, SLAB_MAX_OPEN_DEFAULT,
-		    SLAB_MAX_AGE_DEFAULT, DEFAULT_CONFIG_PATH);
-		for (dbge = module_dbg_map; *dbge->name; dbge++)
-			fprintf(stderr, "          - %s\n", dbge->name);
+		fprintf(stderr, "\n[potatofs]\n"
+		    "    -o cfg_path=<path>      configuration "
+		    "path (default: %s)\n",
+		    DEFAULT_CONFIG_PATH);
 		exit(1);
 	case OPT_VERSION:
 		fuse_opt_add_arg(outargs, "-V");
@@ -429,13 +402,16 @@ fs_destroy(void *unused)
 
 	LK_WRLOCK(&fs_tree_lock);
 
+	xlog(LOG_DEBUG, NULL, "freeing inodes");
 	inode_shutdown();
 
+	xlog(LOG_DEBUG, NULL, "freeing slabs");
 	if (slab_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
 
+	xlog(LOG_DEBUG, NULL, "freeing counters");
 	if (counter_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
@@ -443,6 +419,7 @@ fs_destroy(void *unused)
 
 	LK_UNLOCK(&fs_tree_lock);
 
+	xlog(LOG_DEBUG, NULL, "sending shutdown to potatomgr");
 	if (mgr_send_shutdown(xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 }
@@ -2110,17 +2087,6 @@ main(int argc, char **argv)
 	struct fs_info    fs_info;
 	struct xerr       e;
 
-	sigemptyset(&set);
-	sigaddset(&set, SIGPIPE);
-	if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
-		err(1, "pthread_sigmask");
-
-	bzero(&act, sizeof(act));
-	act.sa_flags = 0;
-	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &act, NULL) == -1)
-		err(1, "sigaction");
-
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
@@ -2136,20 +2102,36 @@ main(int argc, char **argv)
 
 	config_read();
 
-	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1)
-		err(1, "xlog_init");
+	if (mgr_start() == -1)
+		err(1, "mgr_start");
+
+	bzero(&act, sizeof(act));
+	act.sa_flags = 0;
+	act.sa_handler = SIG_IGN;
+	if (sigaction(SIGPIPE, &act, NULL) == -1)
+		err(1, "sigaction");
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGPIPE);
+	if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
+		err(1, "pthread_sigmask");
+
+	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1) {
+		warn("xlog_init");
+		goto kill_mgr;
+	}
 
 	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) == -1)
-		exit(1);
-
-	mgr_init(fs_config.mgr_sock_path);
+		goto kill_mgr;
 
 	if (mgr_fs_info(&fs_info, xerrz(&e)) == -1) {
 		xerr_print(&e);
-		exit(1);
+		goto kill_mgr;
 	}
-	if (fs_info.error)
-		errx(1, "filesystem has errors; run fsck");
+	if (fs_info.error) {
+		warnx("filesystem has errors; run fsck");
+		goto kill_mgr;
+	}
 
 	if ((ch = fuse_mount(mountpoint, &args)) != NULL) {
 		struct fuse_session *se;
@@ -2171,4 +2153,8 @@ main(int argc, char **argv)
 	fuse_opt_free_args(&args);
 
 	return status ? 1 : 0;
+kill_mgr:
+	if (mgr_send_shutdown(xerrz(&e)) == -1)
+		xlog(LOG_ERR, &e, __func__);
+	return 1;
 }

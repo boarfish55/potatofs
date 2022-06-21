@@ -49,10 +49,11 @@
 #include "slabdb.h"
 #include "slabs.h"
 
-struct mgr_counters {
+struct mgr_shared {
 	sem_t    sem;
-	uint64_t c[COUNTER_LAST];
-	uint64_t mgr_c[MGR_COUNTER_LAST];
+	uint64_t counters[COUNTER_LAST];
+	uint64_t mgr_counters[MGR_COUNTER_LAST];
+	int      shutdown_requested;
 };
 
 struct fs_usage {
@@ -65,56 +66,52 @@ struct delayed_truncates {
 	int             count;
 };
 
-char                *dbg_spec = NULL;
-struct timeval       socket_timeout = {60, 0};
-extern char        **environ;
-uuid_t               instance_id;
-struct mgr_counters *mgr_counters;
-int                  shutdown_requested = 0;
-const uint32_t       flock_timeout = 10;
+struct timeval     socket_timeout = {60, 0};
+uuid_t             instance_id;
+struct mgr_shared *mgr_shared;
+const uint32_t     flock_timeout = 10;
+int                pid_fd;
+
+static int
+mgr_shared_lock()
+{
+again:
+	if (sem_wait(&mgr_shared->sem) == -1) {
+		if (errno == EINTR)
+			goto again;
+		xlog_strerror(LOG_ERR, errno, "sem_wait");
+		return -1;
+	}
+	return 0;
+}
 
 static void
-usage()
+mgr_shared_unlock()
 {
-	fprintf(stderr, "Usage: " MGR_PROGNAME " [options]\n");
-	fprintf(stderr,
-	    "\t-h\t\tPrints this help\n"
-	    "\t-v\t\tPrints version\n"
-	    "\t-d <spec>\tDebug specification\n"
-	    "\t-w <workers>\tHow many workers to spawn\n"
-	    "\t-W <workers>\tHow many background workers to spawn\n"
-	    "\t-f\t\tRun in the foreground, do not fork\n"
-	    "\t-c <path>\tPath to configuration\n"
-	    "\t-T <timeout>\tUnix socket timeout\n"
-	    "\t-S <seconds>\tHow often to trigger the scrub worker; "
-	    "0 disables\n"
-	    "\t-P <seconds>\tHow often to trigger the purge worker; "
-	    "0 disables\n");
+	if (sem_post(&mgr_shared->sem) == -1)
+		xlog_strerror(LOG_CRIT, errno, "sem_post");
+}
+
+static int
+shutdown_requested()
+{
+	int sr;
+	if (mgr_shared_lock() == -1)
+		return 0;
+	sr = mgr_shared->shutdown_requested;
+	mgr_shared_unlock();
+	return sr;
 }
 
 static void
 handle_sig(int sig)
 {
-	if (shutdown_requested)
-		return;
-	switch (sig) {
-	case SIGTERM:
-	case SIGINT:
-		shutdown_requested = 1;
-		killpg(0, 15);
-		syslog(LOG_NOTICE, "signal %d received, shutting down", sig);
-		break;
-	default:
-		syslog(LOG_ERR, "Unhandled signal received. Exiting.");
-		exit(sig);
-	}
-}
-
-static void
-worker_handle_sig(int sig)
-{
-	shutdown_requested = 1;
-	syslog(LOG_NOTICE, "signal %d received, shutting down", sig);
+	/*
+	 * We do nothing. This is only useful so that we
+	 * interrupt blocking system calls and decide
+	 * whether we should retry to prepare to exit.
+	 */
+	syslog(LOG_DEBUG, "signal %d received", sig);
 }
 
 static int
@@ -144,35 +141,25 @@ set_fs_error()
 static void
 mgr_counter_add(int c, uint64_t v)
 {
-	if (sem_wait(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
+	if (mgr_shared_lock() == -1)
 		return;
-	}
-
-	mgr_counters->mgr_c[c] += v;
-
-	if (sem_post(&mgr_counters->sem) == -1)
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
+	mgr_shared->mgr_counters[c] += v;
+	mgr_shared_unlock();
 }
 
 static int
 snd_counters(int c, struct mgr_msg *m, struct xerr *e)
 {
 	int i;
-	if (sem_wait(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
-		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_wait");
+	if (mgr_shared_lock() == -1) {
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "mgr_shared_lock");
 		goto fail;
 	}
 
 	for (i = 0; i < COUNTER_LAST; i++)
-		mgr_counters->c[i] = m->v.snd_counters.c[i];
+		mgr_shared->counters[i] = m->v.snd_counters.c[i];
 
-	if (sem_post(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_post");
-		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_post");
-		goto fail;
-	}
+	mgr_shared_unlock();
 
 	m->m = MGR_MSG_SND_COUNTERS_OK;
 	return mgr_send(c, -1, m, e);
@@ -185,23 +172,18 @@ static int
 rcv_counters(int c, struct mgr_msg *m, struct xerr *e)
 {
 	int i;
-	if (sem_wait(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_wait");
-		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_wait");
+	if (mgr_shared_lock() == -1) {
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "mgr_shared_lock");
 		goto fail;
 	}
 
 	for (i = 0; i < COUNTER_LAST; i++)
-		m->v.rcv_counters.c[i] = mgr_counters->c[i];
+		m->v.rcv_counters.c[i] = mgr_shared->counters[i];
 
 	for (i = 0; i < MGR_COUNTER_LAST; i++)
-		m->v.rcv_counters.mgr_c[i] = mgr_counters->mgr_c[i];
+		m->v.rcv_counters.mgr_c[i] = mgr_shared->mgr_counters[i];
 
-	if (sem_post(&mgr_counters->sem) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sem_post");
-		XERRF(&m->v.err, XLOG_ERRNO, errno, "sem_post");
-		goto fail;
-	}
+	mgr_shared_unlock();
 
 	m->m = MGR_MSG_RCV_COUNTERS_OK;
 	return mgr_send(c, -1, m, e);
@@ -1411,20 +1393,31 @@ fail:
 }
 
 static int
+set_shutdown_requested()
+{
+	if (mgr_shared_lock() == -1) {
+		return -1;
+	} else {
+		mgr_shared->shutdown_requested = 1;
+		mgr_shared_unlock();
+	}
+	return 0;
+}
+
+static int
 do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 {
 	pid_t p;
 
-	if ((p = getppid()) > 1) {
-		if (kill(p, 15) == -1) {
-			xlog_strerror(LOG_ERR, errno, "%s: kill", __func__);
-			memcpy(&m->v.err, e, sizeof(struct xerr));
-			m->m = MGR_MSG_SHUTDOWN_ERR;
-		} else {
-			m->m = MGR_MSG_SHUTDOWN_OK;
-		}
-	} else {
+	if (set_shutdown_requested() == -1) {
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "set_shutdown_requested");
 		m->m = MGR_MSG_SHUTDOWN_ERR;
+	} else {
+		m->m = MGR_MSG_SHUTDOWN_OK;
+		if ((p = getppid()) > 1) {
+			if (killpg(p, 15) == -1)
+				xlog_strerror(LOG_ERR, errno, "killpg");
+		}
 	}
 
 	if (mgr_send(c, -1, m, xerrz(e)) == -1)
@@ -1527,7 +1520,7 @@ clear:
 		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
 }
 
-static void
+static int
 bgworker(const char *name, void(*fn)(), int interval_secs)
 {
 	char            title[32];
@@ -1535,15 +1528,18 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 	pid_t           pid;
 	struct xerr     e = XLOG_ERR_INITIALIZER;
 
-	if ((pid = fork()) == -1){
-		killpg(0, 15);
-		err(1, "fork");
+	if ((pid = fork()) == -1) {
+		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
+		set_shutdown_requested();
+		return -1;
 	} else if (pid > 0)
-		return;
+		return 0;
+
+	close(pid_fd);
 
 	bzero(title, sizeof(title));
 	snprintf(title, sizeof(title), "%s-%s", MGR_PROGNAME, name);
-	if (xlog_init(title, dbg_spec, 0) == -1) {
+	if (xlog_init(title, fs_config.dbg, 0) == -1) {
 		xlog(LOG_ERR, NULL,
 		    "%s: failed to initialize logging", __func__);
 		exit(1);
@@ -1557,12 +1553,11 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		exit(1);
 	}
 
-	while (!shutdown_requested) {
+	while (!shutdown_requested()) {
 		fn();
-		if (!shutdown_requested)
+		if (!shutdown_requested())
 			nanosleep(&tp, NULL);
 	}
-	xlog(LOG_INFO, NULL, "exiting");
 	slabdb_shutdown();
 	exit(0);
 }
@@ -1644,7 +1639,7 @@ bg_flush()
 		// the user hostage forever. Though this should be
 		// configurable. We should use the grace_period sent by
 		// potatoctl.
-		if (shutdown_requested)
+		if (shutdown_requested())
 			break;
 	}
 fail:
@@ -1976,7 +1971,7 @@ bg_purge()
 	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 }
 
-static void
+static int
 worker(int lsock)
 {
 	int            fd;
@@ -1984,8 +1979,18 @@ worker(int lsock)
 	struct xerr    e = XLOG_ERR_INITIALIZER;
 	int            c;
 	int            r;
+	pid_t          pid;
 
-	if (xlog_init(MGR_PROGNAME "-worker", dbg_spec, 0) == -1) {
+	if ((pid = fork()) == -1) {
+		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
+		set_shutdown_requested();
+		return -1;
+	} else if (pid > 0)
+		return 0;
+
+	close(pid_fd);
+
+	if (xlog_init(MGR_PROGNAME "-worker", fs_config.dbg, 0) == -1) {
 		xlog(LOG_ERR, NULL, "failed to initialize logging in worker");
 		exit(1);
 	}
@@ -1998,7 +2003,7 @@ worker(int lsock)
 		exit(1);
 	}
 
-	while (!shutdown_requested) {
+	while (!shutdown_requested()) {
 		if ((c = accept(lsock, NULL, 0)) == -1) {
 			switch (errno) {
 			case EINTR:
@@ -2096,17 +2101,13 @@ worker(int lsock)
 	}
 	close(lsock);
 	slabdb_shutdown();
-	xlog(LOG_INFO, NULL, "exiting");
 	exit(0);
 }
 
 int
-main(int argc, char **argv)
+mgr_start()
 {
-	char                opt;
 	struct              sigaction act;
-	int                 foreground = 0;
-	int                 pid_fd;
 	char                pid_line[32];
 	struct passwd      *pw;
 	struct group       *gr;
@@ -2114,91 +2115,55 @@ main(int argc, char **argv)
 	char               *unpriv_group = MGR_DEFAULT_UNPRIV_GROUP;
 	int                 lsock;
 	struct sockaddr_un  saddr;
-	int                 workers = 12, n;
-	int                 bgworkers = 2;
-	int                 purger_interval = 30;
-	int                 scrubber_interval = 3600;
+	int                 n;
+	int                 wait_for_workers = 0;
+	int                 null_fd;
 	struct statvfs      stv;
-	struct xerr         e = XLOG_ERR_INITIALIZER;
+	struct xerr         e;
 	struct fs_info      fs_info;
 	char                u[37];
-
-	if (getenv("POTATOFS_CONFIG"))
-		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
-
-	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:S:P:")) != -1) {
-		switch (opt) {
-			case 'h':
-				usage();
-				exit(0);
-			case 'v':
-				printf(MGR_PROGNAME " version " VERSION "\n");
-				exit(0);
-			case 'd':
-				if ((dbg_spec = strdup(optarg)) == NULL)
-					err(1, "strdup");
-				break;
-			case 'w':
-				workers = atoi(optarg);
-				break;
-			case 'W':
-				bgworkers = atoi(optarg);
-				break;
-			case 'f':
-				foreground = 1;
-				break;
-			case 'c':
-				if ((fs_config.cfg_path = strdup(optarg))
-				    == NULL)
-					err(1, "strdup");
-				break;
-			case 'T':
-				socket_timeout.tv_sec = atoi(optarg);
-				break;
-			case 'S':
-				scrubber_interval = atoi(optarg);
-				break;
-			case 'P':
-				purger_interval = atoi(optarg);
-				break;
-			default:
-				usage();
-				exit(1);
-		}
-	}
-
-	setproctitle_init(argc, argv, environ);
-
-	if (xlog_init(MGR_PROGNAME, dbg_spec, foreground) == -1)
-		err(1, "xlog_init");
-
-	config_read();
-
-	if (!foreground) {
-		if (daemon(0, 0) == -1)
-			err(1, "daemon");
-		setproctitle("main");
-	}
+	pid_t               pid;
 
 	if ((pid_fd = open(fs_config.pidfile_path,
-	    O_CREAT|O_WRONLY, 0644)) == -1) {
-		xlog_strerror(LOG_ERR, errno, "open");
-		exit(1);
-	}
-	if (fcntl(pid_fd, F_SETFD, FD_CLOEXEC) == -1) {
-		xlog_strerror(LOG_ERR, errno, "fcntl");
-		exit(1);
-	}
+	    O_CREAT|O_WRONLY, 0644)) == -1)
+		return -1;
+	if (fcntl(pid_fd, F_SETFD, FD_CLOEXEC) == -1)
+		return -1;
 	if (flock(pid_fd, LOCK_EX|LOCK_NB) == -1) {
 		if (errno == EWOULDBLOCK) {
-			xlog(LOG_ERR, NULL, "pid file %s is already locked; "
+			warnx("pid file %s is already locked; "
 			    "is another instance running?",
 			    fs_config.pidfile_path);
-		} else {
-			xlog_strerror(LOG_ERR, errno, "flock");
 		}
+		return -1;
+	}
+
+	if ((pid = fork()) == -1) {
+		close(pid_fd);
+		return -1;
+	} else if (pid != 0) {
+		close(pid_fd);
+		return 0;
+	}
+
+	if (setsid() == -1) {
+		xlog_strerror(LOG_CRIT, errno, "setsid");
 		exit(1);
 	}
+
+	chdir(fs_config.data_dir);
+
+	if ((null_fd = open("/dev/null", O_RDWR)) == -1)
+		err(1, "open");
+
+	dup2(null_fd, STDIN_FILENO);
+	dup2(null_fd, STDOUT_FILENO);
+	dup2(null_fd, STDERR_FILENO);
+	if (null_fd > 2)
+		close(null_fd);
+
+	if (xlog_init(MGR_PROGNAME, fs_config.dbg, 0) == -1)
+		err(1, "xlog_init");
 
 	snprintf(pid_line, sizeof(pid_line), "%d\n", getpid());
 	if (write(pid_fd, pid_line, strlen(pid_line)) == -1) {
@@ -2243,6 +2208,7 @@ main(int argc, char **argv)
 		    fs_config.data_dir);
 		exit(1);
 	}
+
 	if (access(fs_config.mgr_exec, X_OK) == -1) {
 		xlog_strerror(LOG_ERR, errno, "access: %s",
 		    fs_config.mgr_exec);
@@ -2259,16 +2225,13 @@ main(int argc, char **argv)
 	    stv.f_blocks * stv.f_frsize /
 	    (fs_config.slab_size + sizeof(struct slab_hdr)));
 
-	if (fs_info_open(&fs_info, &e) == -1) {
+	if (fs_info_open(&fs_info, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
-	if (fs_info.error)
-		xlog(LOG_ERR, NULL, "filesystem has errors; run fsck",
-		    __func__);
 	uuid_copy(instance_id, fs_info.instance_id);
 
-	if (slab_make_dirs(&e) == -1) {
+	if (slab_make_dirs(xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
 		exit(1);
 	}
@@ -2299,16 +2262,16 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if ((mgr_counters = mmap(NULL, sizeof(struct mgr_counters),
+	if ((mgr_shared = mmap(NULL, sizeof(struct mgr_shared),
 	    PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0)) == MAP_FAILED) {
 		xlog_strerror(LOG_ERR, errno, "mmap");
 		exit(1);
 	}
 
 	/* Not sure MAP_ANON initializes to zero on BSD */
-	bzero(mgr_counters, sizeof(struct mgr_counters));
+	bzero(mgr_shared, sizeof(struct mgr_shared));
 
-	if (sem_init(&mgr_counters->sem, 1, 1) == -1) {
+	if (sem_init(&mgr_shared->sem, 1, 1) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sem_init");
 		exit(1);
 	}
@@ -2325,64 +2288,50 @@ main(int argc, char **argv)
 	if (sigaction(SIGPIPE, &act, NULL) == -1)
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 
-	act.sa_handler = &worker_handle_sig;
-	if (sigaction(SIGINT, &act, NULL) == -1 ||
-	    sigaction(SIGTERM, &act, NULL) == -1) {
-		xlog_strerror(LOG_ERR, errno, "sigaction");
-	}
-
-	for (n = 0; n < workers; n++) {
-		switch (fork()) {
-		case -1:
-			killpg(0, 15);
-			err(1, "fork");
-		case 0:
-			worker(lsock);
-			/* Never reached */
-			exit(1);
-		default:
-			/* Nothing */
-			break;
-		}
-	}
-
-	bgworker("df", &bg_df, 60);
-	workers++;
-
-	if (scrubber_interval) {
-		bgworker("scrubber", &scrub, scrubber_interval);
-		workers++;
-	}
-	if (purger_interval) {
-		bgworker("purge", &bg_purge, purger_interval);
-		workers++;
-	}
-
-	for (n = 0; n < bgworkers; n++) {
-		bgworker("flush", &bg_flush, 5);
-		workers++;
-	}
-
 	act.sa_handler = &handle_sig;
 	if (sigaction(SIGINT, &act, NULL) == -1 ||
 	    sigaction(SIGTERM, &act, NULL) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
+	for (n = 0; n < fs_config.workers; n++)
+		if (worker(lsock) == 0)
+			wait_for_workers++;
+
+	if (bgworker("df", &bg_df, 60) == 0)
+		wait_for_workers++;
+
+	if (fs_config.scrubber_interval) {
+		if (bgworker("scrubber", &scrub,
+		    fs_config.scrubber_interval) == 0)
+			wait_for_workers++;
+	}
+	if (fs_config.purger_interval) {
+		if (bgworker("purge", &bg_purge,
+		    fs_config.purger_interval) == 0)
+			wait_for_workers++;
+	}
+
+	for (n = 0; n < fs_config.bgworkers; n++) {
+		if (bgworker("flush", &bg_flush, 5) == 0)
+			wait_for_workers++;
+	}
+
 	uuid_unparse(instance_id, u);
 	xlog(LOG_NOTICE, NULL, "initialized instance %s (version %s)", u,
 	    VERSION);
 
-	for (n = 0; n < workers; ) {
+	setproctitle("main");
+	for (n = 0; n < wait_for_workers; ) {
 		if (wait(NULL) == -1) {
 			if (errno == EINTR)
 				continue;
-			err(1, "wait");
+			warn("wait");
 		}
 		n++;
 	}
 
-	if (fs_info_read(&fs_info, &e) == -1) {
+	if (fs_info_read(&fs_info, xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, "%s", __func__);
 		exit(1);
 	} else {
@@ -2394,7 +2343,8 @@ main(int argc, char **argv)
 			exit(1);
 		}
 	}
+	close(pid_fd);
 
 	xlog(LOG_INFO, NULL, "exiting");
-	return 0;
+	exit(0);
 }

@@ -146,7 +146,6 @@ TODO
   - XLOG_APP, XLOG_MISMATCH (eventual consistency)
   - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
 * Add a test to try out the last possible inode, 2^63
-* Make the workers and timeouts configurable in the config file
 * Investigate whether it's possible to exploit a race condition in
   unlink/truncate to read previous file data.
 * In low-space conditions, run flush/purge more often to free up space. The
@@ -164,11 +163,5 @@ TODO
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
 * Some format strings have the wrong conversion for tv_nsec, should be "l".
-* xlog needs to cleanup in how calls are made
-  and also how we have to clear the error in many places. Also we should
-  add a descriptive text to the contextual errors instead of just printing
-  the index. Also, instead of doing xerrz() all over the place,
-  simply do it directly inside function args since it returns the struct
-  it just cleared. This way we ensure users already clear it.
 * Refactor de fuse ops handling as a queue so we can implement nice things
   like interrupting in flight operations, or journaling/soft updates.

@@ -26,15 +26,6 @@
 #include "config.h"
 #include "mgr.h"
 
-static char mgr_sock_path[PATH_MAX];
-
-void
-mgr_init(const char *path)
-{
-	// TODO: setup auto-reconnect here, not on every call
-	strlcpy(mgr_sock_path, path, sizeof(mgr_sock_path));
-}
-
 int
 mgr_connect(int retry, struct xerr *e)
 {
@@ -50,7 +41,7 @@ mgr_connect(int retry, struct xerr *e)
 
 		bzero(&mgr_addr, sizeof(mgr_addr));
 		mgr_addr.sun_family = AF_LOCAL;
-		strlcpy(mgr_addr.sun_path, mgr_sock_path,
+		strlcpy(mgr_addr.sun_path, fs_config.mgr_sock_path,
 		    sizeof(mgr_addr.sun_path));
 
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,

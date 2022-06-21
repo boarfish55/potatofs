@@ -39,6 +39,7 @@
 #include "dirinodes.h"
 #include "xlog.h"
 #include "mgr.h"
+#include "potatomgr.h"
 
 static int  slabdb(int, char **);
 static int  claim(int, char **);
@@ -275,12 +276,11 @@ noent:
 
 int
 fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
-    struct fsck_stats *stats)
+    struct fsck_stats *stats, struct xerr *e)
 {
 	struct dir_entry   *de;
 	char               *dir;
 	size_t              dir_sz;
-	struct xerr         e;
 	int                 dirty = 0;
 	struct found_inode *fino;
 
@@ -313,13 +313,13 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 		 * if they are properly linked in a directory somewhere.
 		 */
 		if ((fino = malloc(sizeof(struct found_inode))) == NULL)
-			err(1, "calloc");
+			return XERRF(e, XLOG_ERRNO, errno, "malloc");
 		bzero(fino, sizeof(struct found_inode));
 		fino->ino = inode->v.f.inode;
 		if (RB_INSERT(scanned_inode_tree, &scanned_inodes.head,
 		    fino) != NULL) {
 			free(fino);
-			err(1, "RB_INSERT");
+			return XERRF(e, XLOG_ERRNO, errno, "RB_INSERT");
 		}
 	}
 
@@ -350,8 +350,8 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 				if (fsck_fix) {
 					if (clear_dir_entry(
 					    (struct dir_entry *)dir, de,
-					    &dir_sz, xerrz(&e)) == -1)
-						xerr_print(&e);
+					    &dir_sz, xerrz(e)) == -1)
+						xerr_print(e);
 					else
 						dirty = 1;
 				}
@@ -363,7 +363,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			 * if any of them are not.
 			 */
 			if ((fino = malloc(sizeof(struct found_inode))) == NULL)
-				err(1, "calloc");
+				return XERRF(e, XLOG_ERRNO, errno, "malloc");
 			bzero(fino, sizeof(struct found_inode));
 			fino->ino = de->inode;
 			if (!RB_FIND(scanned_dirent_inode_tree,
@@ -372,7 +372,8 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 				    &scanned_dirent_inodes.head, fino)
 				    != NULL) {
 					free(fino);
-					err(1, "RB_INSERT");
+					return XERRF(e, XLOG_ERRNO, errno,
+					    "RB_INSERT");
 				}
 			}
 		}
@@ -547,8 +548,10 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 	if ((*itbl_sz = slab_size(b, e)) == ULONG_MAX)
 		goto end;
 
-	if ((itbl = malloc(*itbl_sz)) == NULL)
-		err(1, "malloc");
+	if ((itbl = malloc(*itbl_sz)) == NULL) {
+		XERRF(e, XLOG_ERRNO, errno, "malloc");
+		goto end;
+	}
 
 	if ((r = slab_read(b, itbl, 0, *itbl_sz, e)) < *itbl_sz) {
 		free(itbl);
@@ -565,7 +568,7 @@ end:
 	    m.m != MGR_MSG_UNCLAIM_OK) {
 		if (m.m == MGR_MSG_UNCLAIM_ERR) {
 			memcpy(e, &m.v.err, sizeof(struct xerr));
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 		} else
 			XERRF(e, XLOG_APP, XLOG_MGRERROR,
 			    "mgr_recv: unexpected response: %d", m.m);
@@ -583,7 +586,7 @@ fsck(int argc, char **argv)
 	struct oslab           b;
 	struct slab_itbl_hdr  *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(&b);
 	off_t                  itbl_sz;
-	struct xerr            e = XLOG_ERR_INITIALIZER;
+	struct xerr            e;
 	struct fsck_stats      stats = {0, 0, 0, 0};
 	size_t                 n_free;
 	int                    mgr;
@@ -599,9 +602,11 @@ fsck(int argc, char **argv)
 			fsck_fix = 1;
 	}
 
-	if ((mgr = mgr_connect(1, &e)) == -1) {
+	if (mgr_start() == -1)
+		err(1, "mgr_start");
+
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 		xerr_print(&e);
-		xerrz(&e);
 		stats.errors++;
 		goto end;
 	}
@@ -609,12 +614,11 @@ fsck(int argc, char **argv)
 	bzero(&b, sizeof(b));
 	for (;;) {
 		if ((itbl = fsck_load_next_itbl(mgr, &b,
-		    &itbl_sz, &e)) == NULL) {
+		    &itbl_sz, xerrz(&e))) == NULL) {
 			if (xerr_fail(&e)) {
 				if (!xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 					stats.errors++;
 					xerr_print(&e);
-					xerrz(&e);
 				}
 				break;
 			}
@@ -643,7 +647,7 @@ fsck(int argc, char **argv)
 
 			is_free = slab_itbl_is_free(&b, ino);
 			fsck_inode(mgr, ino, is_free,
-			    ((slab_end) ? NULL : inode), &stats);
+			    ((slab_end) ? NULL : inode), &stats, xerrz(&e));
 			if (is_free)
 				n_free++;
 		}
@@ -691,6 +695,8 @@ end:
 		printf("Scan result: %s\n",
 		    (stats.errors) ? "errors" : "clean");
 	}
+	if (mgr_send_shutdown(xerrz(&e)) == -1)
+		xerr_print(&e);
 	return (stats.errors) ? 1 : 0;
 }
 
@@ -1430,8 +1436,10 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 	struct xerr     e = XLOG_ERR_INITIALIZER;
 	struct dir_hdr  d_hdr = { DIRINODE_FORMAT };
 
+	// TODO: properly return an error, don't err()
+
 	if ((d = malloc(inode->v.f.size)) == NULL)
-		err(1, "calloc");
+		err(1, "malloc");
 
 	r_offset = (inode->v.f.size < (inode_max_inline_b()))
 	    ? inode->v.f.size
@@ -1889,9 +1897,9 @@ main(int argc, char **argv)
 {
 	struct subc    *c;
 	struct xerr     e;
-	char           *data_dir = FS_DEFAULT_DATA_PATH;
 	char            opt;
 	struct fs_info  fs_info;
+	char            cfg[PATH_MAX];
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
@@ -1901,14 +1909,9 @@ main(int argc, char **argv)
 			case 'h':
 				usage();
 				exit(0);
-			case 'D':
-				if ((data_dir = strdup(optarg)) == NULL)
-					err(1, "strdup");
-				break;
 			case 'c':
-				if ((fs_config.cfg_path = strdup(optarg))
-				    == NULL)
-					err(1, "strdup");
+				strlcpy(cfg, optarg, sizeof(cfg));
+				fs_config.cfg_path = cfg;
 				break;
 			default:
 				usage();
@@ -1922,7 +1925,6 @@ main(int argc, char **argv)
 	}
 
 	config_read();
-	mgr_init(fs_config.mgr_sock_path);
 
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		err(1, "newlocale");

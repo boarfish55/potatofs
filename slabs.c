@@ -232,15 +232,21 @@ static void *
 slab_purge(void *unused)
 {
 	struct oslab    *b, *b2;
-	struct timespec  now, t = {10, 0};
+	struct timespec  now, t = {1, 0};
+	int              i;
 	struct statvfs   stv;
 	int              purge, do_shutdown = 0;
 
-	do {
-		for (;;) {
-			if (nanosleep(&t, NULL) == 0)
-				break;
+	while (!do_shutdown) {
+		for (i = 0; i < 10 && !do_shutdown; i++) {
+			nanosleep(&t, NULL);
+			MTX_LOCK(&owned_slabs.lock);
+			if (owned_slabs.do_shutdown)
+				do_shutdown = 1;
+			MTX_UNLOCK(&owned_slabs.lock);
 		}
+		if (do_shutdown)
+			break;
 
 		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
 			fs_error_set();
@@ -282,10 +288,9 @@ slab_purge(void *unused)
 			counter_decr(COUNTER_N_OPEN_SLABS);
 			b = b2;
 		}
-		if (owned_slabs.do_shutdown)
-			do_shutdown = 1;
 		MTX_UNLOCK(&owned_slabs.lock);
-	} while (!do_shutdown);
+	}
+	MTX_UNLOCK(&owned_slabs.lock);
 	return NULL;
 }
 

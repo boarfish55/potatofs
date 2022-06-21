@@ -23,6 +23,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <stdint.h>
+#include <limits.h>
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
@@ -30,13 +31,19 @@
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
-#define MGR_DEFAULT_PIDFILE_PATH  "/var/potatofs/potatomgr.pid"
-#define MGR_DEFAULT_SOCKET_PATH   "/var/potatofs/potatomgr.sock"
-#define MGR_DEFAULT_UNPRIV_USER   "potatomgr"
-#define MGR_DEFAULT_UNPRIV_GROUP  "potatomgr"
-#define MGR_DEFAULT_BACKEND_EXEC  "/usr/local/bin/potato_backend.sh"
+
 #define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
 #define DEFAULT_DB_NAME           "slabs.db"
+
+#define MGR_DEFAULT_PIDFILE_PATH      "/var/potatofs/potatomgr.pid"
+#define MGR_DEFAULT_SOCKET_PATH       "/var/potatofs/potatomgr.sock"
+#define MGR_DEFAULT_UNPRIV_USER       "potatomgr"
+#define MGR_DEFAULT_UNPRIV_GROUP      "potatomgr"
+#define MGR_DEFAULT_BACKEND_EXEC      "/usr/local/bin/potato_backend.sh"
+#define MGR_DEFAULT_WORKERS           12
+#define MGR_DEFAULT_BGWORKERS         1
+#define MGR_DEFAULT_PURGER_INTERVAL   30
+#define MGR_DEFAULT_SCRUBBER_INTERVAL 3600
 
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"
@@ -96,21 +103,27 @@
 #define FS_LINK_MAX  127
 
 struct fs_config {
-	uid_t       uid;
-	gid_t       gid;
-	char       *dbg;
-	rlim_t      max_open_slabs;
-	uint32_t    entry_timeouts;
-	uint32_t    slab_max_age;
-	size_t      slab_size;
-	const char *data_dir;
-	int         noatime;
-	const char *mgr_sock_path;
-	const char *pidfile_path;
-	const char *mgr_exec;
-	const char *cfg_path;
-	uint32_t    unclaim_purge_threshold_pct;
-	uint32_t    purge_threshold_pct;
+	char     *cfg_path;
+	uid_t     uid;
+	gid_t     gid;
+	char      dbg[LINE_MAX];
+	rlim_t    max_open_slabs;
+	uint32_t  entry_timeouts;
+	uint32_t  slab_max_age;
+	size_t    slab_size;
+	char      data_dir[PATH_MAX];
+	int       noatime;
+	char      mgr_sock_path[PATH_MAX];
+	char      pidfile_path[PATH_MAX];
+	char      mgr_exec[PATH_MAX];
+	char      unpriv_user[32];
+	char      unpriv_group[32];
+	int       workers;
+	int       bgworkers;
+	int       purger_interval;
+	int       scrubber_interval;
+	uint32_t  unclaim_purge_threshold_pct;
+	uint32_t  purge_threshold_pct;
 };
 
 extern struct fs_config fs_config;
