@@ -2321,7 +2321,7 @@ mgr_start()
 	xlog(LOG_NOTICE, NULL, "initialized instance %s (version %s)", u,
 	    VERSION);
 
-	setproctitle("main");
+	setproctitle("mgr");
 	for (n = 0; n < wait_for_workers; ) {
 		if (wait(NULL) == -1) {
 			if (errno == EINTR)

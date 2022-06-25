@@ -223,6 +223,10 @@ do_df() {
 	if [ $? -ne 0 ]; then
 		fail "curl: failed with code $? during GET"
 	fi
+	http_code="$(echo $j | jq -r .error.code)"
+	if [ "$http_code" != "null" ]; then
+		fail "curl: failed with http code $http_code during GET"
+	fi
 	total=$(echo $j | jq -r .storageQuota.limit)
 	used=$(echo $j | jq -r .storageQuota.usage)
 	echo "{\"status\": \"OK\", \"used_bytes\": $used, \"total_bytes\": $total}"

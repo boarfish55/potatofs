@@ -129,6 +129,8 @@ KNOWN ISSUES
 
 TODO
 ====
+* On install, we should have mount.potatofs and fsck.potatofs binaries,
+  even if only symlinked.
 * Make directory lookups faster; too slow on large directories
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
