@@ -28,15 +28,14 @@ di_check_format(struct oinode *oi, struct xerr *e)
 	ssize_t         r;
 	struct  dir_hdr hdr;
 
-	r = inode_read(oi, 0, &hdr,
-	    sizeof(struct dir_hdr), xerrz(e));
+	r = inode_read(oi, 0, &hdr, sizeof(struct dir_hdr), xerrz(e));
 	if (r == -1) {
 		return XERR_PREPENDFN(e);
 	} else if (r < sizeof(struct dir_hdr)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted dir_hdr");
 	}
-	if (hdr.dirinode_format != DIRINODE_FORMAT)
+	if (hdr.dirinode_format > DIRINODE_FORMAT)
 		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "unsupported dirinode format");
 
@@ -46,10 +45,10 @@ di_check_format(struct oinode *oi, struct xerr *e)
 int
 di_create(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	ssize_t          w;
-	struct dir_hdr   hdr = { DIRINODE_FORMAT };
-	struct dir_entry default_dir[2] = {
-		{ ".", 0, sizeof(struct dir_entry) },
+	ssize_t             w;
+	struct dir_hdr      hdr = { DIRINODE_FORMAT };
+	struct dir_entry_v1 default_dir[2] = {
+		{ ".", inode_ino(oi), sizeof(struct dir_entry_v1) },
 		{ "..", parent, 0 }
 	};
 
@@ -61,7 +60,6 @@ di_create(struct oinode *oi, ino_t parent, struct xerr *e)
 		    "partial dir_hdr write, this directory might "
 		    "be corrupted");
 
-	default_dir[0].inode = inode_ino(oi);
 	w = inode_write(oi, w, default_dir, sizeof(default_dir), e);
 	if (w == -1)
 		return XERR_PREPENDFN(e);
@@ -82,30 +80,30 @@ di_create(struct oinode *oi, ino_t parent, struct xerr *e)
  */
 ssize_t
 di_readdir(struct oinode *oi, struct dir_entry *dirs,
-    off_t *offset, size_t count, struct xerr *e)
+    off_t offset, size_t count, struct xerr *e)
 {
 	ssize_t r;
 	ssize_t entries = 0;
+	struct  dir_entry_v1 dirs_v1[count];
 
 	if (!inode_isdir(oi))
 		return XERRF(e, XLOG_FS, ENOTDIR, "not a directory");
 
-	if (*offset == 0) {
+	if (offset == 0) {
 		if (di_check_format(oi, e) == -1)
 			return XERR_PREPENDFN(e);
-	} else if (*offset < sizeof(struct dir_hdr))
+	} else if (offset < sizeof(struct dir_hdr))
 		return XERRF(e, XLOG_APP, XLOG_INVAL,
 		    "cannot do a partial read inside dir_hdr");
 
 	while (entries < count) {
-		r = inode_read(oi, *offset + sizeof(struct dir_hdr),
-		    dirs + entries,
-		    sizeof(struct dir_entry), xerrz(e));
+		r = inode_read(oi, sizeof(struct dir_hdr) + offset,
+		    dirs_v1 + entries, sizeof(struct dir_entry_v1), xerrz(e));
 		if (r == 0) {
 		    break;
 		} else if (r == -1) {
 			return XERR_PREPENDFN(e);
-		} else if (r < sizeof(struct dir_entry)) {
+		} else if (r < sizeof(struct dir_entry_v1)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		}
@@ -115,18 +113,24 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 		 * where we were at got removed between successive readdir()
 		 * calls. So, just try reading further.
 		 */
-		if (dirs[entries].inode == 0) {
-			*offset += sizeof(struct dir_entry);
+		if (dirs_v1[entries].inode == 0) {
+			offset += r;
 			continue;
 		}
 
-		if (dirs[entries].next == 0) {
-			*offset += sizeof(struct dir_entry);
+		dirs[entries].inode = dirs_v1[entries].inode;
+		strlcpy(dirs[entries].name, dirs_v1[entries].name,
+		    sizeof(dirs[entries].name));
+
+		if (dirs_v1[entries].next == 0) {
+			dirs[entries].pos = offset +
+			    sizeof(struct dir_entry_v1);
 			entries++;
 			break;
 		}
 
-		*offset = dirs[entries].next;
+		offset = dirs_v1[entries].next;
+		dirs[entries].pos = offset;
 		entries++;
 	}
 	return entries;
@@ -141,28 +145,34 @@ int
 di_lookup(struct oinode *oi, struct dir_entry *de,
     const char *name, struct xerr *e)
 {
-	ssize_t r;
-	off_t   offset;
+	ssize_t             r;
+	off_t               offset;
+	struct dir_entry_v1 de_v1;
 
 	if (di_check_format(oi, e) == -1)
 		return XERR_PREPENDFN(e);
 
 	bzero(de, sizeof(struct dir_entry));
-	for (offset = 0;; offset = de->next) {
-		r = inode_read(oi, offset + sizeof(struct dir_hdr), de,
-		    sizeof(struct dir_entry), xerrz(e));
+	for (offset = 0;; offset = de_v1.next) {
+		r = inode_read(oi, sizeof(struct dir_hdr) + offset, &de_v1,
+		    sizeof(struct dir_entry_v1), xerrz(e));
 		if (r == 0) {
 			break;
-		} else if (r < sizeof(struct dir_entry)) {
+		} else if (r < sizeof(struct dir_entry_v1)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
 			return XERR_PREPENDFN(e);
 
-		if (strcmp(de->name, name) == 0)
+		if (strcmp(de_v1.name, name) == 0) {
+			de->inode = de_v1.inode;
+			strlcpy(de->name, de_v1.name, sizeof(de->name));
+			de->pos = (de_v1.next) ? de_v1.next :
+			    offset + sizeof(struct dir_entry_v1);
 			return 0;
+		}
 
-		if (de->next == 0)
+		if (de_v1.next == 0)
 			break;
 	}
 	return XERRF(e, XLOG_FS, ENOENT,
@@ -180,20 +190,23 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
  */
 int
 di_mkdirent(struct oinode *parent, const struct dir_entry *de,
-    struct dir_entry *replaced, struct xerr *e)
+    int replace, struct xerr *e)
 {
-	ssize_t          r;
-	off_t            offset = sizeof(struct dir_entry);
-	off_t            prev_off = 0;
-	struct dir_entry n_de, r_de, prev_used;
+	ssize_t             r;
+	off_t               offset = sizeof(struct dir_entry_v1);
+	off_t               prev_off = 0;
+	struct dir_entry_v1 n_de, r_de, prev_used, replaced;
 
 	if (di_check_format(parent, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	memcpy(&n_de, de, sizeof(n_de));
+	strlcpy(n_de.name, de->name, sizeof(n_de.name));
+	n_de.inode = de->inode;
+	n_de.next = 0;
+
 	bzero(&prev_used, sizeof(prev_used));
-	if (replaced)
-		bzero(replaced, sizeof(struct dir_entry));
+	if (replace)
+		bzero(&replaced, sizeof(replaced));
 
 	/*
 	 * Loop through our dirents, keep track of last used entry,
@@ -202,21 +215,21 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	 */
 	for (;;) {
 		r = inode_read(parent, offset + sizeof(struct dir_hdr), &r_de,
-		    sizeof(struct dir_entry), xerrz(e));
+		    sizeof(r_de), xerrz(e));
 		if (r == 0) {
 			break;
-		} else if (r < sizeof(struct dir_entry)) {
+		} else if (r < sizeof(r_de)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
 			return XERR_PREPENDFN(e);
 
 		if (strcmp(r_de.name, n_de.name) == 0) {
-			if (!replaced) {
+			if (!replace) {
 				return XERRF(e, XLOG_FS, EEXIST,
 				    "file %s already exists", de->name);
 			}
-			memcpy(replaced, &r_de, sizeof(r_de));
+			memcpy(&replaced, &r_de, sizeof(r_de));
 			break;
 		}
 
@@ -230,8 +243,8 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 		offset += r;
 	}
 
-	if (replaced != NULL && replaced->inode > 0)
-		n_de.next = replaced->next;
+	if (replace && replaced.inode > 0)
+		n_de.next = replaced.next;
 	else
 		n_de.next = prev_used.next;
 	prev_used.next = offset;
@@ -242,7 +255,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	 */
 	r = inode_write(parent, offset + sizeof(struct dir_hdr), &n_de,
 	    sizeof(n_de), xerrz(e));
-	if (r < sizeof(struct dir_entry)) {
+	if (r < sizeof(n_de)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might "
 		    "be corrupted");
@@ -251,7 +264,7 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 
 	r = inode_write(parent, prev_off + sizeof(struct dir_hdr),
 	    &prev_used, sizeof(prev_used), e);
-	if (r < sizeof(struct dir_entry)) {
+	if (r < sizeof(prev_used)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory "
 		    "might be corrupted");
@@ -270,7 +283,7 @@ di_isempty(struct oinode *oi, struct xerr *e)
 		return XERR_PREPENDFN(e);
 
 	if ((inode_getsize(oi) - sizeof(struct dir_hdr)) ==
-	    (sizeof(struct dir_entry) * 2))
+	    (sizeof(struct dir_entry_v1) * 2))
 		return 1;
 
 	return 0;
@@ -284,9 +297,9 @@ int
 di_unlink(struct oinode *parent, const struct dir_entry *de,
     struct xerr *e)
 {
-	ssize_t          r;
-	off_t            offset = 0, prev_off = 0;
-	struct dir_entry z_de, r_de, prev_used;
+	ssize_t             r;
+	off_t               offset = 0, prev_off = 0;
+	struct dir_entry_v1 z_de, r_de, prev_used;
 
 	if (di_check_format(parent, e) == -1)
 		return XERR_PREPENDFN(e);
@@ -295,10 +308,10 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 
 	for (;;) {
 		r = inode_read(parent, offset + sizeof(struct dir_hdr), &r_de,
-		    sizeof(struct dir_entry), xerrz(e));
+		    sizeof(r_de), xerrz(e));
 		if (r == 0) {
 			goto noent;
-		} else if (r < sizeof(struct dir_entry)) {
+		} else if (r < sizeof(r_de)) {
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "corrupted directory; incomplete entries");
 		} else if (r == -1)
@@ -319,7 +332,7 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
 
 	r = inode_write(parent, prev_off + sizeof(struct dir_hdr), &prev_used,
 	    sizeof(prev_used), xerrz(e));
-	if (r < sizeof(struct dir_entry)) {
+	if (r < sizeof(prev_used)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write while removing dirent; "
 		    "used dirent list corrupted");
@@ -351,17 +364,17 @@ noent:
 ino_t
 di_parent(struct oinode *oi, struct xerr *e)
 {
-	ssize_t          r;
-	struct dir_entry de;
+	ssize_t             r;
+	struct dir_entry_v1 de;
 
 	if (di_check_format(oi, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	r = inode_read(oi, sizeof(struct dir_hdr) + sizeof(struct dir_entry),
-	    &de, sizeof(struct dir_entry), xerrz(e));
+	r = inode_read(oi, sizeof(struct dir_hdr) +
+	    sizeof(struct dir_entry_v1), &de, sizeof(de), xerrz(e));
 	if (r == -1)
 		return XERR_PREPENDFN(e);
-	else if (r < sizeof(struct dir_entry))
+	else if (r < sizeof(de))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted directory; incomplete entries");
 
@@ -371,24 +384,24 @@ di_parent(struct oinode *oi, struct xerr *e)
 int
 di_setparent(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	ssize_t          r;
-	struct dir_entry de;
+	ssize_t             r;
+	struct dir_entry_v1 de;
 
-	r = inode_read(oi, sizeof(struct dir_hdr) + sizeof(struct dir_entry),
-	    &de, sizeof(struct dir_entry), xerrz(e));
+	r = inode_read(oi, sizeof(struct dir_hdr) + sizeof(struct dir_entry_v1),
+	    &de, sizeof(de), xerrz(e));
 	if (r == -1)
 		return XERR_PREPENDFN(e);
-	else if (r < sizeof(struct dir_entry))
+	else if (r < sizeof(de))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted directory; incomplete entries");
 	de.inode = parent;
-	r = inode_write(oi, sizeof(struct dir_hdr) + sizeof(struct dir_entry),
-	    &de, sizeof(struct dir_entry), xerrz(e));
+	r = inode_write(oi, sizeof(struct dir_hdr) +
+	    sizeof(struct dir_entry_v1), &de, sizeof(de), xerrz(e));
 	if (r == -1)
 		return XERR_PREPENDFN(e);
-	else if (r < sizeof(struct dir_entry))
+	else if (r < sizeof(de))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might be corrupted");
 
-	return de.inode;
+	return 0;
 }

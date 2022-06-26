@@ -234,18 +234,18 @@ valid_inode(int mgr, ino_t ino)
 }
 
 int
-clear_dir_entry(struct dir_entry *start, struct dir_entry *de, size_t *sz,
-    struct xerr *e)
+clear_dir_entry(struct dir_entry_v1 *start, struct dir_entry_v1 *de,
+    size_t *sz, struct xerr *e)
 {
-	off_t            offset = sizeof(struct dir_hdr), prev_off = 0;
-	struct dir_entry r_de, prev_used;
-	ino_t            ino = de->inode;
+	off_t               offset = sizeof(struct dir_hdr), prev_off = 0;
+	struct dir_entry_v1 r_de, prev_used;
+	ino_t               ino = de->inode;
 
 	bzero(&prev_used, sizeof(prev_used));
 
 	for (;;) {
 		memcpy(&r_de, ((char *)start) + offset,
-		    sizeof(struct dir_entry));
+		    sizeof(struct dir_entry_v1));
 
 		if (strcmp(r_de.name, de->name) == 0)
 			break;
@@ -278,11 +278,11 @@ int
 fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
     struct fsck_stats *stats, struct xerr *e)
 {
-	struct dir_entry   *de;
-	char               *dir;
-	size_t              dir_sz;
-	int                 dirty = 0;
-	struct found_inode *fino;
+	struct dir_entry_v1 *de;
+	char                *dir;
+	size_t               dir_sz;
+	int                  dirty = 0;
+	struct found_inode  *fino;
 
 	fsck_printf("  inode: %lu", ino);
 	if (unallocated) {
@@ -337,7 +337,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	}
 	dir_sz = inode->v.f.size;
 
-	for (de = (struct dir_entry *)(dir + sizeof(struct dir_hdr));
+	for (de = (struct dir_entry_v1 *)(dir + sizeof(struct dir_hdr));
 	    (char *)de < (dir + dir_sz); de++) {
 		if (de->inode > 0) {
 			fsck_printf("    dirent: %lu (%s)",
@@ -349,7 +349,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 
 				if (fsck_fix) {
 					if (clear_dir_entry(
-					    (struct dir_entry *)dir, de,
+					    (struct dir_entry_v1 *)dir, de,
 					    &dir_sz, xerrz(e)) == -1)
 						xerr_print(e);
 					else
@@ -1674,17 +1674,17 @@ show_inode(int argc, char **argv)
 int
 show_dir(int argc, char **argv)
 {
-	struct slab_hdr   hdr;
-	int               n, mgr;
-	off_t             i;
-	ino_t             ino;
-	struct inode      inode;
-	char             *data;
-	void             *slab_data;
-	size_t            slab_sz;
-	struct slab_key   sk;
-	struct dir_entry *de;
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct slab_hdr      hdr;
+	int                  n, mgr;
+	off_t                i;
+	ino_t                ino;
+	struct inode         inode;
+	char                *data;
+	void                *slab_data;
+	size_t               slab_sz;
+	struct slab_key      sk;
+	struct dir_entry_v1 *de;
+	struct xerr          e;
 
 	if (argc < 1) {
 		usage();
@@ -1697,12 +1697,12 @@ show_dir(int argc, char **argv)
 	if (ino < 1)
 		errx(1, "inode must be greater than zero");
 
-	if ((mgr = mgr_connect(1, &e)) == -1) {
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}
 
-	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
+	if (inode_inspect(mgr, ino, &inode, xerrz(&e)) == -1) {
 		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
@@ -1763,9 +1763,9 @@ show_dir(int argc, char **argv)
 		warnx("  ** inode is truncated; data might be incomplete");
 	printf("  dirents:\n\n");
 
-	de = (struct dir_entry *)data;
+	de = (struct dir_entry_v1 *)(data + sizeof(struct dir_hdr));
 
-	for (n = 0; i > 0; i -= sizeof(struct dir_entry), de++, n++) {
+	for (n = 0; i > 0; i -= sizeof(struct dir_entry_v1), de++, n++) {
 		printf("    name:        %s\n", de->name);
 		printf("    offset:      %lu\n", (char *)de - data);
 		printf("    inode:       %lu\n", de->inode);

@@ -31,18 +31,29 @@ struct dir_hdr {
 struct dir_entry {
 	char   name[FS_NAME_MAX + 1];
 	ino_t  inode;
-        /* Indicates the next free entry in the file */
+	/*
+	 * When entries are returned by di_readdir(), the position in
+	 * the dir entry "stream" will be saved here. This could be used
+	 * by callers in telldir() / seekdir().
+	 */
+	off_t  pos;
+};
+
+struct dir_entry_v1 {
+	char   name[FS_NAME_MAX + 1];
+	ino_t  inode;
+	/* Indicates the next free entry in the file */
 	off_t  next;
 };
 
 /* None of these acquire any lock */
 int     di_create(struct oinode *, ino_t, struct xerr *);
-ssize_t di_readdir(struct oinode *, struct dir_entry *, off_t *,
+ssize_t di_readdir(struct oinode *, struct dir_entry *, off_t,
             size_t, struct xerr *);
 int     di_lookup(struct oinode *, struct dir_entry *, const char *,
             struct xerr *);
-int     di_mkdirent(struct oinode *, const struct dir_entry *,
-            struct dir_entry *, struct xerr *);
+int     di_mkdirent(struct oinode *, const struct dir_entry *, int,
+            struct xerr *);
 int     di_unlink(struct oinode *, const struct dir_entry *,
             struct xerr *);
 int     di_stat(struct oinode *, struct stat *, struct xerr *);

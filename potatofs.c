@@ -521,7 +521,6 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	size_t            buf_used = 0;
 	size_t            need;
 	int               r_sent = 0;
-	off_t             de_off;
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_READDIR);
@@ -530,7 +529,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 
 	for (;;) {
 		inode_lock(oi, LK_LOCK_RD);
-		r = di_readdir(oi, dirs, &off,
+		r = di_readdir(oi, dirs, off,
 		    sizeof(dirs) / sizeof(struct dir_entry), xerrz(&e));
 		inode_unlock(oi);
 
@@ -544,8 +543,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		} else if (r == 0)
 			break;
 
-		for (i = 0, de_off = off - ((r - 1) * sizeof(struct dir_entry));
-		    i < r; i++, de_off += sizeof(struct dir_entry)) {
+		for (i = 0; i < r; i++) {
 			bzero(&st, sizeof(st));
 
 			if ((de_oi = inode_load(dirs[i].inode, 0, xerrz(&e))) == NULL) {
@@ -576,7 +574,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 				goto end;
 
 			buf_used += fuse_add_direntry(req, buf + buf_used,
-			    size - buf_used, dirs[i].name, &st, de_off);
+			    size - buf_used, dirs[i].name, &st, dirs[i].pos);
+			off = dirs[i].pos;
 		}
 	}
 end:
@@ -1143,7 +1142,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		inode_nlink(parent_oi, 1);
 
 	status = 0;
-	if (di_mkdirent(parent_oi, &de, NULL, xerrz(e)) == -1) {
+	if (di_mkdirent(parent_oi, &de, 0, xerrz(e)) == -1) {
 		if (is_dir)
 			inode_nlink(parent_oi, -1);
 		fs_error_set();
@@ -1429,7 +1428,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	fs_set_time(oi, INODE_ATTR_CTIME);
 	inode_stat(oi, &entry.attr);
 
-	if (di_mkdirent(parent_oi, &new_de, NULL, &e) == -1) {
+	if (di_mkdirent(parent_oi, &new_de, 0, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
 		xerrz(&e);
 		inode_nlink(oi, -1);
@@ -1557,7 +1556,7 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
 	struct xerr       e;
-	struct dir_entry  de, new_de, replaced;
+	struct dir_entry  de, new_de;
 	struct oinode    *old_doi = NULL, *new_doi = NULL;
 	struct oinode    *oi = NULL, *new_oi = NULL, *p_oi = NULL;
 	int               r_sent = 0;
@@ -1761,7 +1760,7 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	/*
 	 * Make our entry in the new parent dir, set mtime.
 	 */
-	if (di_mkdirent(new_doi, &new_de, &replaced, xerrz(&e)) == -1) {
+	if (di_mkdirent(new_doi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
@@ -1869,7 +1868,7 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
 	struct xerr       e;
-	struct dir_entry  de, new_de, replaced;
+	struct dir_entry  de, new_de;
 	struct oinode    *d_oi;
 	struct oinode    *oi = NULL, *new_oi = NULL;
 	int               r_sent = 0;
@@ -1997,7 +1996,7 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	/*
 	 * Create the new entry.
 	 */
-	if (di_mkdirent(d_oi, &new_de, &replaced, xerrz(&e)) == -1) {
+	if (di_mkdirent(d_oi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;

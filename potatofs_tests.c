@@ -2027,9 +2027,10 @@ test_many_inodes()
 	char          *d = makepath("many_inodes");
 	int            i, n_inodes = slab_inode_max() + 1;
 	struct inode   inode;
-	struct xerr    e = XLOG_ERR_INITIALIZER;
+	struct xerr    e;
 	DIR           *dir;
 	struct dirent *de;
+	char           msg[LINE_MAX];
 
 	if (mkdir(d, 0700) == -1)
 		return ERR("", errno);
@@ -2043,17 +2044,22 @@ test_many_inodes()
 	if ((dir = opendir(d)) == NULL)
 		return ERR("", errno);
 	errno = 0;
+	i = 0;
 	while ((de = readdir(dir))) {
-		if (inode_disk_inspect(de->d_ino, &inode, &e) == -1) {
+		if (inode_disk_inspect(de->d_ino, &inode, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			return ERR("reading inode failed", 0);
 		}
-		n_inodes--;
+		i++;
 	}
 	closedir(dir);
 
-	if (n_inodes > 0)
-		return ERR("inode count is not what it should be", 0);
+	if ((i - 2) != n_inodes) {
+		snprintf(msg, sizeof(msg),
+		    "inode count is not what it should be; want=%d, actual=%d",
+		    n_inodes, i);
+		return ERR(msg, 0);
+	}
 	return NULL;
 }
 
