@@ -580,9 +580,11 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	}
 end:
 	if (fs_config.noatime) {
+		inode_lock(oi, LK_LOCK_RW);
 		fs_set_time(oi, INODE_ATTR_ATIME);
 		if (inode_flush(oi, 0, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
+		inode_unlock(oi);
 	}
 
 	if (buf_used == 0)
