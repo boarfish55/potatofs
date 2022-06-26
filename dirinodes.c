@@ -22,7 +22,55 @@
 #include "inodes.h"
 #include "dirinodes.h"
 
-static int
+static uint32_t di_check_format(struct oinode *, struct xerr *);
+static int      di_create_v1(struct oinode *, ino_t, struct xerr *);
+static ssize_t  di_readdir_v1(struct oinode *, struct dir_entry *,
+                    off_t, size_t, struct xerr *);
+static int      di_lookup_v1(struct oinode *, struct dir_entry *,
+                    const char *, struct xerr *);
+static int      di_mkdirent_v1(struct oinode *, const struct dir_entry *,
+                    int , struct xerr *);
+static int      di_isempty_v1(struct oinode *, struct xerr *);
+static int      di_unlink_v1(struct oinode *, const struct dir_entry *,
+                    struct xerr *);
+static ino_t    di_parent_v1(struct oinode *, struct xerr *);
+static int      di_setparent_v1(struct oinode *, ino_t, struct xerr *);
+
+static struct {
+	ssize_t (*readdir)(struct oinode *, struct dir_entry *,
+	            off_t, size_t, struct xerr *);
+	int     (*lookup)(struct oinode *, struct dir_entry *,
+	            const char *, struct xerr *);
+	int     (*mkdirent)(struct oinode *, const struct dir_entry *,
+	            int, struct xerr *);
+	int     (*isempty)(struct oinode *, struct xerr *);
+	int     (*unlink)(struct oinode *, const struct dir_entry *,
+                    struct xerr *);
+	ino_t   (*parent)(struct oinode *, struct xerr *);
+	int     (*setparent)(struct oinode *, ino_t, struct xerr *);
+} di_fn[DIRINODE_FORMAT + 1] = {
+	{
+		/* There's no "v0" */
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	},
+	{
+		&di_readdir_v1,
+		&di_lookup_v1,
+		&di_mkdirent_v1,
+		&di_isempty_v1,
+		&di_unlink_v1,
+		&di_parent_v1,
+		&di_setparent_v1
+	}
+};
+
+static uint32_t
 di_check_format(struct oinode *oi, struct xerr *e)
 {
 	ssize_t         r;
@@ -30,20 +78,30 @@ di_check_format(struct oinode *oi, struct xerr *e)
 
 	r = inode_read(oi, 0, &hdr, sizeof(struct dir_hdr), xerrz(e));
 	if (r == -1) {
-		return XERR_PREPENDFN(e);
+		XERR_PREPENDFN(e);
+		return 0;
 	} else if (r < sizeof(struct dir_hdr)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
+		XERRF(e, XLOG_APP, XLOG_IO,
 		    "corrupted dir_hdr");
+		return 0;
 	}
-	if (hdr.dirinode_format > DIRINODE_FORMAT)
-		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
+	if (!hdr.dirinode_format || hdr.dirinode_format > DIRINODE_FORMAT) {
+		XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "unsupported dirinode format");
+		return 0;
+	}
 
-	return 0;
+	return hdr.dirinode_format;
 }
 
 int
 di_create(struct oinode *oi, ino_t parent, struct xerr *e)
+{
+	return di_create_v1(oi, parent, e);
+}
+
+static int
+di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 {
 	ssize_t             w;
 	struct dir_hdr      hdr = { DIRINODE_FORMAT };
@@ -72,29 +130,37 @@ di_create(struct oinode *oi, ino_t parent, struct xerr *e)
 	return 0;
 }
 
+ssize_t
+di_readdir(struct oinode *oi, struct dir_entry *dirs,
+    off_t offset, size_t count, struct xerr *e)
+{
+	uint32_t dfmt;
+
+	if (!inode_isdir(oi))
+		return XERRF(e, XLOG_FS, ENOTDIR, "not a directory");
+
+	if (!(dfmt = di_check_format(oi, e)))
+		return XERR_PREPENDFN(e);
+	else if (offset > 0 && offset < sizeof(struct dir_hdr))
+		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "cannot do a partial read inside dir_hdr");
+
+	return di_fn[dfmt].readdir(oi, dirs, offset, count, e);
+}
+
 /*
  * Returns how entries were read so far. Can be used to resume
  * where we left off. *offset must always be set to the *end* of
  * the allocated dirent we've just read, or if there are any more
  * records to read, the next starting offset.
  */
-ssize_t
-di_readdir(struct oinode *oi, struct dir_entry *dirs,
+static ssize_t
+di_readdir_v1(struct oinode *oi, struct dir_entry *dirs,
     off_t offset, size_t count, struct xerr *e)
 {
-	ssize_t r;
-	ssize_t entries = 0;
-	struct  dir_entry_v1 dirs_v1[count];
-
-	if (!inode_isdir(oi))
-		return XERRF(e, XLOG_FS, ENOTDIR, "not a directory");
-
-	if (offset == 0) {
-		if (di_check_format(oi, e) == -1)
-			return XERR_PREPENDFN(e);
-	} else if (offset < sizeof(struct dir_hdr))
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
-		    "cannot do a partial read inside dir_hdr");
+	ssize_t  r;
+	ssize_t  entries = 0;
+	struct   dir_entry_v1 dirs_v1[count];
 
 	while (entries < count) {
 		r = inode_read(oi, sizeof(struct dir_hdr) + offset,
@@ -136,21 +202,28 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 	return entries;
 }
 
+int
+di_lookup(struct oinode *oi, struct dir_entry *de,
+    const char *name, struct xerr *e)
+{
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(oi, e)))
+		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].lookup(oi, de, name, e);
+}
+
 /*
  * Fills 'de' with the dirent of 'name', if it exists. Returns
  * 0 on success, -1 with ENOENT if it doesn't exist, or
  * any other error if encountered.
  */
-int
-di_lookup(struct oinode *oi, struct dir_entry *de,
+static int
+di_lookup_v1(struct oinode *oi, struct dir_entry *de,
     const char *name, struct xerr *e)
 {
 	ssize_t             r;
 	off_t               offset;
 	struct dir_entry_v1 de_v1;
-
-	if (di_check_format(oi, e) == -1)
-		return XERR_PREPENDFN(e);
 
 	bzero(de, sizeof(struct dir_entry));
 	for (offset = 0;; offset = de_v1.next) {
@@ -179,6 +252,16 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
 	    "no such directory entry: %s (inode=%d)", name, inode_ino(oi));
 }
 
+int
+di_mkdirent(struct oinode *parent, const struct dir_entry *de,
+    int replace, struct xerr *e)
+{
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(parent, e)))
+		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].mkdirent(parent, de, replace, e);
+}
+
 /*
  * Write a new dirent, along with updating the previous used dirent
  * with the offset of the newly added entry. This make it easier to
@@ -188,17 +271,14 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
  * new dirent, and copy the previous dirent in 'replaced'.
  * The caller should decrease nlink accordingly.
  */
-int
-di_mkdirent(struct oinode *parent, const struct dir_entry *de,
+static int
+di_mkdirent_v1(struct oinode *parent, const struct dir_entry *de,
     int replace, struct xerr *e)
 {
 	ssize_t             r;
 	off_t               offset = sizeof(struct dir_entry_v1);
 	off_t               prev_off = 0;
 	struct dir_entry_v1 n_de, r_de, prev_used, replaced;
-
-	if (di_check_format(parent, e) == -1)
-		return XERR_PREPENDFN(e);
 
 	strlcpy(n_de.name, de->name, sizeof(n_de.name));
 	n_de.inode = de->inode;
@@ -273,15 +353,21 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
 	return 0;
 }
 
-/*
- * Returns 0 if the directory is not empty, 1 if empty, -1 on error.
- */
 int
 di_isempty(struct oinode *oi, struct xerr *e)
 {
-	if (di_check_format(oi, e) == -1)
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(oi, e)))
 		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].isempty(oi, e);
+}
 
+/*
+ * Returns 0 if the directory is not empty, 1 if empty, -1 on error.
+ */
+static int
+di_isempty_v1(struct oinode *oi, struct xerr *e)
+{
 	if ((inode_getsize(oi) - sizeof(struct dir_hdr)) ==
 	    (sizeof(struct dir_entry_v1) * 2))
 		return 1;
@@ -289,20 +375,27 @@ di_isempty(struct oinode *oi, struct xerr *e)
 	return 0;
 }
 
+int
+di_unlink(struct oinode *parent, const struct dir_entry *de,
+    struct xerr *e)
+{
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(parent, e)))
+		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].unlink(parent, de, e);
+}
+
 /*
  * Remove a dirent and update the previous used dirent
  * with the offset of the next used entry, preserving our chain.
  */
-int
-di_unlink(struct oinode *parent, const struct dir_entry *de,
+static int
+di_unlink_v1(struct oinode *parent, const struct dir_entry *de,
     struct xerr *e)
 {
 	ssize_t             r;
 	off_t               offset = 0, prev_off = 0;
 	struct dir_entry_v1 z_de, r_de, prev_used;
-
-	if (di_check_format(parent, e) == -1)
-		return XERR_PREPENDFN(e);
 
 	bzero(&prev_used, sizeof(prev_used));
 
@@ -364,11 +457,17 @@ noent:
 ino_t
 di_parent(struct oinode *oi, struct xerr *e)
 {
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(oi, e)))
+		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].parent(oi, e);
+}
+
+static ino_t
+di_parent_v1(struct oinode *oi, struct xerr *e)
+{
 	ssize_t             r;
 	struct dir_entry_v1 de;
-
-	if (di_check_format(oi, e) == -1)
-		return XERR_PREPENDFN(e);
 
 	r = inode_read(oi, sizeof(struct dir_hdr) +
 	    sizeof(struct dir_entry_v1), &de, sizeof(de), xerrz(e));
@@ -383,6 +482,15 @@ di_parent(struct oinode *oi, struct xerr *e)
 
 int
 di_setparent(struct oinode *oi, ino_t parent, struct xerr *e)
+{
+	uint32_t dfmt;
+	if (!(dfmt = di_check_format(oi, e)))
+		return XERR_PREPENDFN(e);
+	return di_fn[dfmt].setparent(oi, parent, e);
+}
+
+static int
+di_setparent_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 {
 	ssize_t             r;
 	struct dir_entry_v1 de;
