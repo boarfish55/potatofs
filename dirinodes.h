@@ -22,9 +22,10 @@
 
 #include "config.h"
 #include "inodes.h"
+#include "xlog.h"
 
 struct dir_hdr {
-#define DIRINODE_FORMAT 1
+#define DIRINODE_FORMAT 2
 	uint32_t dirinode_format;
 };
 
@@ -44,6 +45,17 @@ struct dir_entry_v1 {
 	ino_t  inode;
 	/* Indicates the next free entry in the file */
 	off_t  next;
+};
+
+/*
+ * The structure is actually packed on disk, unaligned.
+ */
+struct dir_entry_v2 {
+	uint8_t flags;
+	uint8_t length;
+	ino_t   inode;
+	char    name[FS_NAME_MAX + 1];
+#define DI_ALLOCATED 0x01
 };
 
 /* None of these acquire any lock */

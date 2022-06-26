@@ -19,24 +19,40 @@
 
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 #include "inodes.h"
 #include "dirinodes.h"
 
 static uint32_t di_check_format(struct oinode *, struct xerr *);
 static int      di_create_v1(struct oinode *, ino_t, struct xerr *);
+static int      di_create_v2(struct oinode *, ino_t, struct xerr *);
 static ssize_t  di_readdir_v1(struct oinode *, struct dir_entry *,
+                    off_t, size_t, struct xerr *);
+static ssize_t  di_readdir_v2(struct oinode *, struct dir_entry *,
                     off_t, size_t, struct xerr *);
 static int      di_lookup_v1(struct oinode *, struct dir_entry *,
                     const char *, struct xerr *);
+static int      di_lookup_v2(struct oinode *, struct dir_entry *,
+                    const char *, struct xerr *);
 static int      di_mkdirent_v1(struct oinode *, const struct dir_entry *,
                     int , struct xerr *);
+static int      di_mkdirent_v2(struct oinode *, const struct dir_entry *,
+                    int , struct xerr *);
 static int      di_isempty_v1(struct oinode *, struct xerr *);
+static int      di_isempty_v2(struct oinode *, struct xerr *);
 static int      di_unlink_v1(struct oinode *, const struct dir_entry *,
                     struct xerr *);
+static int      di_unlink_v2(struct oinode *, const struct dir_entry *,
+                    struct xerr *);
 static ino_t    di_parent_v1(struct oinode *, struct xerr *);
+static ino_t    di_parent_v2(struct oinode *, struct xerr *);
 static int      di_setparent_v1(struct oinode *, ino_t, struct xerr *);
+static int      di_setparent_v2(struct oinode *, ino_t, struct xerr *);
+static ssize_t  di_pack_v2(char *, size_t, struct dir_entry_v2 *);
+static ssize_t  di_unpack_v2(char *, size_t , struct dir_entry_v2 *);
 
 static struct {
+	int     (*create)(struct oinode *, ino_t, struct xerr *);
 	ssize_t (*readdir)(struct oinode *, struct dir_entry *,
 	            off_t, size_t, struct xerr *);
 	int     (*lookup)(struct oinode *, struct dir_entry *,
@@ -57,9 +73,11 @@ static struct {
 		NULL,
 		NULL,
 		NULL,
+		NULL,
 		NULL
 	},
 	{
+		&di_create_v1,
 		&di_readdir_v1,
 		&di_lookup_v1,
 		&di_mkdirent_v1,
@@ -67,6 +85,16 @@ static struct {
 		&di_unlink_v1,
 		&di_parent_v1,
 		&di_setparent_v1
+	},
+	{
+		&di_create_v2,
+		&di_readdir_v2,
+		&di_lookup_v2,
+		&di_mkdirent_v2,
+		&di_isempty_v2,
+		&di_unlink_v2,
+		&di_parent_v2,
+		&di_setparent_v2
 	}
 };
 
@@ -94,10 +122,57 @@ di_check_format(struct oinode *oi, struct xerr *e)
 	return hdr.dirinode_format;
 }
 
+static ssize_t
+di_pack_v2(char *buf, size_t sz, struct dir_entry_v2 *de)
+{
+	char   *p = buf;
+
+	if (sz < (sizeof(de->flags) +
+	    sizeof(de->length) +
+	    sizeof(de->inode) +
+	    strlen(de->name) + 1))
+		return -1;
+
+	*(uint8_t *)p++ = de->flags;
+	*(uint8_t *)p++ = de->length;
+	*(ino_t *)p++ = de->inode;
+	p += strlcpy(p, de->name, sz -
+	    (sizeof(de->flags) + sizeof(de->length) + sizeof(de->inode)));
+
+	return p - buf;
+}
+
+static ssize_t
+di_unpack_v2(char *buf, size_t sz, struct dir_entry_v2 *de)
+{
+	char *p = buf;
+
+	if (sz < (sizeof(de->flags) +
+	    sizeof(de->length) +
+	    sizeof(de->inode)))
+		return -1;
+
+	bzero(de, sizeof(struct dir_entry_v2));
+	de->flags = *(uint8_t *)p++;
+	de->length = *(uint8_t *)p++;
+	de->inode = *(ino_t *)p++;
+
+	if (sz < ((p - buf) + de->length))
+		return -1;
+
+	if (de->flags & DI_ALLOCATED) {
+		memcpy(de->name, p, de->length);
+		de->name[de->length] = '\0';
+	}
+	p += de->length;
+
+	return p - buf;
+}
+
 int
 di_create(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	return di_create_v1(oi, parent, e);
+	return di_fn[DIRINODE_FORMAT].create(oi, parent, e);
 }
 
 static int
@@ -123,6 +198,43 @@ di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 		return XERR_PREPENDFN(e);
 
 	if (w < sizeof(default_dir))
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "partial dirent write, this directory might "
+		    "be corrupted");
+
+	return 0;
+}
+
+static int
+di_create_v2(struct oinode *oi, ino_t parent, struct xerr *e)
+{
+	ssize_t              w;
+	struct dir_hdr       hdr = { DIRINODE_FORMAT };
+	char                 buf[sizeof(struct dir_entry_v2) * 2];
+	char                *p;
+	struct dir_entry_v2  default_dir[3] = {
+		{DI_ALLOCATED, 2, inode_ino(oi), "."},
+		{DI_ALLOCATED, 3, parent, ".."}
+	};
+
+	w = inode_write(oi, 0, &hdr, sizeof(hdr), e);
+	if (w == -1)
+		return XERR_PREPENDFN(e);
+	if (w < sizeof(hdr))
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "partial dir_hdr write, this directory might "
+		    "be corrupted");
+
+	bzero(buf, sizeof(buf));
+	p = buf;
+	p += di_pack_v2(buf, sizeof(buf), &default_dir[0]);
+	p += di_pack_v2(p, sizeof(buf) - (p - buf), &default_dir[1]);
+
+	w = inode_write(oi, w, buf, p - buf, e);
+	if (w == -1)
+		return XERR_PREPENDFN(e);
+
+	if (w < sizeof(p - buf))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory might "
 		    "be corrupted");
@@ -202,6 +314,13 @@ di_readdir_v1(struct oinode *oi, struct dir_entry *dirs,
 	return entries;
 }
 
+static ssize_t
+di_readdir_v2(struct oinode *oi, struct dir_entry *dirs,
+    off_t offset, size_t count, struct xerr *e)
+{
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+}
+
 int
 di_lookup(struct oinode *oi, struct dir_entry *de,
     const char *name, struct xerr *e)
@@ -248,6 +367,48 @@ di_lookup_v1(struct oinode *oi, struct dir_entry *de,
 		if (de_v1.next == 0)
 			break;
 	}
+	return XERRF(e, XLOG_FS, ENOENT,
+	    "no such directory entry: %s (inode=%d)", name, inode_ino(oi));
+}
+
+static int
+di_lookup_v2(struct oinode *oi, struct dir_entry *de,
+    const char *name, struct xerr *e)
+{
+	ssize_t              r, buf_sz;
+	struct dir_entry_v2  de_v2;
+	char                 buf[FS_BLOCK_SIZE];
+	char                *p;
+
+	buf_sz = inode_read(oi, sizeof(struct dir_hdr), buf,
+	    inode_max_inline_b(), e);
+	if (buf_sz == 0) {
+		return XERRF(e, XLOG_FS, ENOENT,
+		    "no such directory entry: %s (inode=%d)",
+		    name, inode_ino(oi));
+	} else if (buf_sz == -1)
+		return XERR_PREPENDFN(e);
+
+	for (p = buf; p - buf < buf_sz; p += r) {
+		/*
+		 * Dir entries in the inode are always contiguous.
+		 * If we see one that's not allocated, it means there
+		 * are no more after.
+		 */
+		if ((r = di_unpack_v2(p, buf_sz - (p - buf), &de_v2)) == -1)
+			break;
+		if (!(de_v2.flags & DI_ALLOCATED))
+			break;
+
+		if (strcmp(de->name, de_v2.name) == 0) {
+			de->inode = de_v2.inode;
+			de->pos = (p - buf) + r;
+			strlcpy(de->name, de_v2.name, sizeof(de->name));
+			return 0;
+		}
+	}
+
+	// TODO: when going beyond inline data
 	return XERRF(e, XLOG_FS, ENOENT,
 	    "no such directory entry: %s (inode=%d)", name, inode_ino(oi));
 }
@@ -353,6 +514,61 @@ di_mkdirent_v1(struct oinode *parent, const struct dir_entry *de,
 	return 0;
 }
 
+static int
+di_mkdirent_v2(struct oinode *parent, const struct dir_entry *de,
+    int replace, struct xerr *e)
+{
+	ssize_t              r, buf_sz;
+	struct dir_entry_v2 *de_v2;
+	size_t               n = 16;
+	char                 buf[FS_BLOCK_SIZE];
+	char                *p;
+
+	buf_sz = inode_read(parent, sizeof(struct dir_hdr), buf,
+	    inode_max_inline_b(), e);
+	if (buf_sz == -1)
+		return XERR_PREPENDFN(e);
+
+	de_v2 = malloc(sizeof(struct dir_entry_v2) * n);
+	if (de_v2 == NULL)
+		return XERRF(e, XLOG_ERRNO, errno, "%s: malloc", __func__);
+
+	for (p = buf; p - buf < buf_sz; p += r) {
+		/*
+		 * Dir entries in the inode are always contiguous.
+		 * If we see one that's not allocated, it means there
+		 * are no more after.
+		 */
+		if ((r = di_unpack_v2(p, buf_sz - (p - buf), &de_v2[0])) == -1)
+			break;
+		if (!(de_v2[0].flags & DI_ALLOCATED))
+			break;
+
+		if (strcmp(de->name, de_v2[0].name) == 0) {
+			if (!replace) {
+				free(de_v2);
+				return XERRF(e, XLOG_FS, EEXIST,
+				    "file %s already exists", de->name);
+			}
+			de_v2[0].inode = de->inode;
+			de_v2[0].length = strlcpy(de_v2[0].name, de->name,
+			    sizeof(de_v2[0].name));
+			// TODO: from that point on, load up the rest of
+			// the dir into de_v2, then overwrite.
+			// Leftovers will go in the hash tree.
+
+			// TODO: what to do for replace?
+			free(de_v2);
+			return XERRF(e, XLOG_FS, EOPNOTSUPP,
+			    "%s: not implemented", __func__);
+		}
+	}
+
+	free(de_v2);
+	// TODO: when going beyond inline data
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+}
+
 int
 di_isempty(struct oinode *oi, struct xerr *e)
 {
@@ -373,6 +589,12 @@ di_isempty_v1(struct oinode *oi, struct xerr *e)
 		return 1;
 
 	return 0;
+}
+
+static int
+di_isempty_v2(struct oinode *oi, struct xerr *e)
+{
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
 
 int
@@ -454,6 +676,13 @@ noent:
 	return XERRF(e, XLOG_FS, ENOENT, "no such dirent");
 }
 
+static int
+di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
+    struct xerr *e)
+{
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+}
+
 ino_t
 di_parent(struct oinode *oi, struct xerr *e)
 {
@@ -478,6 +707,12 @@ di_parent_v1(struct oinode *oi, struct xerr *e)
 		    "corrupted directory; incomplete entries");
 
 	return de.inode;
+}
+
+static ino_t
+di_parent_v2(struct oinode *oi, struct xerr *e)
+{
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
 
 int
@@ -512,4 +747,10 @@ di_setparent_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 		    "partial dirent write, this directory might be corrupted");
 
 	return 0;
+}
+
+static int
+di_setparent_v2(struct oinode *oi, ino_t parent, struct xerr *e)
+{
+	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
