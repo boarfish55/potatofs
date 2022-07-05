@@ -28,6 +28,8 @@ static int      di_create_v1(struct oinode *, ino_t, struct xerr *);
 static int      di_create_v2(struct oinode *, ino_t, struct xerr *);
 static ssize_t  di_readdir_v1(struct oinode *, struct dir_entry *,
                     off_t, size_t, struct xerr *);
+static int      di_readdir_buf_v2(const char *, size_t, struct dir_entry *,
+                    size_t, off_t, struct xerr *);
 static ssize_t  di_readdir_v2(struct oinode *, struct dir_entry *,
                     off_t, size_t, struct xerr *);
 static int      di_lookup_v1(struct oinode *, struct dir_entry *,
@@ -48,8 +50,6 @@ static ino_t    di_parent_v1(struct oinode *, struct xerr *);
 static ino_t    di_parent_v2(struct oinode *, struct xerr *);
 static int      di_setparent_v1(struct oinode *, ino_t, struct xerr *);
 static int      di_setparent_v2(struct oinode *, ino_t, struct xerr *);
-static ssize_t  di_pack_v2(char *, size_t, struct dir_entry_v2 *);
-static ssize_t  di_unpack_v2(char *, size_t , struct dir_entry_v2 *);
 
 static struct {
 	int     (*create)(struct oinode *, ino_t, struct xerr *);
@@ -98,6 +98,28 @@ static struct {
 	}
 };
 
+/*
+ * FNV-1a hash:
+ *   http://isthe.com/chongo/tech/comp/fnv/index.html
+ *   http://tools.ietf.org/html/draft-eastlake-fnv-03
+ */
+static uint32_t
+fnv1a32(const void *s, size_t klen)
+{
+	size_t         i;
+	const size_t   prime32 = 16777619;
+	const size_t   offset32 = 2166136261;
+	size_t         h = offset32;
+	unsigned char *p = (unsigned char *)s;
+
+	for (i = 0; i < klen; i++, p++) {
+		h *= prime32;
+		h ^= *p;
+	}
+
+	return h;
+}
+
 static uint32_t
 di_check_format(struct oinode *oi, struct xerr *e)
 {
@@ -122,48 +144,82 @@ di_check_format(struct oinode *oi, struct xerr *e)
 	return hdr.dirinode_format;
 }
 
-static ssize_t
-di_pack_v2(char *buf, size_t sz, struct dir_entry_v2 *de)
+static int
+di_read_dir_hdr_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct xerr *e)
+{
+	ssize_t r;
+
+	if ((r = inode_read(oi, 0, hdr, sizeof(struct dir_hdr_v2), e)) == -1)
+		return XERR_PREPENDFN(e);
+	else if (r < sizeof(struct dir_hdr_v2))
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "short read on dir_hdr_v2 for inode=%lu", inode_ino(oi));
+	return 0;
+}
+
+ssize_t
+di_pack_v2(char *buf, size_t sz, const struct dir_entry_v2 *de)
 {
 	char   *p = buf;
 
 	if (sz < (sizeof(de->flags) +
 	    sizeof(de->length) +
+	    sizeof(de->hash) +
 	    sizeof(de->inode) +
-	    strlen(de->name) + 1))
-		return -1;
+	    de->length))
+		return SSIZE_MAX;
 
-	*(uint8_t *)p++ = de->flags;
-	*(uint8_t *)p++ = de->length;
-	*(ino_t *)p++ = de->inode;
+	*(uint8_t *)p = de->flags;
+	p += sizeof(uint8_t);
+
+	*(uint32_t *)p = de->hash;
+	p += sizeof(uint32_t);
+
+	*(ino_t *)p = de->inode;
+	p += sizeof(ino_t);
+
+	*(uint8_t *)p = de->length;
+	p += sizeof(uint8_t);
+
 	p += strlcpy(p, de->name, sz -
-	    (sizeof(de->flags) + sizeof(de->length) + sizeof(de->inode)));
+	    (sizeof(de->flags) + sizeof(de->hash) +
+	     sizeof(de->length) + sizeof(de->inode)));
 
 	return p - buf;
 }
 
-static ssize_t
-di_unpack_v2(char *buf, size_t sz, struct dir_entry_v2 *de)
+ssize_t
+di_unpack_v2(const char *buf, size_t sz, struct dir_entry_v2 *de)
 {
-	char *p = buf;
+	const char *p = buf;
 
 	if (sz < (sizeof(de->flags) +
 	    sizeof(de->length) +
+	    sizeof(de->hash) +
 	    sizeof(de->inode)))
-		return -1;
+		return SSIZE_MAX;
 
 	bzero(de, sizeof(struct dir_entry_v2));
-	de->flags = *(uint8_t *)p++;
-	de->length = *(uint8_t *)p++;
-	de->inode = *(ino_t *)p++;
+	de->flags = *(uint8_t *)p;
+	p += sizeof(uint8_t);
+
+	de->hash = *(uint32_t *)p;
+	p += sizeof(uint32_t);
+
+	de->inode = *(ino_t *)p;
+	p += sizeof(ino_t);
+
+	de->length = *(uint8_t *)p;
+	p += sizeof(uint8_t);
 
 	if (sz < ((p - buf) + de->length))
-		return -1;
+		return (p - buf) + de->length;
 
-	if (de->flags & DI_ALLOCATED) {
-		memcpy(de->name, p, de->length);
-		de->name[de->length] = '\0';
-	}
+	if (de->flags & DI_ALLOCATED)
+		de->name = p;
+	else
+		de->name = NULL;
+
 	p += de->length;
 
 	return p - buf;
@@ -208,35 +264,21 @@ di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 static int
 di_create_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	ssize_t              w;
-	struct dir_hdr       hdr = { DIRINODE_FORMAT };
-	char                 buf[sizeof(struct dir_entry_v2) * 2];
-	char                *p;
-	struct dir_entry_v2  default_dir[3] = {
-		{DI_ALLOCATED, 2, inode_ino(oi), "."},
-		{DI_ALLOCATED, 3, parent, ".."}
-	};
+	ssize_t           w;
+	struct dir_hdr_v2 hdr;
 
-	w = inode_write(oi, 0, &hdr, sizeof(hdr), e);
-	if (w == -1)
+	bzero(&hdr, sizeof(hdr));
+	hdr.hdr.dirinode_format = DIRINODE_FORMAT;
+	hdr.flags = DI_INLINE;
+	hdr.inode = inode_ino(oi);
+	hdr.parent = parent;
+
+	if ((w = inode_write(oi, 0, &hdr, sizeof(hdr), e)) == -1)
 		return XERR_PREPENDFN(e);
+
 	if (w < sizeof(hdr))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dir_hdr write, this directory might "
-		    "be corrupted");
-
-	bzero(buf, sizeof(buf));
-	p = buf;
-	p += di_pack_v2(buf, sizeof(buf), &default_dir[0]);
-	p += di_pack_v2(p, sizeof(buf) - (p - buf), &default_dir[1]);
-
-	w = inode_write(oi, w, buf, p - buf, e);
-	if (w == -1)
-		return XERR_PREPENDFN(e);
-
-	if (w < sizeof(p - buf))
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dirent write, this directory might "
 		    "be corrupted");
 
 	return 0;
@@ -253,9 +295,6 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 
 	if (!(dfmt = di_check_format(oi, e)))
 		return XERR_PREPENDFN(e);
-	else if (offset > 0 && offset < sizeof(struct dir_hdr))
-		return XERRF(e, XLOG_APP, XLOG_INVAL,
-		    "cannot do a partial read inside dir_hdr");
 
 	return di_fn[dfmt].readdir(oi, dirs, offset, count, e);
 }
@@ -273,6 +312,10 @@ di_readdir_v1(struct oinode *oi, struct dir_entry *dirs,
 	ssize_t  r;
 	ssize_t  entries = 0;
 	struct   dir_entry_v1 dirs_v1[count];
+
+	if (offset > 0 && offset < sizeof(struct dir_hdr))
+		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "cannot do a partial read inside dir_hdr");
 
 	while (entries < count) {
 		r = inode_read(oi, sizeof(struct dir_hdr) + offset,
@@ -301,23 +344,98 @@ di_readdir_v1(struct oinode *oi, struct dir_entry *dirs,
 		    sizeof(dirs[entries].name));
 
 		if (dirs_v1[entries].next == 0) {
-			dirs[entries].pos = offset +
+			dirs[entries].d_off = offset +
 			    sizeof(struct dir_entry_v1);
 			entries++;
 			break;
 		}
 
 		offset = dirs_v1[entries].next;
-		dirs[entries].pos = offset;
+		dirs[entries].d_off = offset;
 		entries++;
 	}
 	return entries;
 }
 
+int
+di_readdir_buf_v2(const char *buf, size_t sz, struct dir_entry *dirs,
+    size_t count, off_t d_off, struct xerr *e)
+{
+	ssize_t              r;
+	struct dir_entry_v2  de_v2;
+	const char          *p;
+	uint32_t             i;
+	/*
+	 * If d_off is 2 or less, then we are reading from the start
+	 * of this buffer. Otherwise we need to match the "virtual offset"
+	 * composed of the hash and current item index in the buffer.
+	 */
+	//int                  found_d_off = (d_off <= 2) ? 1 : 0;
+
+	for (p = buf, i = 0; i < count && p - buf < sz; p += r) {
+		/*
+		 * Dir entries in the inode are always contiguous.
+		 * If we see one that's not allocated, it means there
+		 * are no more after.
+		 */
+		if ((r = di_unpack_v2(p, sz - (p - buf), &de_v2)) >
+		    sz - (p - buf))
+			break;
+
+		if (!(de_v2.flags & DI_ALLOCATED))
+			break;
+
+		if ((p - buf) + 2 >= d_off) {
+			strlcpy(dirs[i].name, de_v2.name, de_v2.length + 1);
+			dirs[i].inode = de_v2.inode;
+			dirs[i].d_off = (p - buf) + r;
+			i++;
+		}
+	}
+
+	return i;
+}
+
 static ssize_t
 di_readdir_v2(struct oinode *oi, struct dir_entry *dirs,
-    off_t offset, size_t count, struct xerr *e)
+    off_t d_off, size_t count, struct xerr *e)
 {
+	ssize_t              buf_sz;
+	char                 buf[FS_BLOCK_SIZE];
+	struct dir_hdr_v2    hdr;
+	int                  i = 0;
+
+	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (d_off == 0 && i < count) {
+		dirs[i].inode = hdr.inode;
+		strlcpy(dirs[i].name, ".", sizeof(dirs[i].name));
+		dirs[i].d_off = 1;
+		d_off = 1;
+		i++;
+	}
+
+	if (d_off == 1 && i < count) {
+		dirs[i].inode = hdr.parent;
+		strlcpy(dirs[i].name, "..", sizeof(dirs[i].name));
+		dirs[i].d_off = 2;
+		d_off = 2;
+		i++;
+	}
+
+	buf_sz = inode_read(oi, sizeof(hdr), buf,
+	    inode_max_inline_b() - sizeof(hdr), e);
+	if (buf_sz == 0) {
+		return i;
+	} else if (buf_sz == -1)
+		return XERR_PREPENDFN(e);
+
+	if (hdr.flags & DI_INLINE)
+		return i + di_readdir_buf_v2(buf, buf_sz, dirs + i,
+		    count, d_off, e);
+
+	// TODO: when going beyond inline data
 	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
 
@@ -359,7 +477,7 @@ di_lookup_v1(struct oinode *oi, struct dir_entry *de,
 		if (strcmp(de_v1.name, name) == 0) {
 			de->inode = de_v1.inode;
 			strlcpy(de->name, de_v1.name, sizeof(de->name));
-			de->pos = (de_v1.next) ? de_v1.next :
+			de->d_off = (de_v1.next) ? de_v1.next :
 			    offset + sizeof(struct dir_entry_v1);
 			return 0;
 		}
@@ -372,43 +490,76 @@ di_lookup_v1(struct oinode *oi, struct dir_entry *de,
 }
 
 static int
-di_lookup_v2(struct oinode *oi, struct dir_entry *de,
-    const char *name, struct xerr *e)
+di_lookup_buf_v2(const char *buf, size_t sz, struct dir_entry *de,
+    uint32_t hash, const char *name, struct xerr *e)
 {
-	ssize_t              r, buf_sz;
+	ssize_t              r;
 	struct dir_entry_v2  de_v2;
-	char                 buf[FS_BLOCK_SIZE];
-	char                *p;
+	const char          *p;
 
-	buf_sz = inode_read(oi, sizeof(struct dir_hdr), buf,
-	    inode_max_inline_b(), e);
-	if (buf_sz == 0) {
-		return XERRF(e, XLOG_FS, ENOENT,
-		    "no such directory entry: %s (inode=%d)",
-		    name, inode_ino(oi));
-	} else if (buf_sz == -1)
-		return XERR_PREPENDFN(e);
-
-	for (p = buf; p - buf < buf_sz; p += r) {
+	for (p = buf; p - buf < sz; p += r) {
 		/*
 		 * Dir entries in the inode are always contiguous.
 		 * If we see one that's not allocated, it means there
 		 * are no more after.
 		 */
-		if ((r = di_unpack_v2(p, buf_sz - (p - buf), &de_v2)) == -1)
+		if ((r = di_unpack_v2(p, sz - (p - buf), &de_v2)) >
+		    sz - (p - buf))
 			break;
 		if (!(de_v2.flags & DI_ALLOCATED))
 			break;
 
-		if (strcmp(de->name, de_v2.name) == 0) {
+		if (de_v2.hash != hash || strlen(name) != de_v2.length)
+			continue;
+
+		if (strncmp(name, de_v2.name, de_v2.length) == 0) {
+			strlcpy(de->name, de_v2.name, de_v2.length + 1);
 			de->inode = de_v2.inode;
-			de->pos = (p - buf) + r;
-			strlcpy(de->name, de_v2.name, sizeof(de->name));
+			de->d_off = (p - buf) + r;
 			return 0;
 		}
 	}
 
+	return XERRF(e, XLOG_FS, ENOENT, "no such directory entry: %s",
+	    de->name);
+}
+
+static int
+di_lookup_v2(struct oinode *oi, struct dir_entry *de, const char *name,
+    struct xerr *e)
+{
+	ssize_t              buf_sz;
+	char                 buf[FS_BLOCK_SIZE];
+	struct dir_hdr_v2    hdr;
+	uint32_t             hash = fnv1a32(name, strlen(name));
+
+	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (strcmp(name, ".") == 0) {
+		strlcpy(de->name, name, sizeof(de->name));
+		de->inode = hdr.inode;
+		de->d_off = 0;
+		return 0;
+	} else if (strcmp(name, "..") == 0) {
+		strlcpy(de->name, name, sizeof(de->name));
+		de->inode = hdr.parent;
+		de->d_off = 0;
+		return 0;
+	}
+
+	buf_sz = inode_read(oi, sizeof(hdr), buf,
+	    inode_max_inline_b() - sizeof(hdr), e);
+	if (buf_sz == 0) {
+		goto end;
+	} else if (buf_sz == -1)
+		return XERR_PREPENDFN(e);
+
+	if (hdr.flags & DI_INLINE)
+		return di_lookup_buf_v2(buf, buf_sz, de, hash, name, e);
+
 	// TODO: when going beyond inline data
+end:
 	return XERRF(e, XLOG_FS, ENOENT,
 	    "no such directory entry: %s (inode=%d)", name, inode_ino(oi));
 }
@@ -518,53 +669,53 @@ static int
 di_mkdirent_v2(struct oinode *parent, const struct dir_entry *de,
     int replace, struct xerr *e)
 {
-	ssize_t              r, buf_sz;
-	struct dir_entry_v2 *de_v2;
-	size_t               n = 16;
-	char                 buf[FS_BLOCK_SIZE];
+	ssize_t              r;
+	struct dir_entry_v2  de_v2;
+	struct dir_hdr_v2    hdr;
+	char                 buf[inode_max_inline_b() - sizeof(hdr)];
 	char                *p;
 
-	buf_sz = inode_read(parent, sizeof(struct dir_hdr), buf,
-	    inode_max_inline_b(), e);
-	if (buf_sz == -1)
+	if (di_read_dir_hdr_v2(parent, &hdr, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	de_v2 = malloc(sizeof(struct dir_entry_v2) * n);
-	if (de_v2 == NULL)
-		return XERRF(e, XLOG_ERRNO, errno, "%s: malloc", __func__);
+	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
+		return XERRF(e, XLOG_FS, (replace) ? EBUSY : EEXIST,
+		    "file %s already exists", de->name);
 
-	for (p = buf; p - buf < buf_sz; p += r) {
-		/*
-		 * Dir entries in the inode are always contiguous.
-		 * If we see one that's not allocated, it means there
-		 * are no more after.
-		 */
-		if ((r = di_unpack_v2(p, buf_sz - (p - buf), &de_v2[0])) == -1)
-			break;
-		if (!(de_v2[0].flags & DI_ALLOCATED))
-			break;
+	if ((r = inode_read(parent, sizeof(hdr), buf, sizeof(buf), e)) == -1)
+		return XERR_PREPENDFN(e);
 
-		if (strcmp(de->name, de_v2[0].name) == 0) {
-			if (!replace) {
-				free(de_v2);
-				return XERRF(e, XLOG_FS, EEXIST,
-				    "file %s already exists", de->name);
-			}
-			de_v2[0].inode = de->inode;
-			de_v2[0].length = strlcpy(de_v2[0].name, de->name,
-			    sizeof(de_v2[0].name));
-			// TODO: from that point on, load up the rest of
-			// the dir into de_v2, then overwrite.
-			// Leftovers will go in the hash tree.
+	de_v2.flags = DI_ALLOCATED;
+	de_v2.length = strlen(de->name);
+	de_v2.name = de->name;
+	de_v2.inode = de->inode;
+	de_v2.hash = fnv1a32(de_v2.name, de_v2.length);
 
-			// TODO: what to do for replace?
-			free(de_v2);
+	if (hdr.flags & DI_INLINE) {
+		p = buf + r;
+		p += di_pack_v2(p, sizeof(buf), &de_v2);
+		if (p > buf + sizeof(buf)) {
+			// TODO: clear hdr.flags DI_INLINE
+			//       convert to hash tree
 			return XERRF(e, XLOG_FS, EOPNOTSUPP,
 			    "%s: not implemented", __func__);
 		}
+		r = inode_write(parent, sizeof(hdr), buf, p - buf, e);
+		if (r < sizeof(p - buf)) {
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "partial dirent write, this directory "
+			    "might be corrupted");
+		}
+		hdr.entries++;
+		if ((r = inode_write(parent, 0, &hdr, sizeof(hdr), e)) <
+		    sizeof(hdr)) {
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "partial dir_hdr_v2 write, this directory "
+			    "might be corrupted");
+		}
+		return 0;
 	}
 
-	free(de_v2);
 	// TODO: when going beyond inline data
 	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
@@ -594,7 +745,10 @@ di_isempty_v1(struct oinode *oi, struct xerr *e)
 static int
 di_isempty_v2(struct oinode *oi, struct xerr *e)
 {
-	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+	struct dir_hdr_v2 hdr;
+	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+	return (hdr.entries == 0) ? 1 : 0;
 }
 
 int
@@ -676,10 +830,95 @@ noent:
 	return XERRF(e, XLOG_FS, ENOENT, "no such dirent");
 }
 
+/*
+ * Returns the new buffer size after removing the dir entry, or -1 on error.
+ */
+static ssize_t
+di_unlink_buf_v2(char *buf, size_t sz, const struct dir_entry *de,
+    uint32_t hash, const char *name, struct xerr *e)
+{
+	ssize_t              r;
+	struct dir_entry_v2  de_v2;
+	char                *p;
+
+	for (p = buf; p - buf < sz; p += r) {
+		/*
+		 * Dir entries in the inode are always contiguous.
+		 * If we see one that's not allocated, it means there
+		 * are no more after.
+		 */
+		if ((r = di_unpack_v2(p, sz - (p - buf), &de_v2)) >
+		    sz - (p - buf))
+			break;
+		if (!(de_v2.flags & DI_ALLOCATED))
+			break;
+
+		if (de_v2.hash != hash || strlen(name) != de_v2.length)
+			continue;
+
+		if (strncmp(name, de_v2.name, de_v2.length) == 0) {
+			memmove(p, p + r, sz - ((p - buf) + r));
+			return sz - r;
+		}
+	}
+
+	return XERRF(e, XLOG_FS, ENOENT, "no such directory entry: %s",
+	    de->name);
+}
+
 static int
 di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
     struct xerr *e)
 {
+	ssize_t              r;
+	struct dir_hdr_v2    hdr;
+	char                 buf[inode_max_inline_b() - sizeof(hdr)];
+	ssize_t              buf_sz;
+	uint32_t             hash = fnv1a32(de->name, strlen(de->name));
+
+	if (di_read_dir_hdr_v2(parent, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
+		return XERRF(e, XLOG_FS, EBUSY,
+		    "file %s cannot be removed", de->name);
+
+	buf_sz = inode_read(parent, sizeof(hdr), buf,
+	    inode_max_inline_b() - sizeof(hdr), e);
+	if (buf_sz == 0) {
+		goto end;
+	} else if (buf_sz == -1)
+		return XERR_PREPENDFN(e);
+
+	if (hdr.flags & DI_INLINE) {
+		buf_sz = di_unlink_buf_v2(buf, buf_sz, de, hash, de->name, e);
+		if (buf_sz == -1)
+			return XERR_PREPENDFN(e);
+
+		r = inode_write(parent, sizeof(hdr), buf, buf_sz, e);
+		if (r == -1) {
+			return XERR_PREPENDFN(e);
+		} else if (r < buf_sz) {
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "partial dirent write, this directory "
+			    "might be corrupted");
+		}
+		if (inode_truncate(parent, sizeof(hdr) + buf_sz,
+		    xerrz(e)) == -1)
+			return XERR_PREPENDFN(e);
+
+		hdr.entries--;
+		if ((r = inode_write(parent, 0, &hdr, sizeof(hdr), e)) <
+		    sizeof(hdr)) {
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "partial dir_hdr_v2 write, this directory "
+			    "might be corrupted");
+		}
+		return 0;
+	}
+
+	// TODO: when going beyond inline data
+end:
 	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
 }
 
@@ -712,7 +951,10 @@ di_parent_v1(struct oinode *oi, struct xerr *e)
 static ino_t
 di_parent_v2(struct oinode *oi, struct xerr *e)
 {
-	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+	struct dir_hdr_v2 hdr;
+	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+	return hdr.parent;
 }
 
 int
@@ -752,5 +994,17 @@ di_setparent_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 static int
 di_setparent_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	return XERRF(e, XLOG_FS, EOPNOTSUPP, "%s: not implemented", __func__);
+	struct dir_hdr_v2 hdr;
+	ssize_t           r;
+
+	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	hdr.parent = parent;
+	if ((r = inode_write(oi, 0, &hdr, sizeof(hdr), e)) < sizeof(hdr)) {
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "partial dir_hdr_v2 write, this directory "
+		    "might be corrupted");
+	}
+	return 0;
 }

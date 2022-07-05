@@ -39,7 +39,15 @@ Non-goals:
      platform-dependent. Maybe one day we'll care and do all the
      byte-swapping, though it's unsure how that would affect performance.
 
-  2) Find a cool unique name. Finding a free 5-letter acronym ending in
+  2) Disaster recovery. PotatoFS may not sync local slabs to the high-latency
+     backend on a frequent basis. Therefore, local storage should still be
+     reliable and persistent. This is especially true for inode table slabs,
+     since we defer closing those slabs until there are no inodes with a
+     non-zero lookup count (see FUSE low-level docs). This may be improved a
+     bit in the future (possibly by snapshotting inode tables in a
+     consistent state).
+
+  3) Find a cool unique name. Finding a free 5-letter acronym ending in
      "-FS" is next to impossible these days:
 
      So meet PotatoFS. Potatoes are nourishing and can easily complement

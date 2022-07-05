@@ -4,6 +4,7 @@ potatofs
 potatoctl
 potatofs_tests
 potatomgr
+fake_fs
 mgr.pl
 potatofs.conf
 run.sh

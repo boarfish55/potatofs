@@ -53,6 +53,11 @@
 #define SLAB_DIRS     256
 #define FS_ROOT_INODE 1
 
+/*
+ * Hard deadline for all backend operations. If it is expected that reads
+ * or writes to the backend might take longer than this value, it should
+ * be increased.
+ */
 #define BACKEND_TIMEOUT_SECONDS 30
 
 /*

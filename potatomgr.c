@@ -103,17 +103,6 @@ shutdown_requested()
 	return sr;
 }
 
-static void
-handle_sig(int sig)
-{
-	/*
-	 * We do nothing. This is only useful so that we
-	 * interrupt blocking system calls and decide
-	 * whether we should retry to prepare to exit.
-	 */
-	syslog(LOG_DEBUG, "signal %d received", sig);
-}
-
 static int
 set_fs_error()
 {
@@ -1407,17 +1396,11 @@ set_shutdown_requested()
 static int
 do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 {
-	pid_t p;
-
 	if (set_shutdown_requested() == -1) {
 		XERRF(&m->v.err, XLOG_ERRNO, errno, "set_shutdown_requested");
 		m->m = MGR_MSG_SHUTDOWN_ERR;
 	} else {
 		m->m = MGR_MSG_SHUTDOWN_OK;
-		if ((p = getppid()) > 1) {
-			if (killpg(p, 15) == -1)
-				xlog_strerror(LOG_ERR, errno, "killpg");
-		}
 	}
 
 	if (mgr_send(c, -1, m, xerrz(e)) == -1)
@@ -1524,7 +1507,9 @@ static int
 bgworker(const char *name, void(*fn)(), int interval_secs)
 {
 	char            title[32];
-	struct timespec tp = {interval_secs, 0};
+	struct timespec tp = {1, 0};
+	struct timespec rem;
+	int             r, i;
 	pid_t           pid;
 	struct xerr     e = XLOG_ERR_INITIALIZER;
 
@@ -1555,8 +1540,16 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	while (!shutdown_requested()) {
 		fn();
-		if (!shutdown_requested())
-			nanosleep(&tp, NULL);
+		for (i = 0; i < interval_secs && !shutdown_requested(); i++) {
+			do {
+				if ((r = nanosleep(&tp, &rem)) == -1) {
+					tp.tv_sec = rem.tv_sec;
+					tp.tv_nsec = rem.tv_nsec;
+					xlog_strerror(LOG_NOTICE, errno,
+					    "%s: nanosleep", __func__);
+				}
+			} while(r != 0 && !shutdown_requested());
+		}
 	}
 	slabdb_shutdown();
 	exit(0);
@@ -2146,11 +2139,6 @@ mgr_start()
 		return 0;
 	}
 
-	if (setsid() == -1) {
-		xlog_strerror(LOG_CRIT, errno, "setsid");
-		exit(1);
-	}
-
 	chdir(fs_config.data_dir);
 
 	if ((null_fd = open("/dev/null", O_RDWR)) == -1)
@@ -2174,7 +2162,7 @@ mgr_start()
 
 	if (geteuid() == 0) {
 		if ((gr = getgrnam(unpriv_group)) == NULL) {
-			xlog_strerror(LOG_ERR, errno,
+			xlog(LOG_ERR, NULL,
 			    "Group %s not found in group database",
 			    unpriv_group);
 			exit(1);
@@ -2285,11 +2273,8 @@ mgr_start()
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &act, NULL) == -1)
-		xlog_strerror(LOG_ERR, errno, "sigaction");
-
-	act.sa_handler = &handle_sig;
-	if (sigaction(SIGINT, &act, NULL) == -1 ||
+	if (sigaction(SIGPIPE, &act, NULL) == -1 ||
+	    sigaction(SIGINT, &act, NULL) == -1 ||
 	    sigaction(SIGTERM, &act, NULL) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 	}

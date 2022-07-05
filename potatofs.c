@@ -17,6 +17,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <err.h>
 #include <locale.h>
 #include <signal.h>
@@ -397,6 +399,7 @@ static void
 fs_destroy(void *unused)
 {
 	struct xerr e;
+	int         wstatus;
 
 	xlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
@@ -422,6 +425,24 @@ fs_destroy(void *unused)
 	xlog(LOG_DEBUG, NULL, "sending shutdown to potatomgr");
 	if (mgr_send_shutdown(xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
+
+	/*
+	 * Wait for mgr completion. This is to ensure umount blocks
+	 * until everything is closed, to avoid our processes
+	 * being killed by the shutdown sequence too soon.
+	 */
+	do {
+		if (wait(&wstatus) == -1) {
+			if (errno == EINTR)
+				continue;
+			else if (errno != ECHILD)
+				xlog_strerror(LOG_ERR, errno, "wait");
+		}
+	} while(0);
+
+	if (WEXITSTATUS(wstatus) != 0)
+		xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
+		    __func__, wstatus);
 }
 
 static void
@@ -574,8 +595,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 				goto end;
 
 			buf_used += fuse_add_direntry(req, buf + buf_used,
-			    size - buf_used, dirs[i].name, &st, dirs[i].pos);
-			off = dirs[i].pos;
+			    size - buf_used, dirs[i].name, &st, dirs[i].d_off);
+			off = dirs[i].d_off;
 		}
 	}
 end:

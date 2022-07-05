@@ -275,14 +275,137 @@ noent:
 }
 
 int
-fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
+add_found_inode(ino_t ino, struct xerr *e)
+{
+	struct found_inode *fino;
+
+	if ((fino = malloc(sizeof(struct found_inode))) == NULL)
+		return XERRF(e, XLOG_ERRNO, errno, "malloc");
+	bzero(fino, sizeof(struct found_inode));
+	fino->ino = ino;
+	if (!RB_FIND(scanned_dirent_inode_tree,
+	    &scanned_dirent_inodes.head, fino)) {
+		if (RB_INSERT(scanned_dirent_inode_tree,
+		    &scanned_dirent_inodes.head, fino)
+		    != NULL) {
+			free(fino);
+			return XERRF(e, XLOG_ERRNO, errno,
+			    "RB_INSERT");
+		}
+	}
+	return 0;
+}
+
+int
+validate_dir_v1(int mgr, ino_t ino, char *dir, size_t *dir_sz,
     struct fsck_stats *stats, struct xerr *e)
 {
 	struct dir_entry_v1 *de;
-	char                *dir;
-	size_t               dir_sz;
 	int                  dirty = 0;
-	struct found_inode  *fino;
+
+	for (de = (struct dir_entry_v1 *)(dir + sizeof(struct dir_hdr));
+	    (char *)de < (dir + *dir_sz); de++) {
+		if (de->inode > 0) {
+			fsck_printf("    dirent: %lu (%s)",
+			    de->inode, de->name);
+			stats->n_dirents++;
+
+			if (!valid_inode(mgr, de->inode)) {
+				stats->errors++;
+
+				if (fsck_fix) {
+					if (clear_dir_entry(
+					    (struct dir_entry_v1 *)dir, de,
+					    dir_sz, xerrz(e)) == -1)
+						xerr_print(e);
+					else
+						dirty = 1;
+				}
+				continue;
+			}
+
+			/*
+			 * Keep track of all linked inodes to later verify
+			 * if any of them are not.
+			 */
+			if (add_found_inode(de->inode, e) == -1)
+				return XERR_PREPENDFN(e);
+		}
+		if (de->next > 0 && de->next <= ((char *)de - dir)) {
+			/*
+			 * We link to a next entry, but the offset is
+			 * the current offset or before, which is
+			 * invalid.
+			 */
+			stats->errors++;
+			warnx("invalid chaining in directory "
+			    "inode %lu; entry %s at offset %lu",
+			    ino, de->name, (char *)de - dir);
+		}
+	}
+	return dirty;
+}
+
+int
+validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	int                  dirty = 0;
+	struct dir_hdr_v2   *hdr = (struct dir_hdr_v2 *)dir;
+	struct dir_entry_v2  de_v2;
+	char                 name[NAME_MAX + 1];
+	int                  r;
+	char                *p;
+
+	if (!valid_inode(mgr, hdr->inode))
+		stats->errors++;
+	if (add_found_inode(hdr->inode, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (!valid_inode(mgr, hdr->parent))
+		stats->errors++;
+	if (add_found_inode(hdr->parent, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (hdr->flags & DI_INLINE) {
+		for (p = dir + sizeof(struct dir_hdr_v2);
+		    p - dir < *dir_sz; p += r) {
+			if ((r = di_unpack_v2(p, *dir_sz - (p - dir), &de_v2)) >
+			    *dir_sz - (p - dir))
+				break;
+
+			if (!(de_v2.flags & DI_ALLOCATED))
+				break;
+
+			strlcpy(name, de_v2.name, de_v2.length + 1);
+			fsck_printf("    dirent: %lu (%s)", de_v2.inode, name);
+			stats->n_dirents++;
+
+			if (!valid_inode(mgr, de_v2.inode)) {
+				stats->errors++;
+				if (fsck_fix) {
+					// TODO: memmove...
+					dirty = 1;
+					continue;
+				}
+			}
+			if (add_found_inode(de_v2.inode, e) == -1)
+				return XERR_PREPENDFN(e);
+		}
+	}
+	// TODO: handle non-inline case
+
+	return dirty;
+}
+
+int
+fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	char               *dir;
+	size_t              dir_sz;
+	int                 dirty = 0;
+	struct found_inode *fino;
 
 	fsck_printf("  inode: %lu", ino);
 	if (unallocated) {
@@ -337,57 +460,16 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	}
 	dir_sz = inode->v.f.size;
 
-	for (de = (struct dir_entry_v1 *)(dir + sizeof(struct dir_hdr));
-	    (char *)de < (dir + dir_sz); de++) {
-		if (de->inode > 0) {
-			fsck_printf("    dirent: %lu (%s)",
-			    de->inode, de->name);
-			stats->n_dirents++;
+	// TODO: need to support v2
 
-			if (!valid_inode(mgr, de->inode)) {
-				stats->errors++;
-
-				if (fsck_fix) {
-					if (clear_dir_entry(
-					    (struct dir_entry_v1 *)dir, de,
-					    &dir_sz, xerrz(e)) == -1)
-						xerr_print(e);
-					else
-						dirty = 1;
-				}
-				continue;
-			}
-
-			/*
-			 * Keep track of all linked inodes to later verify
-			 * if any of them are not.
-			 */
-			if ((fino = malloc(sizeof(struct found_inode))) == NULL)
-				return XERRF(e, XLOG_ERRNO, errno, "malloc");
-			bzero(fino, sizeof(struct found_inode));
-			fino->ino = de->inode;
-			if (!RB_FIND(scanned_dirent_inode_tree,
-			    &scanned_dirent_inodes.head, fino)) {
-				if (RB_INSERT(scanned_dirent_inode_tree,
-				    &scanned_dirent_inodes.head, fino)
-				    != NULL) {
-					free(fino);
-					return XERRF(e, XLOG_ERRNO, errno,
-					    "RB_INSERT");
-				}
-			}
-		}
-		if (de->next > 0 && de->next <= ((char *)de - dir)) {
-			/*
-			 * We link to a next entry, but the offset is
-			 * the current offset or before, which is
-			 * invalid.
-			 */
-			stats->errors++;
-			warnx("invalid chaining in directory "
-			    "inode %lu; entry %s at offset %lu",
-			    ino, de->name, (char *)de - dir);
-		}
+	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
+		dirty = validate_dir_v1(mgr, ino, dir, &dir_sz, stats, e);
+		if (dirty == -1)
+			return XERR_PREPENDFN(e);
+	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
+		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats, e);
+		if (dirty == -1)
+			return XERR_PREPENDFN(e);
 	}
 
 	if (dirty) {

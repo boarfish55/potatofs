@@ -1313,7 +1313,8 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	}
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
-		XERRF(e, XLOG_APP, XLOG_NOSLAB, "no such slab");
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
+		    "no such slab; ino=%llu, base=%lu", sk->ino, sk->base);
 		return NULL;
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
 		// TODO: handle backend unavailability
@@ -1326,7 +1327,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		return NULL;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
 		XERRF(e, XLOG_APP, XLOG_MGRERROR,
-		    "bad manager response; ino expected=%lu, received=%lu "
+		    "bad manager response; ino expected=%llu, received=%llu "
 		    "base expected=%lu, received=%lu",
 		    sk->ino, m.v.claim.key.ino, sk->base, m.v.claim.key.base);
 		return NULL;
