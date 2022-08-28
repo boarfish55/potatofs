@@ -2104,7 +2104,6 @@ main(int argc, char **argv)
 	char             *mountpoint;
 	int               status = -1;
 	struct sigaction  act;
-	sigset_t          set;
 	int               foreground;
 	struct fs_info    fs_info;
 	struct xerr       e;
