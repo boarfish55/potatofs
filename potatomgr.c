@@ -1912,8 +1912,12 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 	close(fd);
 
 	if (fs_usage->used_blocks <
-	    fs_usage->stv.f_blocks * fs_config.purge_threshold_pct / 100)
+	    fs_usage->stv.f_blocks * fs_config.purge_threshold_pct / 100) {
+		xlog(LOG_INFO, NULL, "%s: ending purge, used blocks %lu "
+		    "within threshold %lu", __func__, fs_usage->used_blocks,
+		    fs_usage->stv.f_blocks);
 		return 1;
+	}
 
 	return 0;
 }
