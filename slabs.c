@@ -775,6 +775,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		goto end;
 	}
+	bzero(b, sizeof(struct oslab));
 
 	if (clock_gettime(CLOCK_MONOTONIC, &b->open_since) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
@@ -787,6 +788,12 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		goto fail_free_b;
 	if (LK_LOCK_INIT(&b->lock, e) == -1)
 		goto fail_destroy_bytes_lock;
+
+	// TODO: We may want to add the slab as a placeholder here
+	// with a marker that says it is being downloaded or created,
+	// otherwise we're holding the lock for any other slab loads.
+	// This makes large dir scans very slow if we need to pull directories
+	// from the backend. Will probably need a marker in the oslab struct.
 
 	if ((mgr = mgr_connect(1, e)) == -1)
 		goto fail_destroy_locks;
