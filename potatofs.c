@@ -2130,13 +2130,10 @@ main(int argc, char **argv)
 	bzero(&act, sizeof(act));
 	act.sa_flags = 0;
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &act, NULL) == -1)
+	if (sigaction(SIGPIPE, &act, NULL) == -1 ||
+	    sigaction(SIGINT, &act, NULL) == -1 ||
+	    sigaction(SIGTERM, &act, NULL) == -1)
 		err(1, "sigaction");
-
-	sigemptyset(&set);
-	sigaddset(&set, SIGPIPE);
-	if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
-		err(1, "pthread_sigmask");
 
 	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1) {
 		warn("xlog_init");
