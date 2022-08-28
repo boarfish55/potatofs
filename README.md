@@ -88,13 +88,18 @@ use as a starting point.
 Then you'll need to put the configuration file somewhere and adjust the
 backend's path and data path. See `potatofs.conf.sample` for an example
 configuration. You can install it as `/etc/potatofs.conf` or use the
-`POTATOFS_CONFIG` environment variable to provide an alternate path, or
-use the `-c` command line flag.
+`cfg_path` mount option to provide an alternate path.
 
-Once all this is done:
+Once all this is done, create an entry in your fstab:
 
 ```
-$ ./potatofs.init start
+/path/to/bin/potatofs /mnt/potatofs fuse noauto,nofail,_netdev,user,cfg_path=/path/to/potatofs/config 0 0
+```
+
+Then mount it:
+
+```
+$ mount /mnt/potatofs
 ```
 
 
@@ -134,11 +139,18 @@ KNOWN ISSUES
   recover until the backend is available again. Error handling in these
   situations is questionable at best and needs to be reviewed. We can't
   properly interrupt I/O ops in flight at this time.
+* When downloading from the backend (slab_load()), we hold the slab
+  lock the entire time, meaning we can't do anything. We might have to
+  queue slab downloads without holding the lock?? Or maybe read lock?
+  Then upgrade to a write lock when the slab is local.
 
 TODO
 ====
 * On install, we should have mount.potatofs and fsck.potatofs binaries,
   even if only symlinked.
+* Memory-bound our stuff. open() is allowed to return ENOMEM, so we can
+  actually cap how many open inodes we have at once. We should return
+  ENOMEM as XLOG_FS.
 * Make directory lookups faster; too slow on large directories
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
