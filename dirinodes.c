@@ -389,7 +389,7 @@ di_readdir_v1(struct oinode *oi, struct dir_entry *dirs,
  */
 int
 di_readdir_buf_v2(const char *buf, size_t sz, struct dir_entry *dirs,
-    size_t count, off_t d_off, off_t start_d_off, struct xerr *e)
+    size_t count, off_t d_off, off_t virt_d_off, struct xerr *e)
 {
 	ssize_t              r;
 	struct dir_entry_v2  de_v2;
@@ -409,11 +409,11 @@ di_readdir_buf_v2(const char *buf, size_t sz, struct dir_entry *dirs,
 		if (!(de_v2.flags & DI_ALLOCATED))
 			break;
 
-		if (d_off >= start_d_off) {
+		if (d_off >= virt_d_off) {
 			strlcpy(dirs[i].name, de_v2.name, de_v2.length + 1);
 			dirs[i].inode = de_v2.inode;
-			dirs[i].d_off = de_v2.hash | start_d_off;
-			start_d_off++;
+			dirs[i].d_off = ((uint64_t)de_v2.hash << 32) | d_off;
+			d_off++;
 			i++;
 		}
 	}
@@ -428,7 +428,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	struct dir_block_v2 b;
 	ssize_t             r;
 	int                 bucket, i = 0;
-	uint64_t            start_d_off;
+	uint64_t            virt_d_off;
 
 	if ((r = inode_read(oi, b_off, &b, sizeof(b), e)) == 0)
 		return 0;
@@ -440,13 +440,13 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 
 	if (b.v.flags & DI_BLOCK_LEAF) {
 		/*
-		 * start_d_off is always 2 in a given leaf. 0 and 1 are used
+		 * virt_d_off is always 2 in a given leaf. 0 and 1 are used
 		 * for "." and "..".
 		 */
-		start_d_off = 2;
+		virt_d_off = 2;
 		i += di_readdir_buf_v2(b.v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES, dirs, count,
-		    d_off & 0x00000000FFFFFFFF, start_d_off, e);
+		    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
+		    d_off & 0x00000000FFFFFFFF, virt_d_off, e);
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
 			    sizeof(b), e)) == 0) {
@@ -455,7 +455,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 				return XERR_PREPENDFN(e);
 			i += di_readdir_buf_v2(b.v.leaf.data,
 			    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
-			    d_off & 0x00000000FFFFFFFF, start_d_off + i, e);
+			    d_off & 0x00000000FFFFFFFF, virt_d_off + i, e);
 		}
 		return i;
 	}
@@ -1022,7 +1022,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 * there was one. Otherwise, the last block should already
 		 * be loaded in 'b'.
 		 */
-		if (valid_off > -1) {
+		if (valid_off > -1 && valid_off != b_off) {
 			if ((r = inode_read(parent, valid_off, &b,
 			    sizeof(b), xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
