@@ -30,12 +30,15 @@ struct dir_hdr {
 };
 
 struct dir_hdr_v2 {
-	struct dir_hdr hdr;
-#define DI_INLINE 0x01
-	uint8_t        flags;
-	size_t         entries;
-	ino_t          inode;
-	ino_t          parent;
+	union {
+		struct {
+			struct dir_hdr hdr;
+			ino_t          inode;
+			ino_t          parent;
+			off_t          free_list_start;
+		} h;
+		char padding[512];
+	} v;
 };
 
 struct dir_entry {
@@ -70,20 +73,56 @@ struct dir_entry_v2 {
 	const char *name;
 };
 
-struct dir_block_hdr_v2 {
-	uint8_t  flags;
+/*
+ * Directory blocks are always 512 bytes. A block is either a leaf or an
+ * index (hash table). Hash table entries point to child
+ * blocks. Our hash is 32 bits, so each block handles 5 bits of the hash,
+ * meaning our tree has a max depth of 6 (6 x 5 = 30 bits).
+ *
+ * The dir_block_idx_v2 is standalone because it could also be used in
+ * the inline inode data, which doesn't allow space for a full fs block size.
+ *
+ */
+#define DI_BLOCK_V2_MAX_DEPTH 6
+
+struct dir_block_v2 {
 #define DI_BLOCK_ALLOCATED  0x01
 #define DI_BLOCK_LEAF       0x02
-	uint8_t  reserved;
-	uint16_t length;
-	size_t   entries;
-	off_t    next_leaf;
-};
+	union {
+		/*
+		 * flags must remain the first field in both
+		 * structs, since this is what we use to determine
+		 * which one to use.
+		 */
+		uint8_t flags;
+		struct {
+			uint8_t  flags;
+			off_t    buckets[32];
+		} idx;
+		struct {
+			uint8_t  flags;
 
-struct dir_entry_idx_v2 {
-	off_t offset;
-};
+			/* How many items in this leaf */
+			size_t   entries;
 
+			/* How many bytes are used in the leaf */
+			uint16_t length;
+
+			/*
+			 * Offset of next leaf when we're at our max
+			 * tree depth.
+			 */
+			off_t    next;
+
+			/* This must be the last field in this struct */
+			char     data[1];
+		} leaf;
+		char padding[512];
+	} v;
+};
+#define DI_DIR_BLOCK_HDR_V2_BYTES \
+    (sizeof(struct dir_block_v2) - \
+    ((size_t)&(((struct dir_block_v2 *)NULL)->v.leaf.data)))
 
 /* None of these acquire any lock */
 int     di_create(struct oinode *, ino_t, struct xerr *);

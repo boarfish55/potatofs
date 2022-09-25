@@ -78,7 +78,9 @@ main(int argc, char **argv)
 	struct dir_entry de;
 	struct dir_entry dirs[32];
 	ssize_t          r, i;
+	off_t            first_d_off = 0x0000001F;
 
+	printf("first_d_off: %lu\n", first_d_off);
 	if (argc < 2)
 		errx(1, "Usage: fake_fs <file>");
 

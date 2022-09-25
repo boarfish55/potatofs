@@ -357,17 +357,18 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	int                  r;
 	char                *p;
 
-	if (!valid_inode(mgr, hdr->inode))
+	if (!valid_inode(mgr, hdr->v.h.inode))
 		stats->errors++;
-	if (add_found_inode(hdr->inode, e) == -1)
+	if (add_found_inode(hdr->v.h.inode, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	if (!valid_inode(mgr, hdr->parent))
+	if (!valid_inode(mgr, hdr->v.h.parent))
 		stats->errors++;
-	if (add_found_inode(hdr->parent, e) == -1)
+	if (add_found_inode(hdr->v.h.parent, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	if (hdr->flags & DI_INLINE) {
+	// TODO: handle dir blocks
+	if (0) {
 		for (p = dir + sizeof(struct dir_hdr_v2);
 		    p - dir < *dir_sz; p += r) {
 			if ((r = di_unpack_v2(p, *dir_sz - (p - dir), &de_v2)) >
