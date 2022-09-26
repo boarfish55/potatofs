@@ -1395,7 +1395,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 	if (b.v.flags & DI_BLOCK_LEAF) {
 		r = di_unlink_buf_v2(b.v.leaf.data,
 		    DI_DIR_BLOCK_HDR_V2_BYTES, hash, name, xerrz(e));
-		if (r == 0) {
+		if (r != -1) {
 			b.v.leaf.length = r;
 			b.v.leaf.entries--;
 			if (b.v.leaf.entries == 0) {
@@ -1504,7 +1504,6 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 {
 	ssize_t              r;
 	struct dir_hdr_v2    hdr, hdr_orig;
-	struct dir_block_v2  b;
 	uint32_t             hash = fnv1a32(de->name, strlen(de->name));
 
 	if (di_read_dir_hdr_v2(parent, &hdr, e) == -1)
@@ -1513,11 +1512,6 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
 		return XERRF(e, XLOG_FS, EBUSY,
 		    "file %s cannot be removed", de->name);
-
-	if ((r = inode_read(parent, sizeof(hdr), &b, sizeof(b), e)) == 0) {
-		return XERRF(e, XLOG_FS, ENOENT, "%s: not found", __func__);
-	} else if (r < sizeof(b))
-		return XERR_PREPENDFN(e);
 
 	memcpy(&hdr, &hdr_orig, sizeof(hdr));
 	if (di_unlink_deep_v2(parent, &hdr, sizeof(hdr), 0, de, hash,
