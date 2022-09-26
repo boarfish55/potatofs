@@ -78,6 +78,7 @@ main(int argc, char **argv)
 	struct dir_entry de;
 	struct dir_entry dirs[32];
 	ssize_t          r, i;
+	off_t            d_off;
 
 	if (argc < 2)
 		errx(1, "Usage: fake_fs <file>");
@@ -139,13 +140,18 @@ main(int argc, char **argv)
 	}
 	printf("*** Unlinked %s\n", de.name);
 
-	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
-		xerr_print(&e);
-		exit(1);
-	}
-	for (i = 0; i < r; i++) {
-		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
-		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
+	for (d_off = 0;;) {
+		if ((r = di_readdir(&oi, dirs, d_off, 1, xerrz(&e))) == -1) {
+			xerr_print(&e);
+			exit(1);
+		}
+		if (r == 0)
+			break;
+		for (i = 0; i < r; i++) {
+			printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
+			    dirs[i].name, dirs[i].inode, dirs[i].d_off);
+			d_off = dirs[i].d_off;
+		}
 	}
 
 	close(oi.fd);

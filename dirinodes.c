@@ -396,7 +396,7 @@ di_readdir_buf_v2(const char *buf, size_t sz, struct dir_entry *dirs,
 	const char          *p;
 	size_t               i;
 
-	for (p = buf, i = 0; i < count && p - buf < sz; p += r) {
+	for (p = buf, i = 0; i < count && p - buf < sz; p += r, virt_d_off++) {
 		/*
 		 * Dir entries in the inode are always contiguous.
 		 * If we see one that's not allocated, it means there
@@ -409,13 +409,19 @@ di_readdir_buf_v2(const char *buf, size_t sz, struct dir_entry *dirs,
 		if (!(de_v2.flags & DI_ALLOCATED))
 			break;
 
-		if (d_off >= virt_d_off) {
-			strlcpy(dirs[i].name, de_v2.name, de_v2.length + 1);
-			dirs[i].inode = de_v2.inode;
-			dirs[i].d_off = ((uint64_t)de_v2.hash << 32) | d_off;
-			d_off++;
-			i++;
-		}
+		if (d_off > virt_d_off)
+			continue;
+
+		strlcpy(dirs[i].name, de_v2.name, de_v2.length + 1);
+		dirs[i].inode = de_v2.inode;
+
+		/*
+		 * Add +1 because we d_off must indicate the
+		 * next entry to read on readdir() completion.
+		 */
+		dirs[i].d_off = ((uint64_t)de_v2.hash << 32) |
+		    (virt_d_off + 1);
+		i++;
 	}
 
 	return i;
@@ -428,7 +434,6 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	struct dir_block_v2 b;
 	ssize_t             r;
 	int                 bucket, i = 0;
-	uint64_t            virt_d_off;
 
 	if ((r = inode_read(oi, b_off, &b, sizeof(b), e)) == 0)
 		return 0;
@@ -443,10 +448,9 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		 * virt_d_off is always 2 in a given leaf. 0 and 1 are used
 		 * for "." and "..".
 		 */
-		virt_d_off = 2;
 		i += di_readdir_buf_v2(b.v.leaf.data,
 		    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
-		    d_off & 0x00000000FFFFFFFF, virt_d_off, e);
+		    d_off & 0x00000000FFFFFFFF, 2, e);
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
 			    sizeof(b), e)) == 0) {
@@ -455,7 +459,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 				return XERR_PREPENDFN(e);
 			i += di_readdir_buf_v2(b.v.leaf.data,
 			    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
-			    d_off & 0x00000000FFFFFFFF, virt_d_off + i, e);
+			    d_off & 0x00000000FFFFFFFF, 2 + i, e);
 		}
 		return i;
 	}
@@ -999,7 +1003,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			    de->name, xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
 
-			b.v.leaf.length = r;
+			b.v.leaf.length -= r;
 			p = b.v.leaf.data + b.v.leaf.length;
 			p += di_pack_v2(p,
 			    DI_DIR_BLOCK_HDR_V2_BYTES - b.v.leaf.length, de);
@@ -1327,7 +1331,7 @@ noent:
 }
 
 /*
- * Returns the new buffer size after removing the dir entry, or -1 on error.
+ * Returns how many bytes were removed from the buffer, or -1 on error.
  */
 static ssize_t
 di_unlink_buf_v2(char *buf, size_t sz, uint32_t hash, const char *name,
@@ -1354,7 +1358,7 @@ di_unlink_buf_v2(char *buf, size_t sz, uint32_t hash, const char *name,
 
 		if (strncmp(name, de_v2.name, de_v2.length) == 0) {
 			memmove(p, p + r, sz - ((p - buf) + r));
-			return sz - r;
+			return r;
 		}
 	}
 
@@ -1396,7 +1400,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		r = di_unlink_buf_v2(b.v.leaf.data,
 		    DI_DIR_BLOCK_HDR_V2_BYTES, hash, name, xerrz(e));
 		if (r != -1) {
-			b.v.leaf.length = r;
+			b.v.leaf.length -= r;
 			b.v.leaf.entries--;
 			if (b.v.leaf.entries == 0) {
 				/*
@@ -1432,8 +1436,8 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 
 			r = di_unlink_buf_v2(b.v.leaf.data,
 			    DI_DIR_BLOCK_HDR_V2_BYTES, hash, name, e);
-			if (r == 0) {
-				b.v.leaf.length = r;
+			if (r != -1) {
+				b.v.leaf.length -= r;
 				b.v.leaf.entries--;
 				if (b.v.leaf.entries == 0) {
 					/*
