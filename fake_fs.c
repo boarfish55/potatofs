@@ -226,6 +226,16 @@ main(int argc, char **argv)
 		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
 	}
 
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'd', 999), 0, &e) == -1) {
+		if (!xerr_is(&e, XLOG_FS, EEXIST)) {
+			xerr_print(&e);
+			exit(1);
+		}
+	} else
+		errx(1, "creating %s should not have worked", de.name);
+
+	// TODO: test leaf chains (meaning, at max depth ...)
+
 	close(oi.fd);
 	return 0;
 }
