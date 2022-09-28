@@ -70,6 +70,20 @@ inode_ino(struct oinode *oi)
 	return oi->inode;
 }
 
+struct dir_entry *
+mk_long_dirent(struct dir_entry *de, char letter, ino_t ino)
+{
+	int i;
+
+	for (i = 0; i < 255; i++)
+		de->name[i] = letter;
+	de->name[i] = '\0';
+	de->inode = ino;
+	de->d_off = 0;
+
+	return de;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -152,6 +166,64 @@ main(int argc, char **argv)
 			    dirs[i].name, dirs[i].inode, dirs[i].d_off);
 			d_off = dirs[i].d_off;
 		}
+	}
+
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'a', 666), 0, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'b', 777), 0, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'c', 888), 0, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	for (i = 0; i < r; i++) {
+		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
+		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
+	}
+
+	mk_long_dirent(&de, 'b', 0);
+	if (di_lookup(&oi, &de, de.name, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	printf("* lookup for %s: inode=%lu\n", de.name, de.inode);
+
+	mk_long_dirent(&de, 'c', 0);
+	if (di_lookup(&oi, &de, de.name, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	printf("* lookup for %s: inode=%lu\n", de.name, de.inode);
+
+	mk_long_dirent(&de, 'b', 0);
+	if (di_unlink(&oi, &de, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	printf("*** Unlinked %s\n", de.name);
+
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'd', 999), 0, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	for (i = 0; i < r; i++) {
+		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
+		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
 	}
 
 	close(oi.fd);

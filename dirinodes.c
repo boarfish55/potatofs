@@ -198,7 +198,8 @@ di_pack_v2(char *buf, size_t sz, const struct dir_entry_v2 *de)
 	*(uint8_t *)p = de->length;
 	p += sizeof(uint8_t);
 
-	p += strlcpy(p, de->name, sz - field_sz);
+	memcpy(p, de->name, de->length);
+	p += de->length;
 
 	return p - buf;
 }
@@ -930,7 +931,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 {
 	int                  i;
 	ssize_t              r;
-	struct dir_block_v2  b, b_head, b_next, b_child;
+	struct dir_block_v2  b, b_head, b_next;
 	char                *p;
 	off_t                valid_off = -1;
 	const size_t         field_sz = offsetof(struct dir_entry_v2, name);
@@ -1113,7 +1114,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 * we're not at max depth. Convert the current block to an
 		 * index block, then go on and recurse deeper.
 		 */
-		if (di_to_hash_v2(parent, hdr, &b, b_off, depth, e) == -1)
+		if (di_to_hash_v2(parent, hdr, &b_head, b_off, depth, e) == -1)
 			return XERR_PREPENDFN(e);
 	}
 
@@ -1128,7 +1129,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		if (b_head.v.idx.buckets[i] == -1)
 			return XERR_PREPENDFN(e);
 
-		bzero(&b, sizeof(b_child));
+		bzero(&b, sizeof(b));
 		b.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
 		if ((r = inode_write(parent, b_head.v.idx.buckets[i], &b,
@@ -1372,7 +1373,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 {
 	ssize_t             r;
 	struct dir_block_v2 b;
-	int                 i;
+	int                 i, b_empty = 0;
 
 	if (empty != NULL)
 		*empty = 0;
@@ -1402,7 +1403,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		if (r != -1) {
 			b.v.leaf.length -= r;
 			b.v.leaf.entries--;
-			if (b.v.leaf.entries == 0) {
+			if (b.v.leaf.entries == 0 && b.v.leaf.next == 0) {
 				/*
 				 * De-allocate, set to leaf so that it can
 				 * become part of the freelist.
@@ -1417,6 +1418,9 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 				    "partial dirent write, this directory "
 				    "might be corrupted");
 			}
+			if (b.v.leaf.entries == 0 &&
+			    b.v.leaf.next == 0 && empty != NULL)
+				*empty = 1;
 			return 0;
 		}
 
@@ -1439,20 +1443,23 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			if (r != -1) {
 				b.v.leaf.length -= r;
 				b.v.leaf.entries--;
-				if (b.v.leaf.entries == 0) {
+				if (b.v.leaf.entries == 0 &&
+				    b.v.leaf.next == 0) {
 					/*
 					 * De-allocate, set to leaf so that it can
 					 * become part of the freelist.
 					 */
-					di_unlink_freelist_add_v2(hdr, b_off, &b);
+					di_unlink_freelist_add_v2(hdr, b_off,
+					    &b);
 				}
-				r = inode_write(parent, b_off, &b, sizeof(b), e);
+				r = inode_write(parent, b_off, &b, sizeof(b),
+				    e);
 				if (r == -1) {
 					return XERR_PREPENDFN(e);
 				} else if (r < sizeof(b)) {
 					return XERRF(e, XLOG_APP, XLOG_IO,
-					    "partial dirent write, this directory "
-					    "might be corrupted");
+					    "partial dirent write, this "
+					    "directory might be corrupted");
 				}
 				return 0;
 			}
@@ -1472,13 +1479,11 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		    "no such directory entry: %s", name);
 
 	if (di_unlink_deep_v2(parent, hdr, b.v.idx.buckets[i], depth + 1,
-	    de, hash, name, empty, e) == -1)
+	    de, hash, name, &b_empty, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	if (empty != NULL && *empty == 1) {
+	if (b_empty) {
 		b.v.idx.buckets[i] = 0;
-
-		di_unlink_freelist_add_v2(hdr, b_off, &b);
 		r = inode_write(parent, b_off, &b, sizeof(b), e);
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
@@ -1510,7 +1515,7 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 	struct dir_hdr_v2    hdr, hdr_orig;
 	uint32_t             hash = fnv1a32(de->name, strlen(de->name));
 
-	if (di_read_dir_hdr_v2(parent, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(parent, &hdr_orig, e) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
