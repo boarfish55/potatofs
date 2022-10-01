@@ -16,6 +16,57 @@ struct oinode {
 #define INODES_H
 #include "dirinodes.h"
 
+char *same_hash_30b_suffix[] = {
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac9qqjF",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadcKcN1",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadKAotI",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadMEfm9",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad9UAjk",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaexAzeK",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagtR9CU",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagTL3v2",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag6OlTP"
+};
 
 off_t
 inode_max_inline_b()
@@ -84,6 +135,24 @@ mk_long_dirent(struct dir_entry *de, char letter, ino_t ino)
 	return de;
 }
 
+void
+print_dirs(struct oinode *oi)
+{
+	ssize_t          r;
+	struct xerr      e;
+	struct dir_entry dirs[32];
+	int              i;
+
+	if ((r = di_readdir(oi, dirs, 0, 32, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	for (i = 0; i < r; i++) {
+		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
+		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -136,14 +205,7 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
-		xerr_print(&e);
-		exit(1);
-	}
-	for (i = 0; i < r; i++) {
-		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
-		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
-	}
+	print_dirs(&oi);
 
 	strlcpy(de.name, "twotwotwo", sizeof(de.name));
 	de.inode = 222;
@@ -168,7 +230,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (di_mkdirent(&oi, mk_long_dirent(&de, 'a', 666), 0, &e) == -1) {
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'f', 666), 0, &e) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}
@@ -181,13 +243,11 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
+	print_dirs(&oi);
+
+	if (di_mkdirent(&oi, mk_long_dirent(&de, 'b', 778), 1, &e) == -1) {
 		xerr_print(&e);
 		exit(1);
-	}
-	for (i = 0; i < r; i++) {
-		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
-		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
 	}
 
 	mk_long_dirent(&de, 'b', 0);
@@ -217,14 +277,7 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if ((r = di_readdir(&oi, dirs, 0, 32, xerrz(&e))) == -1) {
-		xerr_print(&e);
-		exit(1);
-	}
-	for (i = 0; i < r; i++) {
-		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
-		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
-	}
+	print_dirs(&oi);
 
 	if (di_mkdirent(&oi, mk_long_dirent(&de, 'd', 999), 0, &e) == -1) {
 		if (!xerr_is(&e, XLOG_FS, EEXIST)) {
@@ -234,7 +287,28 @@ main(int argc, char **argv)
 	} else
 		errx(1, "creating %s should not have worked", de.name);
 
-	// TODO: test leaf chains (meaning, at max depth ...)
+	for (i = 0; i < 10; i++) {
+		strlcpy(de.name, same_hash_30b_suffix[i], sizeof(de.name));
+		de.inode = 1000 + i;
+		if (di_mkdirent(&oi, &de, 0, &e) == -1) {
+			xerr_print(&e);
+			exit(1);
+		}
+	}
+
+	print_dirs(&oi);
+
+	strlcpy(de.name, same_hash_30b_suffix[8], sizeof(de.name));
+	if (di_unlink(&oi, &de, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	printf("*** Unlinked %s\n", de.name);
+
+	print_dirs(&oi);
+
+	// TODO: remove entries at start, middle, and end of leaf chain
 
 	close(oi.fd);
 	return 0;

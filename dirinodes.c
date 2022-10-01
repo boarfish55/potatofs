@@ -1082,8 +1082,9 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			b_next.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
 			p = b_next.v.leaf.data;
-			di_pack_v2(p,
-			    DI_DIR_BLOCK_HDR_V2_BYTES - b.v.leaf.length, de);
+			p += di_pack_v2(p,
+			    DI_DIR_BLOCK_HDR_V2_BYTES - b_next.v.leaf.length,
+			    de);
 
 			b_next.v.leaf.length = p - b_next.v.leaf.data;
 			b_next.v.leaf.entries++;
