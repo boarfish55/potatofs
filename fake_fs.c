@@ -308,7 +308,30 @@ main(int argc, char **argv)
 
 	print_dirs(&oi);
 
-	// TODO: remove entries at start, middle, and end of leaf chain
+	strlcpy(de.name, same_hash_30b_suffix[6], sizeof(de.name));
+	if (di_lookup(&oi, &de, de.name, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+	printf("* lookup for %s: inode=%lu\n", de.name, de.inode);
+
+	strlcpy(de.name, same_hash_30b_suffix[0], sizeof(de.name));
+	if (di_unlink(&oi, &de, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	printf("*** Unlinked %s\n", de.name);
+	print_dirs(&oi);
+
+	// TODO: remove entries at end of leaf chain
+
+
+	// TODO: test insertion in an index that is not at max depth, that is,
+	// only part of the hash matches.
+
+	// TODO: test child index removal?
+
 
 	close(oi.fd);
 	return 0;
