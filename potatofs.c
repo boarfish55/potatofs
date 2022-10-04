@@ -1101,6 +1101,9 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 
 	bzero(&de, sizeof(de));
 
+	if (name[0] == '\0')
+		return XERRF(e, XLOG_FS, EINVAL, "empty name");
+
 	if (strlen(name) > FS_NAME_MAX)
 		return XERRF(e, XLOG_FS, ENAMETOOLONG,
 		    "file name too long");

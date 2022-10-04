@@ -796,6 +796,13 @@ di_unlink_freelist_add_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
     off_t b_off, struct dir_block_v2 *b, struct xerr *e)
 {
 	ssize_t r;
+	off_t   end = inode_getsize(parent);
+
+	if (b_off == end - sizeof(struct dir_block_v2)) {
+		if (inode_truncate(parent, b_off, xerrz(e)) == -1)
+			return XERR_PREPENDFN(e);
+		return 0;
+	}
 
 	bzero(b, sizeof(struct dir_block_v2));
 	b->v.leaf.flags = DI_BLOCK_LEAF;
@@ -1152,20 +1159,25 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "partial dir_block_v2 write, this directory might "
 			    "be corrupted");
+
+		if (di_mkdirent_deep_v2(parent, hdr, b_head.v.idx.buckets[i],
+		    depth + 1, de, replace, e) == -1)
+			return XERR_PREPENDFN(e);
+
+		r = inode_write(parent, b_off, &b_head, sizeof(b_head), e);
+		if (r == -1) {
+			return XERR_PREPENDFN(e);
+		} else if (r < sizeof(b_head)) {
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "partial dirent write, this directory "
+			    "might be corrupted");
+		}
+		return 0;
 	}
 
 	if (di_mkdirent_deep_v2(parent, hdr, b_head.v.idx.buckets[i], depth + 1,
 	    de, replace, e) == -1)
 		return XERR_PREPENDFN(e);
-
-	r = inode_write(parent, b_off, &b_head, sizeof(b_head), e);
-	if (r == -1) {
-		return XERR_PREPENDFN(e);
-	} else if (r < sizeof(b_head)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dirent write, this directory "
-		    "might be corrupted");
-	}
 
 	return 0;
 }
@@ -1447,68 +1459,74 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 	for (;;) {
 		r = di_unlink_buf_v2(b.v.leaf.data,
 		    DI_DIR_BLOCK_HDR_V2_BYTES, hash, name, xerrz(e));
-		if (r != -1) {
-			b.v.leaf.length -= r;
-			b.v.leaf.entries--;
+		if (r == -1) {
+			if (!xerr_is(e, XLOG_FS, ENOENT))
+				return XERR_PREPENDFN(e);
 
-			/*
-			 * We never de-allocate the root block.
-			 */
-			if (depth == 0)
-				return 0;
+			if (b.v.leaf.next == 0)
+				break;
 
-			if (b.v.leaf.entries == 0) {
-				if (b_off == head_b_off) {
-					i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
-					parent_b->v.idx.buckets[i] = b.v.leaf.next;
-					r = inode_write(parent, parent_b_off, parent_b, sizeof(struct dir_block_v2), e);
-					if (r == -1) {
-						return XERR_PREPENDFN(e);
-					} else if (r < sizeof(struct dir_block_v2)) {
-						return XERRF(e, XLOG_APP, XLOG_IO,
-						    "partial dirent write, this directory "
-						    "might be corrupted");
-					}
-				} else {
-					b_prev.v.leaf.next = b.v.leaf.next;
-					r = inode_write(parent, b_off_prev, &b_prev, sizeof(b_prev), e);
-					if (r == -1) {
-						return XERR_PREPENDFN(e);
-					} else if (r < sizeof(b_prev)) {
-						return XERRF(e, XLOG_APP, XLOG_IO,
-						    "partial dirent write, this directory "
-						    "might be corrupted");
-					}
-				}
+			b_off_prev = b_off;
+			memcpy(&b_prev, &b, sizeof(b_prev));
+			b_off = b.v.leaf.next;
 
-				/*
-				 * De-allocate, set to leaf so that it can
-				 * become part of the freelist.
-				 */
-				if (di_unlink_freelist_add_v2(parent, hdr, b_off, &b, e) == -1)
-					xlog(LOG_ERR, e, __func__);
-			}
-			return 0;
+			if ((r = inode_read(parent, b_off, &b,
+			    sizeof(b), e)) == 0) {
+				return XERRF(e, XLOG_FS, ENOENT,
+				    "no such directory entry: %s", name);
+			} else if (r < sizeof(b)) {
+				return XERRF(e, XLOG_APP, XLOG_IO,
+				    "corrupted directory; incomplete entries");
+			} else if (r == -1)
+				return XERR_PREPENDFN(e);
+			continue;
 		}
 
-		if (!xerr_is(e, XLOG_FS, ENOENT))
-			return XERR_PREPENDFN(e);
+		b.v.leaf.length -= r;
+		b.v.leaf.entries--;
 
-		if (b.v.leaf.next == 0)
-			break;
+		/*
+		 * We never de-allocate the root block.
+		 */
+		if (depth == 0)
+			return 0;
 
-		b_off_prev = b_off;
-		memcpy(&b_prev, &b, sizeof(b_prev));
-		b_off = b.v.leaf.next;
+		if (b.v.leaf.entries == 0) {
+			if (b_off == head_b_off) {
+				i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
+				parent_b->v.idx.buckets[i] = b.v.leaf.next;
+				r = inode_write(parent, parent_b_off, parent_b,
+				    sizeof(struct dir_block_v2), e);
+				if (r == -1) {
+					return XERR_PREPENDFN(e);
+				} else if (r < sizeof(struct dir_block_v2)) {
+					return XERRF(e, XLOG_APP, XLOG_IO,
+					    "partial dirent write, this "
+					    "directory might be corrupted");
+				}
+			} else {
+				b_prev.v.leaf.next = b.v.leaf.next;
+				r = inode_write(parent, b_off_prev, &b_prev,
+				    sizeof(b_prev), e);
+				if (r == -1) {
+					return XERR_PREPENDFN(e);
+				} else if (r < sizeof(b_prev)) {
+					return XERRF(e, XLOG_APP, XLOG_IO,
+					    "partial dirent write, this "
+					    "directory might be corrupted");
+				}
+			}
 
-		if ((r = inode_read(parent, b_off, &b, sizeof(b), e)) == 0) {
-			return XERRF(e, XLOG_FS, ENOENT,
-			    "no such directory entry: %s", name);
-		} else if (r < sizeof(b)) {
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "corrupted directory; incomplete entries");
-		} else if (r == -1)
-			return XERR_PREPENDFN(e);
+			/*
+			 * De-allocate, set to leaf so that it can
+			 * become part of the freelist.
+			 */
+			if (di_unlink_freelist_add_v2(parent, hdr,
+			    b_off, &b, e) == -1)
+				xlog(LOG_ERR, e, __func__);
+		}
+		return 0;
+
 	}
 
 	return XERRF(e, XLOG_FS, ENOENT,

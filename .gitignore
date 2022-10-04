@@ -12,3 +12,5 @@ clean.sh
 gdb.*
 .deps
 TODO
+*.gcno
+*.gcda

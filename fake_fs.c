@@ -16,7 +16,7 @@ struct oinode {
 #define INODES_H
 #include "dirinodes.h"
 
-char *same_hash_30b_suffix[] = {
+const char *same_hash_30b_suffix[] = {
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -67,6 +67,12 @@ char *same_hash_30b_suffix[] = {
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag6OlTP"
 };
+
+const char *same_hash_16b_suffix =
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabjCA";
 
 off_t
 inode_max_inline_b()
@@ -147,6 +153,7 @@ print_dirs(struct oinode *oi)
 		xerr_print(&e);
 		exit(1);
 	}
+	printf("* Dirs:\n");
 	for (i = 0; i < r; i++) {
 		printf("* name=\"%s\", inode=%lu, d_off=%lu\n",
 		    dirs[i].name, dirs[i].inode, dirs[i].d_off);
@@ -324,14 +331,37 @@ main(int argc, char **argv)
 	printf("*** Unlinked %s\n", de.name);
 	print_dirs(&oi);
 
-	// TODO: remove entries at end of leaf chain
+	for (i = 0; i < 10; i++) {
+		strlcpy(de.name, same_hash_30b_suffix[i], sizeof(de.name));
+		if (di_unlink(&oi, &de, xerrz(&e)) == -1) {
+			if ((i == 0 || i == 8) && xerr_is(&e, XLOG_FS, ENOENT))
+				continue;
+			xerr_print(&e);
+			exit(1);
+		}
+	}
 
+	print_dirs(&oi);
 
-	// TODO: test insertion in an index that is not at max depth, that is,
-	// only part of the hash matches.
+	for (i = 0; i < 10; i++) {
+		strlcpy(de.name, same_hash_30b_suffix[i], sizeof(de.name));
+		de.inode = 1000 + i;
+		if (di_mkdirent(&oi, &de, 0, &e) == -1) {
+			xerr_print(&e);
+			exit(1);
+		}
+	}
 
-	// TODO: test child index removal?
+	print_dirs(&oi);
 
+	strlcpy(de.name, same_hash_16b_suffix, sizeof(de.name));
+	de.inode = 2000;
+	if (di_mkdirent(&oi, &de, 0, &e) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
+
+	print_dirs(&oi);
 
 	close(oi.fd);
 	return 0;
