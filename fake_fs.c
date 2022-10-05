@@ -363,6 +363,13 @@ main(int argc, char **argv)
 
 	print_dirs(&oi);
 
+	// TODO: lookup . and ..
+	// Create a di_inode_write / di_inode_read call with error handling
+	// TODO: create a shorter name that would fit in one of the leaf
+	//       chains, to test the valid_off logic
+	// TODO: test isempty_v2 on an index? Does that ever happen?
+
+
 	close(oi.fd);
 	return 0;
 }

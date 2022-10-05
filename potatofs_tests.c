@@ -744,7 +744,7 @@ test_file_size_and_mtime()
 	}
 
 	if ((sz = lseek(fd, 0, SEEK_CUR)) == -1)
-		return ERR(msg, 0);
+		return ERR("", 0);
 
 	if (close(fd) == -1)
 		return ERR("", errno);
@@ -859,6 +859,7 @@ test_link_max()
 	char *d = makepath("link_max");
 	char  src[PATH_MAX];
 	char  dst[PATH_MAX];
+	char  msg[PATH_MAX * 2 + 64];
 
 	if (mkdir(d, 0700) == -1)
 		return ERR("", errno);
@@ -869,8 +870,11 @@ test_link_max()
 
 	for (i = 2; i <= FS_LINK_MAX; i++) {
 		snprintf(dst, sizeof(dst), "%s/hardlink%d", d, i);
-		if (link(src, dst) == -1)
-			return ERR("", errno);
+		if (link(src, dst) == -1) {
+			snprintf(msg, sizeof(msg),
+			    "link: %s -> %s", src, dst);
+			return ERR(msg, errno);
+		}
 	}
 
 	snprintf(dst, sizeof(dst), "%s/hardlink%d", d, i);
@@ -1016,6 +1020,9 @@ test_rename_replace()
 
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
+
+	if (access(p1, F_OK) != -1)
+		return ERR("old file was not removed", 0);
 
 	/*
 	 * We have to sleep until FUSE calls FORGET on the inode, which

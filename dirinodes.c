@@ -169,7 +169,8 @@ di_read_dir_hdr_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct xerr *e)
 {
 	ssize_t r;
 
-	if ((r = inode_read(oi, 0, hdr, sizeof(struct dir_hdr_v2), e)) == -1)
+	if ((r = inode_read(oi, 0, hdr,
+	    sizeof(struct dir_hdr_v2), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 	else if (r < sizeof(struct dir_hdr_v2))
 		return XERRF(e, XLOG_APP, XLOG_IO,
@@ -242,7 +243,7 @@ di_unpack_v2(const char *buf, size_t sz, struct dir_entry_v2 *de)
 int
 di_create(struct oinode *oi, ino_t parent, struct xerr *e)
 {
-	return di_fn[DIRINODE_FORMAT].create(oi, parent, e);
+	return di_fn[DIRINODE_FORMAT].create(oi, parent, xerrz(e));
 }
 
 static int
@@ -255,7 +256,7 @@ di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 		{ "..", parent, 0 }
 	};
 
-	w = inode_write(oi, 0, &hdr, sizeof(hdr), e);
+	w = inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e));
 	if (w == -1)
 		return XERR_PREPENDFN(e);
 	if (w < sizeof(hdr))
@@ -263,7 +264,7 @@ di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 		    "partial dir_hdr write, this directory might "
 		    "be corrupted");
 
-	w = inode_write(oi, w, default_dir, sizeof(default_dir), e);
+	w = inode_write(oi, w, default_dir, sizeof(default_dir), xerrz(e));
 	if (w == -1)
 		return XERR_PREPENDFN(e);
 
@@ -290,14 +291,14 @@ di_create_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 	bzero(&b, sizeof(b));
 	b.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
-	if ((w = inode_write(oi, sizeof(hdr), &b, sizeof(b), e)) == -1)
+	if ((w = inode_write(oi, sizeof(hdr), &b, sizeof(b), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 	else if (w < sizeof(b))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dir_block_v2 write, this directory might "
 		    "be corrupted");
 
-	if ((w = inode_write(oi, 0, &hdr, sizeof(hdr), e)) == -1)
+	if ((w = inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 	else if (w < sizeof(hdr))
 		return XERRF(e, XLOG_APP, XLOG_IO,
@@ -316,10 +317,10 @@ di_readdir(struct oinode *oi, struct dir_entry *dirs,
 	if (!inode_isdir(oi))
 		return XERRF(e, XLOG_FS, ENOTDIR, "not a directory");
 
-	if (!(dfmt = di_check_format(oi, e)))
+	if (!(dfmt = di_check_format(oi, xerrz(e))))
 		return XERR_PREPENDFN(e);
 
-	return di_fn[dfmt].readdir(oi, dirs, offset, count, e);
+	return di_fn[dfmt].readdir(oi, dirs, offset, count, xerrz(e));
 }
 
 /*
@@ -436,7 +437,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	ssize_t             r;
 	int                 bucket, i = 0;
 
-	if ((r = inode_read(oi, b_off, &b, sizeof(b), e)) == 0)
+	if ((r = inode_read(oi, b_off, &b, sizeof(b), xerrz(e))) == 0)
 		return 0;
 	else if (r == -1)
 		return XERR_PREPENDFN(e);
@@ -451,16 +452,16 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		 */
 		i += di_readdir_buf_v2(b.v.leaf.data,
 		    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
-		    d_off & 0x00000000FFFFFFFF, 2, e);
+		    d_off & 0x00000000FFFFFFFF, 2, xerrz(e));
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
-			    sizeof(b), e)) == 0) {
+			    sizeof(b), xerrz(e))) == 0) {
 				return 0;
 			} else if (r == -1)
 				return XERR_PREPENDFN(e);
 			i += di_readdir_buf_v2(b.v.leaf.data,
 			    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
-			    d_off & 0x00000000FFFFFFFF, 2 + i, e);
+			    d_off & 0x00000000FFFFFFFF, 2 + i, xerrz(e));
 		}
 		return i;
 	}
@@ -474,7 +475,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		if (b.v.idx.buckets[bucket] == 0)
 			continue;
 		r = di_readdir_deep_v2(oi, b.v.idx.buckets[bucket], depth + 1,
-		    dirs + i, count - i, d_off, e);
+		    dirs + i, count - i, d_off, xerrz(e));
 		if (r == -1)
 			return XERR_PREPENDFN(e);
 		i += r;
@@ -491,7 +492,7 @@ di_readdir_v2(struct oinode *oi, struct dir_entry *dirs,
 	struct dir_hdr_v2    hdr;
 	int                  i = 0;
 
-	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (d_off == 0 && i < count) {
@@ -511,7 +512,7 @@ di_readdir_v2(struct oinode *oi, struct dir_entry *dirs,
 	}
 
 	r = di_readdir_deep_v2(oi, sizeof(hdr), 0, dirs + i, count - i,
-	    d_off, e);
+	    d_off, xerrz(e));
 	if (r == -1)
 		return XERR_PREPENDFN(e);
 
@@ -523,9 +524,9 @@ di_lookup(struct oinode *oi, struct dir_entry *de,
     const char *name, struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(oi, e)))
+	if (!(dfmt = di_check_format(oi, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].lookup(oi, de, name, e);
+	return di_fn[dfmt].lookup(oi, de, name, xerrz(e));
 }
 
 /*
@@ -612,7 +613,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	struct dir_block_v2 b;
 	int                 i;
 
-	if ((r = inode_read(oi, b_off, &b, sizeof(b), e)) == 0) {
+	if ((r = inode_read(oi, b_off, &b, sizeof(b), xerrz(e))) == 0) {
 		return XERRF(e, XLOG_FS, ENOENT,
 		    "no such directory entry: %s", name);
 	} else if (r < sizeof(b)) {
@@ -632,7 +633,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
-			    sizeof(b), e)) == 0) {
+			    sizeof(b), xerrz(e))) == 0) {
 				return 0;
 			} else if (r < sizeof(b)) {
 				return XERRF(e, XLOG_APP, XLOG_IO,
@@ -641,7 +642,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 				return XERR_PREPENDFN(e);
 
 			r = di_lookup_buf_v2(b.v.leaf.data,
-			    DI_DIR_BLOCK_HDR_V2_BYTES, de, hash, name, e);
+			    DI_DIR_BLOCK_HDR_V2_BYTES, de, hash, name, xerrz(e));
 			if (r == 0)
 				return r;
 			if (!xerr_is(e, XLOG_FS, ENOENT))
@@ -659,7 +660,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 
 	/* Keep this last for tail recursion */
 	return di_lookup_deep_v2(oi, b.v.idx.buckets[i], depth + 1,
-	    de, hash, name, e);
+	    de, hash, name, xerrz(e));
 }
 
 static int
@@ -669,7 +670,7 @@ di_lookup_v2(struct oinode *oi, struct dir_entry *de, const char *name,
 	struct dir_hdr_v2     hdr;
 	uint32_t              hash = fnv1a32(name, strlen(name));
 
-	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (strcmp(name, ".") == 0) {
@@ -684,7 +685,7 @@ di_lookup_v2(struct oinode *oi, struct dir_entry *de, const char *name,
 		return 0;
 	}
 
-	if (di_lookup_deep_v2(oi, sizeof(hdr), 0, de, hash, name, e) == -1)
+	if (di_lookup_deep_v2(oi, sizeof(hdr), 0, de, hash, name, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	return 0;
@@ -695,9 +696,9 @@ di_mkdirent(struct oinode *parent, const struct dir_entry *de,
     int replace, struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(parent, e)))
+	if (!(dfmt = di_check_format(parent, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].mkdirent(parent, de, replace, e);
+	return di_fn[dfmt].mkdirent(parent, de, replace, xerrz(e));
 }
 
 /*
@@ -781,7 +782,7 @@ di_mkdirent_v1(struct oinode *parent, const struct dir_entry *de,
 		return XERR_PREPENDFN(e);
 
 	r = inode_write(parent, prev_off + sizeof(struct dir_hdr),
-	    &prev_used, sizeof(prev_used), e);
+	    &prev_used, sizeof(prev_used), xerrz(e));
 	if (r < sizeof(prev_used)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dirent write, this directory "
@@ -814,7 +815,7 @@ di_unlink_freelist_add_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 
 	hdr->v.h.free_list_start = b_off;
 
-	r = inode_write(parent, b_off, b, sizeof(struct dir_block_v2), e);
+	r = inode_write(parent, b_off, b, sizeof(struct dir_block_v2), xerrz(e));
 	if (r == -1) {
 		return XERR_PREPENDFN(e);
 	} else if (r < sizeof(struct dir_block_v2)) {
@@ -904,9 +905,10 @@ di_to_hash_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct dir_block_v2 *b,
 		i = (de_v2.hash >> (depth * 5)) & 0x0000001F;
 
 		child_blks[i].v.leaf.length +=
-		    di_pack_v2(child_blks[i].v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES - child_blks[i].v.leaf.length,
-		    &de_v2);
+		    di_pack_v2(child_blks[i].v.leaf.data +
+			child_blks[i].v.leaf.length,
+			DI_DIR_BLOCK_HDR_V2_BYTES - child_blks[i].v.leaf.length,
+			&de_v2);
 		child_blks[i].v.leaf.entries++;
 	}
 
@@ -920,7 +922,7 @@ di_to_hash_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct dir_block_v2 *b,
 			return XERR_PREPENDFN(e);
 
 		r = inode_write(oi, root.v.idx.buckets[i],
-		    &child_blks[i], sizeof(child_blks[i]), e);
+		    &child_blks[i], sizeof(child_blks[i]), xerrz(e));
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
 		} else if (r < sizeof(child_blks[i])) {
@@ -930,7 +932,7 @@ di_to_hash_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct dir_block_v2 *b,
 		}
 	}
 
-	r = inode_write(oi, b_off, &root, sizeof(root), e);
+	r = inode_write(oi, b_off, &root, sizeof(root), xerrz(e));
 	if (r == -1) {
 		return XERR_PREPENDFN(e);
 	} else if (r < sizeof(root)) {
@@ -1029,7 +1031,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			    DI_DIR_BLOCK_HDR_V2_BYTES - b.v.leaf.length, de);
 			b.v.leaf.length = p - b.v.leaf.data;
 
-			r = inode_write(parent, b_off, &b, sizeof(b), e);
+			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
 			if (r == -1) {
 				return XERR_PREPENDFN(e);
 			} else if (r < sizeof(b)) {
@@ -1054,6 +1056,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 				return XERRF(e, XLOG_APP, XLOG_IO,
 				    "partial dir_block_v2, this directory "
 				    "might be corrupted");
+			b_off = valid_off;
 		}
 
 		p = b.v.leaf.data + b.v.leaf.length;
@@ -1067,7 +1070,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			b.v.leaf.length = p - b.v.leaf.data;
 			b.v.leaf.entries++;
 
-			r = inode_write(parent, b_off, &b, sizeof(b), e);
+			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
 			if (r == -1) {
 				return XERR_PREPENDFN(e);
 			} else if (r < sizeof(b)) {
@@ -1109,7 +1112,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			b_next.v.leaf.entries++;
 
 			r = inode_write(parent, b.v.leaf.next,
-			    &b_next, sizeof(b_next), e);
+			    &b_next, sizeof(b_next), xerrz(e));
 			if (r == -1) {
 				return XERR_PREPENDFN(e);
 			} else if (r < sizeof(b_next)) {
@@ -1118,7 +1121,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 				    "directory might be corrupted");
 			}
 
-			r = inode_write(parent, b_off, &b, sizeof(b), e);
+			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
 			if (r == -1) {
 				return XERR_PREPENDFN(e);
 			} else if (r < sizeof(b)) {
@@ -1134,7 +1137,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 * we're not at max depth. Convert the current block to an
 		 * index block, then go on and recurse deeper.
 		 */
-		if (di_to_hash_v2(parent, hdr, &b_head, b_off, depth, e) == -1)
+		if (di_to_hash_v2(parent, hdr, &b_head, b_off, depth, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
 	}
 
@@ -1153,7 +1156,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		b.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
 		if ((r = inode_write(parent, b_head.v.idx.buckets[i], &b,
-		    sizeof(b), e)) == -1)
+		    sizeof(b), xerrz(e))) == -1)
 			return XERR_PREPENDFN(e);
 		else if (r < sizeof(b))
 			return XERRF(e, XLOG_APP, XLOG_IO,
@@ -1161,10 +1164,10 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			    "be corrupted");
 
 		if (di_mkdirent_deep_v2(parent, hdr, b_head.v.idx.buckets[i],
-		    depth + 1, de, replace, e) == -1)
+		    depth + 1, de, replace, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
 
-		r = inode_write(parent, b_off, &b_head, sizeof(b_head), e);
+		r = inode_write(parent, b_off, &b_head, sizeof(b_head), xerrz(e));
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
 		} else if (r < sizeof(b_head)) {
@@ -1176,7 +1179,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 	}
 
 	if (di_mkdirent_deep_v2(parent, hdr, b_head.v.idx.buckets[i], depth + 1,
-	    de, replace, e) == -1)
+	    de, replace, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	return 0;
@@ -1190,7 +1193,7 @@ di_mkdirent_v2(struct oinode *parent, const struct dir_entry *de,
 	struct dir_entry_v2  de_v2;
 	struct dir_hdr_v2    hdr, hdr_orig;
 
-	if (di_read_dir_hdr_v2(parent, &hdr_orig, e) == -1)
+	if (di_read_dir_hdr_v2(parent, &hdr_orig, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
@@ -1205,11 +1208,11 @@ di_mkdirent_v2(struct oinode *parent, const struct dir_entry *de,
 
 	memcpy(&hdr, &hdr_orig, sizeof(hdr));
 	if (di_mkdirent_deep_v2(parent, &hdr, sizeof(hdr), 0,
-	    &de_v2, replace, e) == -1)
+	    &de_v2, replace, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (memcmp(&hdr, &hdr_orig, sizeof(hdr)) != 0) {
-		r = inode_write(parent, 0, &hdr, sizeof(hdr), e);
+		r = inode_write(parent, 0, &hdr, sizeof(hdr), xerrz(e));
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
 		} else if (r  < sizeof(hdr)) {
@@ -1226,9 +1229,9 @@ int
 di_isempty(struct oinode *oi, struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(oi, e)))
+	if (!(dfmt = di_check_format(oi, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].isempty(oi, e);
+	return di_fn[dfmt].isempty(oi, xerrz(e));
 }
 
 /*
@@ -1252,7 +1255,7 @@ di_isempty_v2(struct oinode *oi, struct xerr *e)
 	struct dir_hdr_v2   hdr;
 	int                 i;
 
-	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if ((r = inode_read(oi, sizeof(hdr), &b, sizeof(b), xerrz(e))) == -1)
@@ -1282,9 +1285,9 @@ di_unlink(struct oinode *parent, const struct dir_entry *de,
     struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(parent, e)))
+	if (!(dfmt = di_check_format(parent, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].unlink(parent, de, e);
+	return di_fn[dfmt].unlink(parent, de, xerrz(e));
 }
 
 /*
@@ -1402,7 +1405,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 	int                 i;
 	off_t               b_off, b_off_prev;
 
-	if ((r = inode_read(parent, head_b_off, &b, sizeof(b), e)) == 0) {
+	if ((r = inode_read(parent, head_b_off, &b, sizeof(b), xerrz(e))) == 0) {
 		return XERRF(e, XLOG_FS, ENOENT,
 		    "no such directory entry: %s", name);
 	} else if (r < sizeof(b)) {
@@ -1423,7 +1426,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 			    "no such directory entry: %s", name);
 
 		if (di_unlink_deep_v2(parent, hdr, b.v.idx.buckets[i],
-		    &b, head_b_off, depth + 1, de, hash, name, e) == -1)
+		    &b, head_b_off, depth + 1, de, hash, name, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
 
 		/*
@@ -1439,7 +1442,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
 		parent_b->v.idx.buckets[i] = 0;
 		r = inode_write(parent, parent_b_off, parent_b,
-		    sizeof(struct dir_block_v2), e);
+		    sizeof(struct dir_block_v2), xerrz(e));
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
 		} else if (r < sizeof(struct dir_block_v2)) {
@@ -1471,7 +1474,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 			b_off = b.v.leaf.next;
 
 			if ((r = inode_read(parent, b_off, &b,
-			    sizeof(b), e)) == 0) {
+			    sizeof(b), xerrz(e))) == 0) {
 				return XERRF(e, XLOG_FS, ENOENT,
 				    "no such directory entry: %s", name);
 			} else if (r < sizeof(b)) {
@@ -1488,43 +1491,51 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		/*
 		 * We never de-allocate the root block.
 		 */
-		if (depth == 0)
-			return 0;
-
-		if (b.v.leaf.entries == 0) {
-			if (b_off == head_b_off) {
-				i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
-				parent_b->v.idx.buckets[i] = b.v.leaf.next;
-				r = inode_write(parent, parent_b_off, parent_b,
-				    sizeof(struct dir_block_v2), e);
-				if (r == -1) {
-					return XERR_PREPENDFN(e);
-				} else if (r < sizeof(struct dir_block_v2)) {
-					return XERRF(e, XLOG_APP, XLOG_IO,
-					    "partial dirent write, this "
-					    "directory might be corrupted");
-				}
-			} else {
-				b_prev.v.leaf.next = b.v.leaf.next;
-				r = inode_write(parent, b_off_prev, &b_prev,
-				    sizeof(b_prev), e);
-				if (r == -1) {
-					return XERR_PREPENDFN(e);
-				} else if (r < sizeof(b_prev)) {
-					return XERRF(e, XLOG_APP, XLOG_IO,
-					    "partial dirent write, this "
-					    "directory might be corrupted");
-				}
+		if (depth == 0 || b.v.leaf.entries > 0) {
+			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
+			if (r == -1) {
+				return XERR_PREPENDFN(e);
+			} else if (r < sizeof(b)) {
+				return XERRF(e, XLOG_APP, XLOG_IO,
+				    "partial dirent write, this "
+				    "directory might be corrupted");
 			}
-
-			/*
-			 * De-allocate, set to leaf so that it can
-			 * become part of the freelist.
-			 */
-			if (di_unlink_freelist_add_v2(parent, hdr,
-			    b_off, &b, e) == -1)
-				xlog(LOG_ERR, e, __func__);
+			return 0;
 		}
+
+		if (b_off == head_b_off) {
+			i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
+			parent_b->v.idx.buckets[i] = b.v.leaf.next;
+			r = inode_write(parent, parent_b_off, parent_b,
+			    sizeof(struct dir_block_v2), xerrz(e));
+			if (r == -1) {
+				return XERR_PREPENDFN(e);
+			} else if (r < sizeof(struct dir_block_v2)) {
+				return XERRF(e, XLOG_APP, XLOG_IO,
+				    "partial dirent write, this "
+				    "directory might be corrupted");
+			}
+		} else {
+			b_prev.v.leaf.next = b.v.leaf.next;
+			r = inode_write(parent, b_off_prev, &b_prev,
+			    sizeof(b_prev), xerrz(e));
+			if (r == -1) {
+				return XERR_PREPENDFN(e);
+			} else if (r < sizeof(b_prev)) {
+				return XERRF(e, XLOG_APP, XLOG_IO,
+				    "partial dirent write, this "
+				    "directory might be corrupted");
+			}
+		}
+
+		/*
+		 * De-allocate, set to leaf so that it can
+		 * become part of the freelist.
+		 */
+		if (di_unlink_freelist_add_v2(parent, hdr,
+		    b_off, &b, xerrz(e)) == -1)
+			xlog(LOG_ERR, e, __func__);
+
 		return 0;
 
 	}
@@ -1541,7 +1552,7 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 	struct dir_hdr_v2    hdr, hdr_orig;
 	uint32_t             hash = fnv1a32(de->name, strlen(de->name));
 
-	if (di_read_dir_hdr_v2(parent, &hdr_orig, e) == -1)
+	if (di_read_dir_hdr_v2(parent, &hdr_orig, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)
@@ -1550,11 +1561,11 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 
 	memcpy(&hdr, &hdr_orig, sizeof(hdr));
 	if (di_unlink_deep_v2(parent, &hdr, sizeof(hdr), NULL, 0, 0, de, hash,
-	    de->name, e) == -1)
+	    de->name, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (memcmp(&hdr, &hdr_orig, sizeof(hdr)) != 0) {
-		r = inode_write(parent, 0, &hdr, sizeof(hdr), e);
+		r = inode_write(parent, 0, &hdr, sizeof(hdr), xerrz(e));
 		if (r == -1) {
 			return XERR_PREPENDFN(e);
 		} else if (r < sizeof(hdr)) {
@@ -1571,9 +1582,9 @@ ino_t
 di_parent(struct oinode *oi, struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(oi, e)))
+	if (!(dfmt = di_check_format(oi, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].parent(oi, e);
+	return di_fn[dfmt].parent(oi, xerrz(e));
 }
 
 static ino_t
@@ -1597,7 +1608,7 @@ static ino_t
 di_parent_v2(struct oinode *oi, struct xerr *e)
 {
 	struct dir_hdr_v2 hdr;
-	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 	return hdr.v.h.parent;
 }
@@ -1606,9 +1617,9 @@ int
 di_setparent(struct oinode *oi, ino_t parent, struct xerr *e)
 {
 	uint32_t dfmt;
-	if (!(dfmt = di_check_format(oi, e)))
+	if (!(dfmt = di_check_format(oi, xerrz(e))))
 		return XERR_PREPENDFN(e);
-	return di_fn[dfmt].setparent(oi, parent, e);
+	return di_fn[dfmt].setparent(oi, parent, xerrz(e));
 }
 
 static int
@@ -1642,11 +1653,11 @@ di_setparent_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 	struct dir_hdr_v2 hdr;
 	ssize_t           r;
 
-	if (di_read_dir_hdr_v2(oi, &hdr, e) == -1)
+	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	hdr.v.h.parent = parent;
-	if ((r = inode_write(oi, 0, &hdr, sizeof(hdr), e)) < sizeof(hdr)) {
+	if ((r = inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e))) < sizeof(hdr)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dir_hdr_v2 write, this directory "
 		    "might be corrupted");
