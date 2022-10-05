@@ -48,7 +48,7 @@ tests: potatofs_tests
 .PHONY: clean
 
 clean:
-	rm -f *.o potatofs potatoctl potatofs_tests $(DEPDIR)/* *.gcda *.gcno
+	rm -f *.o potatofs potatoctl potatofs_tests $(DEPDIR)/* *.gcda *.gcno *.gcov
 	test -d $(DEPDIR) && rmdir $(DEPDIR) || true
 
 -include $(DEPDIR)/*

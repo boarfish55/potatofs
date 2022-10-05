@@ -1515,9 +1515,8 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 	struct mgr_msg  m;
 	struct oslab   *b;
 	char            path[PATH_MAX];
-	char           *d, *d_realloc;
+	char           *d;
 	struct xerr     e = XLOG_ERR_INITIALIZER;
-	struct dir_hdr  d_hdr = { DIRINODE_FORMAT };
 
 	// TODO: properly return an error, don't err()
 
@@ -1532,28 +1531,12 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 
 	memcpy(d, inode_data(inode), r_offset);
 
-	if (((struct dir_hdr *)d)->dirinode_format != DIRINODE_FORMAT) {
-		/*
-		 * 46 is the ASCII code for ".", which should be the first
-		 * byte in our older, unversioned format.
-		 */
-		if (((struct dir_hdr *)d)->dirinode_format == 46 && fsck_fix) {
-			inode->v.f.size += sizeof(struct dir_hdr);
-			if ((d_realloc = realloc(d, inode->v.f.size)) == NULL) {
-				free(d);
-				err(1, "realloc");
-			}
-			d = d_realloc;
-			memcpy(d, &d_hdr, sizeof(d_hdr));
-			memcpy(d + sizeof(d_hdr), inode_data(inode), r_offset);
-			w_offset += sizeof(d_hdr);
-			*dirty = 1;
-		} else {
-			warnx("%s: unsupposed dirinode format %u",
-			    __func__, ((struct dir_hdr *)d)->dirinode_format);
-			free(d);
-			return -1;
-		}
+	if (((struct dir_hdr *)d)->dirinode_format > DIRINODE_FORMAT ||
+	    ((struct dir_hdr *)d)->dirinode_format == 0) {
+		warnx("%s: unsupposed dirinode format %u",
+		    __func__, ((struct dir_hdr *)d)->dirinode_format);
+		free(d);
+		return -1;
 	}
 
 	if (w_offset >= inode->v.f.size) {

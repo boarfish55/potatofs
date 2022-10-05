@@ -248,7 +248,7 @@ static int
 di_create_v1(struct oinode *oi, ino_t parent, struct xerr *e)
 {
 	ssize_t             w;
-	struct dir_hdr      hdr = { DIRINODE_FORMAT };
+	struct dir_hdr      hdr = { 1 };
 	struct dir_entry_v1 default_dir[2] = {
 		{ ".", inode_ino(oi), sizeof(struct dir_entry_v1) },
 		{ "..", parent, 0 }
@@ -282,7 +282,7 @@ di_create_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 	struct dir_block_v2 b;
 
 	bzero(&hdr, sizeof(hdr));
-	hdr.v.h.hdr.dirinode_format = DIRINODE_FORMAT;
+	hdr.v.h.hdr.dirinode_format = 2;
 	hdr.v.h.inode = inode_ino(oi);
 	hdr.v.h.parent = parent;
 
@@ -476,6 +476,14 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 			continue;
 		r = di_readdir_deep_v2(oi, b.v.idx.buckets[bucket], depth + 1,
 		    dirs + i, count - i, d_off, xerrz(e));
+
+		/*
+		 * d_off should only be set to the one we're seeking on the
+		 * first iteration. Once we've found the point where we left
+		 * off, we reset it to ensure we read everything after.
+		 */
+		d_off = 0;
+
 		if (r == -1)
 			return XERR_PREPENDFN(e);
 		i += r;
