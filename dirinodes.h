@@ -72,6 +72,11 @@ struct dir_entry_v2 {
 	uint8_t     length;
 	const char *name;
 };
+#define DI_DE_PACK_HDR_SZ \
+    (sizeof(uint8_t) +    \
+     sizeof(uint32_t) +   \
+     sizeof(ino_t) +      \
+     sizeof(uint8_t))
 
 /*
  * Directory blocks are always 512 bytes. A block is either a leaf or an

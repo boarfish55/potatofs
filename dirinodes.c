@@ -182,10 +182,9 @@ ssize_t
 di_pack_v2(char *buf, size_t sz, const struct dir_entry_v2 *de)
 {
 	char         *p = buf;
-	const size_t  field_sz = offsetof(struct dir_entry_v2, name);
 
-	if (sz < (field_sz + de->length))
-		return field_sz + de->length;
+	if (sz < (DI_DE_PACK_HDR_SZ + de->length))
+		return DI_DE_PACK_HDR_SZ + de->length;
 
 	*(uint8_t *)p = de->flags;
 	p += sizeof(uint8_t);
@@ -209,10 +208,9 @@ ssize_t
 di_unpack_v2(const char *buf, size_t sz, struct dir_entry_v2 *de)
 {
 	const char   *p = buf;
-	const size_t  field_sz = offsetof(struct dir_entry_v2, name);
 
-	if (sz < field_sz)
-		return field_sz;
+	if (sz < DI_DE_PACK_HDR_SZ)
+		return DI_DE_PACK_HDR_SZ;
 
 	bzero(de, sizeof(struct dir_entry_v2));
 	de->flags = *(uint8_t *)p;
@@ -451,7 +449,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		 * for "." and "..".
 		 */
 		i += di_readdir_buf_v2(b.v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
+		    b.v.leaf.length, dirs + i, count - i,
 		    d_off & 0x00000000FFFFFFFF, 2, xerrz(e));
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
@@ -460,7 +458,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 			} else if (r == -1)
 				return XERR_PREPENDFN(e);
 			i += di_readdir_buf_v2(b.v.leaf.data,
-			    DI_DIR_BLOCK_HDR_V2_BYTES, dirs + i, count - i,
+			    b.v.leaf.length, dirs + i, count - i,
 			    d_off & 0x00000000FFFFFFFF, 2 + i, xerrz(e));
 		}
 		return i;
@@ -624,7 +622,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 
 	if (b.v.flags & DI_BLOCK_LEAF) {
 		r = di_lookup_buf_v2(b.v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES, de, hash, name, xerrz(e));
+		    b.v.leaf.length, de, hash, name, xerrz(e));
 		if (r == 0)
 			return 0;
 
@@ -642,7 +640,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 				return XERR_PREPENDFN(e);
 
 			r = di_lookup_buf_v2(b.v.leaf.data,
-			    DI_DIR_BLOCK_HDR_V2_BYTES, de, hash, name, xerrz(e));
+			    b.v.leaf.length, de, hash, name, xerrz(e));
 			if (r == 0)
 				return r;
 			if (!xerr_is(e, XLOG_FS, ENOENT))
@@ -955,7 +953,6 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 	struct dir_block_v2  b, b_head, b_next;
 	char                *p;
 	off_t                valid_off = -1;
-	const size_t         field_sz = offsetof(struct dir_entry_v2, name);
 
 	if ((r = inode_read(parent, b_off, &b_head, sizeof(b), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
@@ -979,13 +976,13 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 */
 		memcpy(&b, &b_head, sizeof(b));
 		while (di_lookup_buf_v2(b.v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES, NULL, de->hash,
+		    b.v.leaf.length, NULL, de->hash,
 		    de->name, xerrz(e)) == -1) {
 			if (!xerr_is(e, XLOG_FS, ENOENT))
 				return XERR_PREPENDFN(e);
 
 			if (DI_DIR_BLOCK_HDR_V2_BYTES - b.v.leaf.length >=
-			    field_sz + de->length)
+			    DI_DE_PACK_HDR_SZ + de->length)
 				valid_off = b_off;
 
 			if (b.v.leaf.next == 0)
@@ -1021,7 +1018,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			 * for overflow.
 			 */
 			if ((r = di_unlink_buf_v2(b.v.leaf.data,
-			    DI_DIR_BLOCK_HDR_V2_BYTES, de->hash,
+			    b.v.leaf.length, de->hash,
 			    de->name, xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
 
@@ -1461,7 +1458,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 	b_off = head_b_off;
 	for (;;) {
 		r = di_unlink_buf_v2(b.v.leaf.data,
-		    DI_DIR_BLOCK_HDR_V2_BYTES, hash, name, xerrz(e));
+		    b.v.leaf.length, hash, name, xerrz(e));
 		if (r == -1) {
 			if (!xerr_is(e, XLOG_FS, ENOENT))
 				return XERR_PREPENDFN(e);
