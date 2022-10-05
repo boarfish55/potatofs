@@ -450,7 +450,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		 */
 		i += di_readdir_buf_v2(b.v.leaf.data,
 		    b.v.leaf.length, dirs + i, count - i,
-		    d_off & 0x00000000FFFFFFFF, 2, xerrz(e));
+		    ((uint64_t)d_off) & 0x00000000FFFFFFFF, 2, xerrz(e));
 		while (b.v.leaf.next > 0) {
 			if ((r = inode_read(oi, b.v.leaf.next, &b,
 			    sizeof(b), xerrz(e))) == 0) {
@@ -459,7 +459,8 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 				return XERR_PREPENDFN(e);
 			i += di_readdir_buf_v2(b.v.leaf.data,
 			    b.v.leaf.length, dirs + i, count - i,
-			    d_off & 0x00000000FFFFFFFF, 2 + i, xerrz(e));
+			    ((uint64_t)d_off) & 0x00000000FFFFFFFF,
+			    2 + i, xerrz(e));
 		}
 		return i;
 	}
@@ -468,8 +469,9 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	 * The rightmost 32 bits of d_off is used for the entry number inside
 	 * a leaf. The leftmost 32 bits is the hash.
 	 */
-	for (bucket = ((d_off >> 32) >> (depth * 5)) & 0x000000000000001F;
-	    bucket < 32; bucket++) {
+	for (bucket = ((((uint64_t)d_off) >> 32) >>
+	    (depth * 5)) & 0x000000000000001F;
+	    bucket < 32 && i < count; bucket++) {
 		if (b.v.idx.buckets[bucket] == 0)
 			continue;
 		r = di_readdir_deep_v2(oi, b.v.idx.buckets[bucket], depth + 1,
