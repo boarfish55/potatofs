@@ -367,7 +367,16 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	if (add_found_inode(hdr->v.h.parent, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	// TODO: handle dir blocks
+	// TODO: We'd probably want to loop over the entire
+	// file, in chunks of 512b, and keep track of block
+	// offsets to make sure each is referenced.
+	// 1) Do a first pass by following the tree structure
+	//    and freelist
+	// 2) then loop over the entire file and confirm each
+	//    was referenced. Anything else should be cleared
+	//    and added to the freelist. Or truncated if it's
+	//    at the end.
+	//
 	if (0) {
 		for (p = dir + sizeof(struct dir_hdr_v2);
 		    p - dir < *dir_sz; p += r) {
@@ -394,7 +403,6 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 				return XERR_PREPENDFN(e);
 		}
 	}
-	// TODO: handle non-inline case
 
 	return dirty;
 }
@@ -460,8 +468,6 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 		return -1;
 	}
 	dir_sz = inode->v.f.size;
-
-	// TODO: need to support v2
 
 	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
 		dirty = validate_dir_v1(mgr, ino, dir, &dir_sz, stats, e);

@@ -3,7 +3,7 @@ CFLAGS := -DFUSE_USE_VERSION=26 \
 	$(shell pkg-config --cflags fuse uuid libbsd-overlay)
 LDFLAGS := $(shell pkg-config --libs fuse uuid 'jansson >= 2.9' \
 	libbsd-overlay libbsd-ctor sqlite3 zlib)
-EXTRA_CFLAGS := --coverage
+EXTRA_CFLAGS :=
 CC := gcc -Wall -Werror -g $(CFLAGS) $(EXTRA_CFLAGS)
 
 DEPFLAGS = -MMD -MP -MF $(DEPDIR)/$@.d
