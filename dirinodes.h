@@ -143,7 +143,8 @@ int     di_isempty(struct oinode *, struct xerr *);
 ino_t   di_parent(struct oinode *, struct xerr *);
 int     di_setparent(struct oinode *, ino_t, struct xerr *);
 
-ssize_t di_pack_v2(char *, size_t, const struct dir_entry_v2 *);
-ssize_t di_unpack_v2(const char *, size_t, struct dir_entry_v2 *);
+ssize_t  di_pack_v2(char *, size_t, const struct dir_entry_v2 *);
+ssize_t  di_unpack_v2(const char *, size_t, struct dir_entry_v2 *);
+uint32_t di_fnv1a32(const void *, size_t);
 
 #endif

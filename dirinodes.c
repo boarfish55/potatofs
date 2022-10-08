@@ -123,8 +123,8 @@ static struct {
  *   http://isthe.com/chongo/tech/comp/fnv/index.html
  *   http://tools.ietf.org/html/draft-eastlake-fnv-03
  */
-static uint32_t
-fnv1a32(const void *s, size_t klen)
+uint32_t
+di_fnv1a32(const void *s, size_t klen)
 {
 	size_t         i;
 	const size_t   prime32 = 16777619;
@@ -676,7 +676,7 @@ di_lookup_v2(struct oinode *oi, struct dir_entry *de, const char *name,
     struct xerr *e)
 {
 	struct dir_hdr_v2     hdr;
-	uint32_t              hash = fnv1a32(name, strlen(name));
+	uint32_t              hash = di_fnv1a32(name, strlen(name));
 
 	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
@@ -1211,7 +1211,7 @@ di_mkdirent_v2(struct oinode *parent, const struct dir_entry *de,
 	de_v2.length = strlen(de->name);
 	de_v2.name = de->name;
 	de_v2.inode = de->inode;
-	de_v2.hash = fnv1a32(de_v2.name, de_v2.length);
+	de_v2.hash = di_fnv1a32(de_v2.name, de_v2.length);
 
 	memcpy(&hdr, &hdr_orig, sizeof(hdr));
 	if (di_mkdirent_deep_v2(parent, &hdr, sizeof(hdr), 0,
@@ -1557,7 +1557,7 @@ di_unlink_v2(struct oinode *parent, const struct dir_entry *de,
 {
 	ssize_t              r;
 	struct dir_hdr_v2    hdr, hdr_orig;
-	uint32_t             hash = fnv1a32(de->name, strlen(de->name));
+	uint32_t             hash = di_fnv1a32(de->name, strlen(de->name));
 
 	if (di_read_dir_hdr_v2(parent, &hdr_orig, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);

@@ -347,60 +347,189 @@ validate_dir_v1(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 }
 
 int
+validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
+    off_t b_off, int depth, uint8_t *dir_blocks,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	struct dir_block_v2 *b = (struct dir_block_v2 *)(dir + b_off);
+	struct dir_entry_v2  de_v2;
+	const char          *p;
+	ssize_t              r;
+	size_t               i;
+	int                  bucket;
+
+	if ((char *)b > dir + dir_sz) {
+		warnx("dir inode %lu: trying to read a block at offset %ld, "
+		    "which is past the end of the dir inode", ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	if (!(b->v.flags & DI_BLOCK_ALLOCATED)) {
+		warnx("unallocated block in dir inode %lu at offset %ld",
+		    ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	dir_blocks[b_off / sizeof(struct dir_block_v2)] = 1;
+
+	if (b->v.flags & DI_BLOCK_LEAF) {
+		for (;;) {
+			for (p = b->v.leaf.data, i = 0;
+			    p - b->v.leaf.data < b->v.leaf.length; p += r) {
+				/*
+				 * Dir entries in the inode are always
+				 * contiguous. If we see one that's not
+				 * allocated, it means there are no more after.
+				 */
+				if ((r = di_unpack_v2(p,
+				    b->v.leaf.length - (p - b->v.leaf.data),
+				    &de_v2)) >
+				    b->v.leaf.length - (p - b->v.leaf.data))
+					break;
+
+				if (!(de_v2.flags & DI_ALLOCATED)) {
+					warnx("dir inode %lu: unallocated dir "
+					    "entry at offset %lu in dir "
+					    "block offset %ld", ino,
+					    p - b->v.leaf.data, b_off);
+					stats->errors++;
+					break;
+				}
+
+				i++;
+				stats->n_dirents++;
+
+				if (!valid_inode(mgr, de_v2.inode))
+					stats->errors++;
+				if (add_found_inode(de_v2.inode, e) == -1)
+					return XERR_PREPENDFN(e);
+
+				if (di_fnv1a32(de_v2.name, de_v2.length) !=
+				    de_v2.hash) {
+					warnx("dir inode %lu: mismatching hash "
+					    "for entry at offset %lu in dir "
+					    "block offset %ld", ino,
+					    p - b->v.leaf.data, b_off);
+					stats->errors++;
+				}
+			}
+
+			if (i != b->v.leaf.entries) {
+				warnx("dir inode %lu / block %ld: mismatching"
+				    "number of entries in dir block header and "
+				    "leaf data: header=%lu, data=%lu",
+				    ino, b_off, b->v.leaf.entries, i);
+				stats->errors++;
+			}
+
+			if (b->v.leaf.next == 0)
+				break;
+
+			b = (struct dir_block_v2 *)(dir + b->v.leaf.next);
+			if ((char *)b > dir + dir_sz) {
+				warnx("dir inode %lu / block %ld: "
+				    "next is point past the end of the"
+				    " inode: next=%ld, size=%lu",
+				    ino, b_off, b->v.leaf.next, dir_sz);
+				stats->errors++;
+			}
+		}
+		return 0;
+	}
+
+	if (depth >= DI_BLOCK_V2_MAX_DEPTH) {
+		warnx("dir inode %lu / block %ld: max depth reached",
+		    ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	for (bucket = 0; bucket < 32; bucket++) {
+		if (b->v.idx.buckets[bucket] == 0)
+			continue;
+
+		if (validate_dir_block_v2(mgr, ino, dir, dir_sz,
+		    b->v.idx.buckets[bucket], depth + 1,
+		    dir_blocks, stats, e) == -1)
+			return XERR_PREPENDFN(e);
+	}
+	return 0;
+}
+
+int
 validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
     struct fsck_stats *stats, struct xerr *e)
 {
 	int                  dirty = 0;
 	struct dir_hdr_v2   *hdr = (struct dir_hdr_v2 *)dir;
-	struct dir_entry_v2  de_v2;
-	char                 name[NAME_MAX + 1];
-	int                  r;
-	char                *p;
+	uint8_t             *dir_blocks;
+	size_t               dir_blocks_sz;
+	struct dir_block_v2 *b;
 
 	if (!valid_inode(mgr, hdr->v.h.inode))
 		stats->errors++;
 	if (add_found_inode(hdr->v.h.inode, e) == -1)
 		return XERR_PREPENDFN(e);
+	stats->n_dirents++;
 
 	if (!valid_inode(mgr, hdr->v.h.parent))
 		stats->errors++;
 	if (add_found_inode(hdr->v.h.parent, e) == -1)
 		return XERR_PREPENDFN(e);
+	stats->n_dirents++;
 
-	// TODO: We'd probably want to loop over the entire
-	// file, in chunks of 512b, and keep track of block
-	// offsets to make sure each is referenced.
-	// 1) Do a first pass by following the tree structure
-	//    and freelist
-	// 2) then loop over the entire file and confirm each
-	//    was referenced. Anything else should be cleared
-	//    and added to the freelist. Or truncated if it's
-	//    at the end.
-	//
-	if (0) {
-		for (p = dir + sizeof(struct dir_hdr_v2);
-		    p - dir < *dir_sz; p += r) {
-			if ((r = di_unpack_v2(p, *dir_sz - (p - dir), &de_v2)) >
-			    *dir_sz - (p - dir))
-				break;
+	if (*dir_sz % 512 != 0) {
+		warnx("dir inode size is node a multiple of 512: "
+		    "inode=%lu", hdr->v.h.inode);
+		stats->errors++;
+	}
+	/*
+	 * Every element in the array is either 0 or 1, where
+	 * 1 means this block offset is used.
+	 */
+	dir_blocks_sz = sizeof(uint8_t) *
+	    ((*dir_sz - sizeof(struct dir_hdr_v2)) /
+	     sizeof(struct dir_block_v2));
+	dir_blocks = malloc(dir_blocks_sz);
+	if (dir_blocks == NULL)
+		return XERRF(e, XLOG_ERRNO, errno, "malloc");
+	bzero(dir_blocks, dir_blocks_sz);
 
-			if (!(de_v2.flags & DI_ALLOCATED))
-				break;
+	if (validate_dir_block_v2(mgr, hdr->v.h.inode, dir, *dir_sz,
+	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1)
+		return XERR_PREPENDFN(e);
 
-			strlcpy(name, de_v2.name, de_v2.length + 1);
-			fsck_printf("    dirent: %lu (%s)", de_v2.inode, name);
-			stats->n_dirents++;
+	for (b = (struct dir_block_v2 *)(dir + hdr->v.h.free_list_start);
+	    (char *)b - dir > 0;
+	    b = (struct dir_block_v2 *)(dir + b->v.leaf.next)) {
+		if (b->v.flags & DI_BLOCK_ALLOCATED) {
+			stats->errors++;
+			warnx("dir inode %lu has a block part of its freelist "
+			    "that's allocated at offset %ld",
+			    hdr->v.h.inode, (char *)b - dir);
+			return 0;
+		}
+		dir_blocks[((char *)b - dir) / sizeof(struct dir_block_v2)] = 1;
+	}
 
-			if (!valid_inode(mgr, de_v2.inode)) {
-				stats->errors++;
-				if (fsck_fix) {
-					// TODO: memmove...
-					dirty = 1;
-					continue;
-				}
-			}
-			if (add_found_inode(de_v2.inode, e) == -1)
-				return XERR_PREPENDFN(e);
+	for (b = (struct dir_block_v2 *)(dir + sizeof(struct dir_hdr_v2));
+	    (char *)b - dir < *dir_sz; b++) {
+		/*
+		 * See if this block offset is either part of the freelist
+		 * or referenced in the dir hash tree. Skip if it lies
+		 * at the boundary of inline inode data, which we don't
+		 * use in dirinodes.
+		 */
+		if (dir_blocks[((char *)b - dir)
+		    / sizeof(struct dir_block_v2)] == 0 &&
+		    (inode_max_inline_b() - ((char *)b - dir) >=
+		     sizeof(struct dir_block_v2))) {
+			stats->errors++;
+			warnx("dir inode %lu has a block that is neither "
+			    "allocated or part of the freelist, at offset %ld",
+			    hdr->v.h.inode, (char *)b - dir);
 		}
 	}
 

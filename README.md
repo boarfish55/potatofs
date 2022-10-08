@@ -143,6 +143,7 @@ KNOWN ISSUES
   lock the entire time, meaning we can't do anything. We might have to
   queue slab downloads without holding the lock?? Or maybe read lock?
   Then upgrade to a write lock when the slab is local.
+* When potatoctl fsck errors out, it may not always shutdown the mgr.
 
 TODO
 ====
