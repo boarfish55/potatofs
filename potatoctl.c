@@ -378,6 +378,8 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 		for (;;) {
 			for (p = b->v.leaf.data, i = 0;
 			    p - b->v.leaf.data < b->v.leaf.length; p += r) {
+				dir_blocks[(p - dir) /
+				    sizeof(struct dir_block_v2)] = 1;
 				/*
 				 * Dir entries in the inode are always
 				 * contiguous. If we see one that's not
