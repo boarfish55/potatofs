@@ -999,13 +999,10 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 		return written;
 
 	/*
-	 * We can restart from written = 0 since it's better to write
-	 * a full aligned block. We waste a bit of space, but that's fine.
-	 * Plus for files larger than what we can hold inline, I guess that
-	 * means we have a backup copy? Yay I guess?
+	 * We rewrite everything from the start in the slab because then
+	 * we get a backup of the inode's inline data, and we want to
+	 * do aligner writes anyway.
 	 */
-	// TODO: we want data to be 4k-aligned so the performance behavior
-	// is predictable by users.
 	for (written = 0; written < count; ) {
 		b = slab_at(oi, offset + written, 0, xerrz(e));
 		if (b == NULL)

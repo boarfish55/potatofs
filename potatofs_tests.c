@@ -1878,7 +1878,7 @@ test_file_content()
 
 	/* The second block in the file has no inline bytes, so all 'b' */
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = 'b';
+		buf[i] = 'c';
 	for (i = sizeof(buf); i < SLAB_SIZE_DEFAULT; i += w) {
 		if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 			if (w == -1)
@@ -1888,7 +1888,7 @@ test_file_content()
 	}
 
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = 'c';
+		buf[i] = 'd';
 	for (i = 0; i < SLAB_SIZE_DEFAULT; i += w) {
 		if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 			if (w == -1)
@@ -1939,7 +1939,7 @@ test_file_content()
 		if (r < sizeof(buf))
 			return ERR("short read on first slab", 0);
 		for (; i < sizeof(buf); i++) {
-			if (buf[i] != 'b') {
+			if (buf[i] != 'c') {
 				snprintf(msg, sizeof(msg),
 				    "unexpected byte in slab %s; "
 				    "current=0x%x, want='b'",
@@ -1961,7 +1961,7 @@ test_file_content()
 	}
 
 	/*
-	 * The second slab should be all 'c'.
+	 * The second slab should be all 'd'.
 	 */
 	if (slab_path(path, sizeof(path),
 	    slab_key(&sk, ino, SLAB_SIZE_DEFAULT), 0, &e) == -1) {
@@ -1978,7 +1978,7 @@ test_file_content()
 		if (r < sizeof(buf))
 			return ERR("short read on first slab", 0);
 		for (; i < sizeof(buf); i++) {
-			if (buf[i] != 'c') {
+			if (buf[i] != 'd') {
 				snprintf(msg, sizeof(msg),
 				    "unexpected byte in slab %s; "
 				    "current=0x%x, want='c'",
