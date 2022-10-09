@@ -349,6 +349,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 			if (!(fds[nfds].revents & (POLLIN|POLLOUT|POLLHUP)))
 				continue;
 
+			r = -1;
 			if (fds[nfds].fd == p_in[1]) {
 				r = write(p_in[1], stdin + stdin_w,
 				    stdin_len - stdin_w);
@@ -1191,6 +1192,7 @@ new_slab_again:
 
 get_again:
 	// TODO: Eventually bubble up this error all the way to the fs
+	in_bytes = 0;
 	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			/*
@@ -1607,6 +1609,7 @@ bg_flush()
 			continue;
 		}
 
+		out_bytes = 0;
 		if (backend_put(path, basename(path), &out_bytes,
 		    &sk, &e) == -1) {
 			xlog(LOG_ERR, &e, "%s: failed but will retry",

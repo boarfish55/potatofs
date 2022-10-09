@@ -268,7 +268,7 @@ int
 open_wflock(const char *path, int flags, mode_t mode, int lk,
     uint32_t wait_seconds)
 {
-	int    fd, retries;
+	int    fd = -1, retries;
 	struct timespec tp = {0, 10000000}, req, rem;  /* 10ms */
 
 	if (wait_seconds > 0)
