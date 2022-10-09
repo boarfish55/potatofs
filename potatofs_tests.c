@@ -658,7 +658,7 @@ test_unlink()
 			}
 		} else {
 			return ERR("file still exists on-disk "
-			    "after unlink", 0);
+			    "in the inode table after unlink", 0);
 		}
 		return NULL;
 	}
