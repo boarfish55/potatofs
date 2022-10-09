@@ -58,7 +58,7 @@ SPLAY_GENERATE(ino_tree, oinode, entry, inode_cmp);
 char *
 inode_data(struct inode *ino)
 {
-	return ino->v.f.data;
+	return ino->v.padding.inline_data;
 }
 
 /*
@@ -163,14 +163,6 @@ inode_startup(struct xerr *e)
 		return XERRF(e, XLOG_ERRNO, errno,
 		    "calloc: failed to allocate zeroes");
 	return 0;
-}
-
-off_t
-inode_max_inline_b()
-{
-	struct inode ino;
-
-	return sizeof(ino) - (ino.v.f.data - (char *)&ino);
 }
 
 int
@@ -442,13 +434,13 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 
 	/*
 	 * Fill in inline data with zeroes. When shrinking the file,
-	 * fill from inode_max_inline_b() to offset; when growing the
+	 * fill from INODE_INLINE_BYTES to offset; when growing the
 	 * file, we fill from old_size to offset.
 	 */
 	zero_start = (old_size < offset) ? old_size : offset;
-	if (zero_start < inode_max_inline_b())
+	if (zero_start < INODE_INLINE_BYTES)
 		bzero(f_data + zero_start,
-		    inode_max_inline_b() - zero_start);
+		    INODE_INLINE_BYTES - zero_start);
 
 	oi->bytes_dirty = 1;
 	oi->ino.v.f.size = offset;
@@ -459,7 +451,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	 * files.
 	 */
 	for (c_off = offset;
-	    old_size > inode_max_inline_b() && c_off <= old_size;
+	    old_size > INODE_INLINE_BYTES && c_off <= old_size;
 	    c_off += slab_get_max_size()) {
 		/*
 		 * Only the slab within which the new offset falls should be
@@ -471,7 +463,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 		 * Also, if all bytes of the inode now fit inline in the
 		 * inode, just truncate the first slab to zero as well.
 		 */
-		if (c_off > offset || oi->ino.v.f.size <= inode_max_inline_b())
+		if (c_off > offset || oi->ino.v.f.size <= INODE_INLINE_BYTES)
 			truncate_to = 0;
 		else
 			truncate_to = c_off % slab_get_max_size();
@@ -810,7 +802,7 @@ inode_sync(struct oinode *oi, struct xerr *e)
 
 	size = inode_getsize(oi);
 
-	if (size < inode_max_inline_b())
+	if (size < INODE_INLINE_BYTES)
 		return 0;
 
 	/*
@@ -903,7 +895,7 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 	if (w == -1) {
 		goto end;
 	} else if (w < ((flags & INODE_FLUSH_DATA_ONLY)
-	    ?  inode_max_inline_b()
+	    ?  INODE_INLINE_BYTES
 	    : sizeof(struct inode))) {
 		XERRF(e, XLOG_APP, XLOG_IO,
 		    "short write while saving inode %lu", ino);
@@ -989,9 +981,9 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 		    "write attemped on read-only open inode %lu",
 		    oi->ino.v.f.inode);
 
-	if (offset < inode_max_inline_b()) {
-		c = (count > inode_max_inline_b() - offset)
-		    ? inode_max_inline_b() - offset
+	if (offset < INODE_INLINE_BYTES) {
+		c = (count > INODE_INLINE_BYTES - offset)
+		    ? INODE_INLINE_BYTES - offset
 		    : count;
 		memcpy(f_data + offset, buf, c);
 		written += c;
@@ -1012,6 +1004,8 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 	 * Plus for files larger than what we can hold inline, I guess that
 	 * means we have a backup copy? Yay I guess?
 	 */
+	// TODO: we want data to be 4k-aligned so the performance behavior
+	// is predictable by users.
 	for (written = 0; written < count; ) {
 		b = slab_at(oi, offset + written, 0, xerrz(e));
 		if (b == NULL)
@@ -1064,9 +1058,9 @@ inode_read(struct oinode *oi, off_t offset, void *buf,
 	if (offset + count > size)
 		count = size - offset;
 
-	if (offset < inode_max_inline_b()) {
-		c = (count > inode_max_inline_b() - offset)
-		    ? inode_max_inline_b() - offset
+	if (offset < INODE_INLINE_BYTES) {
+		c = (count > INODE_INLINE_BYTES - offset)
+		    ? INODE_INLINE_BYTES - offset
 		    : count;
 		memcpy(buf, f_data + offset, c);
 		rd += c;
@@ -1142,9 +1136,9 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 	if (si->v == NULL)
 		return XERRF(e, XLOG_ERRNO, errno, "calloc");
 
-	if (offset < inode_max_inline_b()) {
-		if (count > inode_max_inline_b() - offset)
-			si->v[0].count = inode_max_inline_b() - offset;
+	if (offset < INODE_INLINE_BYTES) {
+		if (count > INODE_INLINE_BYTES - offset)
+			si->v[0].count = INODE_INLINE_BYTES - offset;
 		else
 			si->v[0].count = count;
 		si->v[0].rel_offset = 0;
@@ -1226,9 +1220,9 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 	if (si->v == NULL)
 		return XERRF(e, XLOG_ERRNO, errno, "calloc");
 
-	if (offset < inode_max_inline_b()) {
-		if (count > inode_max_inline_b() - offset)
-			si->v[0].count = inode_max_inline_b() - offset;
+	if (offset < INODE_INLINE_BYTES) {
+		if (count > INODE_INLINE_BYTES - offset)
+			si->v[0].count = INODE_INLINE_BYTES - offset;
 		else
 			si->v[0].count = count;
 		si->v[0].rel_offset = 0;
@@ -1270,7 +1264,7 @@ inode_splice_end_write(struct inode_splice_bufvec *si,
 		}
 	}
 
-	if (si->offset < inode_max_inline_b()) {
+	if (si->offset < INODE_INLINE_BYTES) {
 		inode_set_bytes_dirty(si->oi);
 		if ((si->oi->oflags & INODE_OSYNC) &&
 		    inode_flush(si->oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)

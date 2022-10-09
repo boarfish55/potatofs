@@ -20,6 +20,7 @@
 #ifndef DIRINODES_H
 #define DIRINODES_H
 
+#include <sys/param.h>
 #include "config.h"
 #include "inodes.h"
 #include "xlog.h"
@@ -37,7 +38,7 @@ struct dir_hdr_v2 {
 			ino_t          parent;
 			off_t          free_list_start;
 		} h;
-		char padding[512];
+		char padding[DEV_BSIZE];
 	} v;
 };
 
@@ -79,7 +80,7 @@ struct dir_entry_v2 {
      sizeof(uint8_t))
 
 /*
- * Directory blocks are always 512 bytes. A block is either a leaf or an
+ * Directory blocks are always DEV_BSIZE bytes. A block is either a leaf or an
  * index (hash table). Hash table entries point to child
  * blocks. Our hash is 32 bits, so each block handles 5 bits of the hash,
  * meaning our tree has a max depth of 6 (6 x 5 = 30 bits).
@@ -122,7 +123,7 @@ struct dir_block_v2 {
 			/* This must be the last field in this struct */
 			char     data[1];
 		} leaf;
-		char padding[512];
+		char padding[DEV_BSIZE];
 	} v;
 };
 #define DI_DIR_BLOCK_HDR_V2_BYTES \

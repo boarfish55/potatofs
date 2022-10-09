@@ -846,10 +846,6 @@ di_mkdirent_getblock_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		if (offset % sizeof(b) != 0)
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "directory offsets are not aligned");
-
-		if ((inode_max_inline_b() - offset) <
-		    sizeof(struct dir_block_v2))
-			offset += sizeof(struct dir_block_v2);
 	} else {
 		/*
 		 * We loop and check for DI_BLOCK_ALLOCATED just

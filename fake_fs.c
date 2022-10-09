@@ -74,12 +74,6 @@ const char *same_hash_16b_suffix =
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabjCA";
 
-off_t
-inode_max_inline_b()
-{
-	return 3800;
-}
-
 ssize_t
 inode_write(struct oinode *oi, off_t offset, const void *buf, size_t count,
     struct xerr *e)

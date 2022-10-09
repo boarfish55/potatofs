@@ -454,7 +454,7 @@ test_slab_size()
 		return ERR(msg, 0);
 	}
 
-	hdr_data_sz = sizeof(hdr) - (hdr.v.f.data - (char *)&hdr);
+	hdr_data_sz = sizeof(hdr) - (hdr.v.padding.data - (char *)&hdr);
 	if (sizeof(struct slab_itbl_hdr) > hdr_data_sz) {
 		snprintf(msg, sizeof(msg),
 		    "struct slab_itbl_hdr's size (%lu) does not fit in "
@@ -1152,7 +1152,7 @@ test_file_size_and_mtime()
 		    "slab size doesn't match "
 		    "total size minus max inline for the inode: "
 		    "current=%lu, want=%lu",
-		    slab_sz, sz - inode_max_inline_b());
+		    slab_sz, sz - INODE_INLINE_BYTES);
 		return ERR(msg, 0);
 	}
 
@@ -1869,7 +1869,7 @@ test_file_content()
 
 	/* Fill the inline bytes with 'a', the rest with 'b' */
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = (i < inode_max_inline_b()) ? 'a': 'b';
+		buf[i] = (i < INODE_INLINE_BYTES) ? 'a': 'b';
 	if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 		if (w == -1)
 			return ERR("", errno);
@@ -1924,11 +1924,11 @@ test_file_content()
 	if (r < sizeof(buf))
 		return ERR("short read on first slab", 0);
 	for (i = 0; i < sizeof(buf); i++) {
-		if (buf[i] != ((i < inode_max_inline_b()) ? '\0': 'b')) {
+		if (buf[i] != ((i < INODE_INLINE_BYTES) ? '\0': 'b')) {
 			snprintf(msg, sizeof(msg),
 			    "unexpected byte in slab %s; "
 			    "current=0x%x, want=%s", path, buf[i],
-			    (i < inode_max_inline_b()) ? "\\0": "b");
+			    (i < INODE_INLINE_BYTES) ? "\\0": "b");
 			return ERR(msg, 0);
 		}
 	}

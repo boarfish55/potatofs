@@ -105,14 +105,18 @@ struct found_inode {
 
 static struct {
 	RB_HEAD(scanned_inode_tree, found_inode) head;
+	int                                      count;
 } scanned_inodes = {
-	RB_INITIALIZER(&inode_tree.head)
+	RB_INITIALIZER(&scanned_inodes.head),
+	0
 };
 
 static struct {
 	RB_HEAD(scanned_dirent_inode_tree, found_inode) head;
+	int                                             count;
 } scanned_dirent_inodes = {
-	RB_INITIALIZER(&inode_tree.head)
+	RB_INITIALIZER(&scanned_dirent_inode_tree.head),
+	0
 };
 
 static int
@@ -292,6 +296,7 @@ add_found_inode(ino_t ino, struct xerr *e)
 			return XERRF(e, XLOG_ERRNO, errno,
 			    "RB_INSERT");
 		}
+		scanned_dirent_inodes.count++;
 	}
 	return 0;
 }
@@ -372,14 +377,15 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 		return 0;
 	}
 
-	dir_blocks[b_off / sizeof(struct dir_block_v2)] = 1;
+	dir_blocks[(b_off - sizeof(struct dir_hdr_v2)) /
+	    sizeof(struct dir_block_v2)] = 1;
 
 	if (b->v.flags & DI_BLOCK_LEAF) {
 		for (;;) {
 			for (p = b->v.leaf.data, i = 0;
 			    p - b->v.leaf.data < b->v.leaf.length; p += r) {
-				dir_blocks[(p - dir) /
-				    sizeof(struct dir_block_v2)] = 1;
+				dir_blocks[((p - sizeof(struct dir_hdr_v2)) -
+				    dir) / sizeof(struct dir_block_v2)] = 1;
 				/*
 				 * Dir entries in the inode are always
 				 * contiguous. If we see one that's not
@@ -403,8 +409,10 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 				i++;
 				stats->n_dirents++;
 
-				if (!valid_inode(mgr, de_v2.inode))
+				if (!valid_inode(mgr, de_v2.inode)) {
 					stats->errors++;
+					continue;
+				}
 				if (add_found_inode(de_v2.inode, e) == -1)
 					return XERR_PREPENDFN(e);
 
@@ -482,9 +490,9 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 		return XERR_PREPENDFN(e);
 	stats->n_dirents++;
 
-	if (*dir_sz % 512 != 0) {
-		warnx("dir inode size is node a multiple of 512: "
-		    "inode=%lu", hdr->v.h.inode);
+	if (*dir_sz % DEV_BSIZE != 0) {
+		warnx("dir inode size is node a multiple of %d: "
+		    "inode=%lu", DEV_BSIZE, hdr->v.h.inode);
 		stats->errors++;
 	}
 	/*
@@ -513,7 +521,8 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 			    hdr->v.h.inode, (char *)b - dir);
 			return 0;
 		}
-		dir_blocks[((char *)b - dir) / sizeof(struct dir_block_v2)] = 1;
+		dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
+		    sizeof(struct dir_block_v2)] = 1;
 	}
 
 	for (b = (struct dir_block_v2 *)(dir + sizeof(struct dir_hdr_v2));
@@ -524,16 +533,15 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 		 * at the boundary of inline inode data, which we don't
 		 * use in dirinodes.
 		 */
-		if (dir_blocks[((char *)b - dir)
-		    / sizeof(struct dir_block_v2)] == 0 &&
-		    (inode_max_inline_b() - ((char *)b - dir) >=
-		     sizeof(struct dir_block_v2))) {
+		if (dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
+		    sizeof(struct dir_block_v2)] == 0) {
 			stats->errors++;
 			warnx("dir inode %lu has a block that is neither "
 			    "allocated or part of the freelist, at offset %ld",
 			    hdr->v.h.inode, (char *)b - dir);
 		}
 	}
+	free(dir_blocks);
 
 	return dirty;
 }
@@ -584,6 +592,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			free(fino);
 			return XERRF(e, XLOG_ERRNO, errno, "RB_INSERT");
 		}
+		scanned_inodes.count++;
 	}
 
 	stats->n_inodes++;
@@ -887,6 +896,10 @@ fsck(int argc, char **argv)
 	}
 
 	close(mgr);
+
+	if (fsck_verbose)
+		printf("Checking for missing inodes; tables=%d, dirents=%d\n",
+		    scanned_inodes.count, scanned_dirent_inodes.count);
 
 	for (fino = RB_MIN(scanned_inode_tree, &scanned_inodes.head);
 	    fino != NULL;
@@ -1444,18 +1457,18 @@ write_dir(int mgr, char *data, struct inode *inode)
 	struct xerr    e = XLOG_ERR_INITIALIZER;
 	off_t          offset;
 
-	if (inode->v.f.size < inode_max_inline_b()) {
+	if (inode->v.f.size < INODE_INLINE_BYTES) {
 		memcpy(inode_data(inode), data, inode->v.f.size);
 		bzero(inode_data(inode) + inode->v.f.size,
-		    inode_max_inline_b() - inode->v.f.size);
+		    INODE_INLINE_BYTES - inode->v.f.size);
 		offset = inode->v.f.size;
 	} else {
-		memcpy(inode_data(inode), data, inode_max_inline_b());
-		offset = inode_max_inline_b();
+		memcpy(inode_data(inode), data, INODE_INLINE_BYTES);
+		offset = INODE_INLINE_BYTES;
 	}
 
 	while (offset <= inode->v.f.size &&
-	    inode->v.f.size > inode_max_inline_b()) {
+	    inode->v.f.size > INODE_INLINE_BYTES) {
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, inode->v.f.inode, offset);
@@ -1660,9 +1673,9 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 	if ((d = malloc(inode->v.f.size)) == NULL)
 		err(1, "malloc");
 
-	r_offset = (inode->v.f.size < (inode_max_inline_b()))
+	r_offset = (inode->v.f.size < INODE_INLINE_BYTES)
 	    ? inode->v.f.size
-	    : inode_max_inline_b();
+	    : INODE_INLINE_BYTES;
 	w_offset = r_offset;
 	dir_sz = inode->v.f.size;
 
@@ -1710,7 +1723,7 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		}
 
 		if ((b = malloc(sizeof(struct oslab))) == NULL)
-			err(1, "calloc");
+			err(1, "malloc");
 		bzero(b, sizeof(struct oslab));
 
 		b->fd = fd;
@@ -1743,10 +1756,13 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 
 		if ((r = slab_read(b, d + w_offset,
 		    r_offset % slab_get_max_size(),
-		    slab_get_max_size(), &e)) == -1) {
+		    ((dir_sz - w_offset < slab_get_max_size())
+		    ? dir_sz - w_offset
+		    : slab_get_max_size()), &e)) == -1) {
 			xerr_print(&e);
 			goto fail_free_slab;
 		}
+		w_offset += r;
 
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_UNCLAIM;
@@ -1832,7 +1848,7 @@ show_inode(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 	print_inode(&inode, 0);
 
-	for (i = inode_max_inline_b(); i < inode.v.f.size;
+	for (i = INODE_INLINE_BYTES; i < inode.v.f.size;
 	    i += slab_get_max_size()) {
 		if (slab_path(path, sizeof(path),
 		    slab_key(&sk, ino, i), 1, &e) == -1) {
@@ -1921,9 +1937,9 @@ show_dir(int argc, char **argv)
 	if ((data = calloc(inode.v.f.size, 1)) == NULL)
 		err(1, "calloc");
 
-	i = (inode.v.f.size < inode_max_inline_b())
+	i = (inode.v.f.size < INODE_INLINE_BYTES)
 	    ?  inode.v.f.size
-	    : inode_max_inline_b();
+	    : INODE_INLINE_BYTES;
 
 	memcpy(data, inode_data(&inode), i);
 
@@ -1976,6 +1992,7 @@ show_dir(int argc, char **argv)
 	}
 
 	printf("  Total dirents: %d\n", n);
+	free(data);
 
 	return 0;
 }
@@ -2065,7 +2082,7 @@ show_slab(int argc, char **argv)
 	print_slab_hdr(&b.hdr);
 
 	if (!b.hdr.v.f.key.ino) {
-		itbl_hdr = (struct slab_itbl_hdr *)b.hdr.v.f.data;
+		itbl_hdr = (struct slab_itbl_hdr *)b.hdr.v.padding.data;
 
 		printf("  itbl hdr:\n");
 		printf("       base:    %lu\n", b.hdr.v.f.key.base);

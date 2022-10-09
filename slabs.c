@@ -332,7 +332,7 @@ slab_write_hdr(struct oslab *b, struct xerr *e)
 void *
 slab_hdr_data(struct oslab *b)
 {
-	return b->hdr.v.f.data;
+	return b->hdr.v.padding.data;
 }
 
 /*
@@ -1305,6 +1305,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	void           *data = NULL;
 	ssize_t         r;
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = oflags;

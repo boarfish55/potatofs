@@ -20,6 +20,7 @@
 #ifndef INODES_H
 #define INODES_H
 
+#include <sys/param.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdint.h>
@@ -39,7 +40,9 @@ struct inode {
 		struct {
 			/*
 			 * Increment the SLAB_VERSION (slabs.h) definition
-			 * anytime we modify this structure.
+			 * anytime we modify this structure, including
+			 * changing how many bytes can be stored inline
+			 * through the INODE_INLINE_BYTES macro below.
 			 */
 			dev_t           dev;
 			ino_t           inode;
@@ -59,17 +62,21 @@ struct inode {
 			 * together with a single write.
 			 */
 			off_t           size;
-
-			/*
-			 * We can fit up to what's left of the full
-			 * block size in 'data'. This field must be the
-			 * last in this struct, as it will use space
-			 * from of the padding.
-			 */
-			char            data[1];
 		} f;
-		char padding[FS_BLOCK_SIZE];
+		struct {
+			/*
+			 * The inode_fields size must be large enough to
+			 * be able to hold the "f" structure above a be
+			 * a multiple of DEV_BSIZE (the device fragment size).
+			 * The remaining space is used to store the inode's
+			 * inline data.
+			 */
+			char inode_fields[DEV_BSIZE];
+			char inline_data[FS_BLOCK_SIZE - DEV_BSIZE];
+		} padding;
 	} v;
+#define INODE_INLINE_BYTES (sizeof((struct inode *)NULL)->v.padding.inline_data)
+
 #define INODE_ATTR_MODE  (1 << 0)
 #define INODE_ATTR_UID   (1 << 1)
 #define INODE_ATTR_GID   (1 << 2)
@@ -146,7 +153,6 @@ struct inode_splice_bufvec {
 /*
  * No locks acquired; static result.
  */
-off_t  inode_max_inline_b();
 char  *inode_data(struct inode *);
 
 /*
