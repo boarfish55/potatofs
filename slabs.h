@@ -20,6 +20,7 @@
 #ifndef SLABS_H
 #define SLABS_H
 
+#include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <uuid/uuid.h>
@@ -63,15 +64,17 @@ struct slab_key {
  * (see below) holds data specific to inode tables and is stored
  * into the data field. Otherwise data is empty. In any case, we keep
  * the slab header size as FS_BLOCK_SIZE to align with the underlying
- * filesystem to avoid read on write.
+ * filesystem to avoid read on write. slab_hdr fields should be kept
+ * under a size of DEV_BSIZE to guarantee consistency when writing.
  */
 struct slab_hdr {
-#define SLAB_VERSION 3
+#define SLAB_VERSION 4
 	union {
 		struct {
 			/*
-			 * Increment the SLAB_VERSION definition anytime we
-			 * modify this structure.
+			 * NOTE: Increment the SLAB_VERSION definition anytime
+			 * we modify this structure, the slab_itbl_hdr below
+			 * or the inode structure (see inodes.h).
 			 */
 			uint32_t        slab_version;
 
@@ -95,16 +98,18 @@ struct slab_hdr {
 			 * that were created by an unknown instance.
 			 */
 			uuid_t   last_owner;
-
-			/*
-			 * We can fit up to what's left of the full
-			 * block size in 'data'. This field must be the
-			 * last in this struct, as it will use space
-			 * from of the padding.
-			 */
-			char     data[1];
 		} f;
-		char padding[FS_BLOCK_SIZE];
+		struct {
+			/*
+			 * hdr_hdr size must be large enough to
+			 * be able to hold the "f" structure above and be
+			 * a multiple of DEV_BSIZE (the device fragment size).
+			 * The remaining space is used to store the additional
+			 * data about the slab, such as slab_itbl_hdr below.
+			 */
+			char hdr_fields[DEV_BSIZE];
+			char data[FS_BLOCK_SIZE - DEV_BSIZE];
+		} padding;
 	} v;
 /* slab flags */
 #define SLAB_DIRTY   0x00000001
@@ -120,10 +125,13 @@ struct slab_itbl_hdr {
 	 *
 	 * Increment the SLAB_VERSION definition anytime we
 	 * modify this structure.
+	 *
+	 * NOTE: Any change to the fields in this structure must be
+	 * accompanied by incrementing the SLAB_VERSION macro above.
 	 */
-	uint8_t  initialized;
 	uint32_t bitmap[SLAB_SIZE_CEIL / FS_BLOCK_SIZE /
 	    (sizeof(uint32_t) * 8)];
+	uint8_t  initialized;
 	uint32_t n_free;
 };
 

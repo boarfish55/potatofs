@@ -332,7 +332,7 @@ slab_write_hdr(struct oslab *b, struct xerr *e)
 void *
 slab_hdr_data(struct oslab *b)
 {
-	return b->hdr.v.f.data;
+	return b->hdr.v.padding.data;
 }
 
 /*
@@ -775,6 +775,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		goto end;
 	}
+	bzero(b, sizeof(struct oslab));
 
 	if (clock_gettime(CLOCK_MONOTONIC, &b->open_since) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
@@ -787,6 +788,12 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		goto fail_free_b;
 	if (LK_LOCK_INIT(&b->lock, e) == -1)
 		goto fail_destroy_bytes_lock;
+
+	// TODO: We may want to add the slab as a placeholder here
+	// with a marker that says it is being downloaded or created,
+	// otherwise we're holding the lock for any other slab loads.
+	// This makes large dir scans very slow if we need to pull directories
+	// from the backend. Will probably need a marker in the oslab struct.
 
 	if ((mgr = mgr_connect(1, e)) == -1)
 		goto fail_destroy_locks;
@@ -1298,6 +1305,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	void           *data = NULL;
 	ssize_t         r;
 
+	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = oflags;
@@ -1313,7 +1321,8 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	}
 
 	if (m.m == MGR_MSG_CLAIM_NOENT) {
-		XERRF(e, XLOG_APP, XLOG_NOSLAB, "no such slab");
+		XERRF(e, XLOG_APP, XLOG_NOSLAB,
+		    "no such slab; ino=%llu, base=%lu", sk->ino, sk->base);
 		return NULL;
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
 		// TODO: handle backend unavailability
@@ -1326,7 +1335,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		return NULL;
 	} else if (memcmp(&m.v.claim.key, sk, sizeof(struct slab_key))) {
 		XERRF(e, XLOG_APP, XLOG_MGRERROR,
-		    "bad manager response; ino expected=%lu, received=%lu "
+		    "bad manager response; ino expected=%llu, received=%llu "
 		    "base expected=%lu, received=%lu",
 		    sk->ino, m.v.claim.key.ino, sk->base, m.v.claim.key.base);
 		return NULL;

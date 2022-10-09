@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "0.4.1"
+#define VERSION      "1.0.0-alpha"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -53,6 +53,11 @@
 #define SLAB_DIRS     256
 #define FS_ROOT_INODE 1
 
+/*
+ * Hard deadline for all backend operations. If it is expected that reads
+ * or writes to the backend might take longer than this value, it should
+ * be increased.
+ */
 #define BACKEND_TIMEOUT_SECONDS 30
 
 /*

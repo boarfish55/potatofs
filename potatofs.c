@@ -17,6 +17,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <err.h>
 #include <locale.h>
 #include <signal.h>
@@ -397,6 +399,7 @@ static void
 fs_destroy(void *unused)
 {
 	struct xerr e;
+	int         wstatus;
 
 	xlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
@@ -422,6 +425,24 @@ fs_destroy(void *unused)
 	xlog(LOG_DEBUG, NULL, "sending shutdown to potatomgr");
 	if (mgr_send_shutdown(xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
+
+	/*
+	 * Wait for mgr completion. This is to ensure umount blocks
+	 * until everything is closed, to avoid our processes
+	 * being killed by the shutdown sequence too soon.
+	 */
+	do {
+		if (wait(&wstatus) == -1) {
+			if (errno == EINTR)
+				continue;
+			else if (errno != ECHILD)
+				xlog_strerror(LOG_ERR, errno, "wait");
+		}
+	} while(0);
+
+	if (WEXITSTATUS(wstatus) != 0)
+		xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
+		    __func__, wstatus);
 }
 
 static void
@@ -521,7 +542,6 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	size_t            buf_used = 0;
 	size_t            need;
 	int               r_sent = 0;
-	off_t             de_off;
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_READDIR);
@@ -530,7 +550,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 
 	for (;;) {
 		inode_lock(oi, LK_LOCK_RD);
-		r = di_readdir(oi, dirs, &off,
+		r = di_readdir(oi, dirs, off,
 		    sizeof(dirs) / sizeof(struct dir_entry), xerrz(&e));
 		inode_unlock(oi);
 
@@ -544,8 +564,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		} else if (r == 0)
 			break;
 
-		for (i = 0, de_off = off - ((r - 1) * sizeof(struct dir_entry));
-		    i < r; i++, de_off += sizeof(struct dir_entry)) {
+		for (i = 0; i < r; i++) {
 			bzero(&st, sizeof(st));
 
 			if ((de_oi = inode_load(dirs[i].inode, 0, xerrz(&e))) == NULL) {
@@ -576,7 +595,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 				goto end;
 
 			buf_used += fuse_add_direntry(req, buf + buf_used,
-			    size - buf_used, dirs[i].name, &st, de_off);
+			    size - buf_used, dirs[i].name, &st, dirs[i].d_off);
+			off = dirs[i].d_off;
 		}
 	}
 end:
@@ -1081,6 +1101,9 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 
 	bzero(&de, sizeof(de));
 
+	if (name[0] == '\0')
+		return XERRF(e, XLOG_FS, EINVAL, "empty name");
+
 	if (strlen(name) > FS_NAME_MAX)
 		return XERRF(e, XLOG_FS, ENAMETOOLONG,
 		    "file name too long");
@@ -1145,7 +1168,7 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		inode_nlink(parent_oi, 1);
 
 	status = 0;
-	if (di_mkdirent(parent_oi, &de, NULL, xerrz(e)) == -1) {
+	if (di_mkdirent(parent_oi, &de, 0, xerrz(e)) == -1) {
 		if (is_dir)
 			inode_nlink(parent_oi, -1);
 		fs_error_set();
@@ -1431,7 +1454,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	fs_set_time(oi, INODE_ATTR_CTIME);
 	inode_stat(oi, &entry.attr);
 
-	if (di_mkdirent(parent_oi, &new_de, NULL, &e) == -1) {
+	if (di_mkdirent(parent_oi, &new_de, 0, &e) == -1) {
 		FS_ERR(&r_sent, req, &e);
 		xerrz(&e);
 		inode_nlink(oi, -1);
@@ -1559,7 +1582,7 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
 	struct xerr       e;
-	struct dir_entry  de, new_de, replaced;
+	struct dir_entry  de, new_de;
 	struct oinode    *old_doi = NULL, *new_doi = NULL;
 	struct oinode    *oi = NULL, *new_oi = NULL, *p_oi = NULL;
 	int               r_sent = 0;
@@ -1763,7 +1786,7 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	/*
 	 * Make our entry in the new parent dir, set mtime.
 	 */
-	if (di_mkdirent(new_doi, &new_de, &replaced, xerrz(&e)) == -1) {
+	if (di_mkdirent(new_doi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
@@ -1871,7 +1894,7 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
     fuse_ino_t newparent, const char *newname)
 {
 	struct xerr       e;
-	struct dir_entry  de, new_de, replaced;
+	struct dir_entry  de, new_de;
 	struct oinode    *d_oi;
 	struct oinode    *oi = NULL, *new_oi = NULL;
 	int               r_sent = 0;
@@ -1999,7 +2022,7 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	/*
 	 * Create the new entry.
 	 */
-	if (di_mkdirent(d_oi, &new_de, &replaced, xerrz(&e)) == -1) {
+	if (di_mkdirent(d_oi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
 		FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
@@ -2084,7 +2107,6 @@ main(int argc, char **argv)
 	char             *mountpoint;
 	int               status = -1;
 	struct sigaction  act;
-	sigset_t          set;
 	int               foreground;
 	struct fs_info    fs_info;
 	struct xerr       e;
@@ -2110,13 +2132,10 @@ main(int argc, char **argv)
 	bzero(&act, sizeof(act));
 	act.sa_flags = 0;
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &act, NULL) == -1)
+	if (sigaction(SIGPIPE, &act, NULL) == -1 ||
+	    sigaction(SIGINT, &act, NULL) == -1 ||
+	    sigaction(SIGTERM, &act, NULL) == -1)
 		err(1, "sigaction");
-
-	sigemptyset(&set);
-	sigaddset(&set, SIGPIPE);
-	if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
-		err(1, "pthread_sigmask");
 
 	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1) {
 		warn("xlog_init");

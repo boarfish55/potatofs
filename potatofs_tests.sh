@@ -60,7 +60,7 @@ done
 echo ""
 
 echo "*** Running tests ***"
-./potatofs_tests -c "$conf" "$mountpoint"
+./potatofs_tests -c "$conf" "$mountpoint" $@
 st=$?
 echo ""
 
@@ -80,6 +80,8 @@ else
 	echo "Success."
 fi
 echo ""
+
+read -p "Press any key to terminate..." PAUSE
 
 echo "*** cleanup ***"
 while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do

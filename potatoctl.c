@@ -105,14 +105,18 @@ struct found_inode {
 
 static struct {
 	RB_HEAD(scanned_inode_tree, found_inode) head;
+	int                                      count;
 } scanned_inodes = {
-	RB_INITIALIZER(&inode_tree.head)
+	RB_INITIALIZER(&scanned_inodes.head),
+	0
 };
 
 static struct {
 	RB_HEAD(scanned_dirent_inode_tree, found_inode) head;
+	int                                             count;
 } scanned_dirent_inodes = {
-	RB_INITIALIZER(&inode_tree.head)
+	RB_INITIALIZER(&scanned_dirent_inode_tree.head),
+	0
 };
 
 static int
@@ -234,18 +238,18 @@ valid_inode(int mgr, ino_t ino)
 }
 
 int
-clear_dir_entry(struct dir_entry *start, struct dir_entry *de, size_t *sz,
-    struct xerr *e)
+clear_dir_entry(struct dir_entry_v1 *start, struct dir_entry_v1 *de,
+    size_t *sz, struct xerr *e)
 {
-	off_t            offset = sizeof(struct dir_hdr), prev_off = 0;
-	struct dir_entry r_de, prev_used;
-	ino_t            ino = de->inode;
+	off_t               offset = sizeof(struct dir_hdr), prev_off = 0;
+	struct dir_entry_v1 r_de, prev_used;
+	ino_t               ino = de->inode;
 
 	bzero(&prev_used, sizeof(prev_used));
 
 	for (;;) {
 		memcpy(&r_de, ((char *)start) + offset,
-		    sizeof(struct dir_entry));
+		    sizeof(struct dir_entry_v1));
 
 		if (strcmp(r_de.name, de->name) == 0)
 			break;
@@ -275,10 +279,277 @@ noent:
 }
 
 int
+add_found_inode(ino_t ino, struct xerr *e)
+{
+	struct found_inode *fino;
+
+	if ((fino = malloc(sizeof(struct found_inode))) == NULL)
+		return XERRF(e, XLOG_ERRNO, errno, "malloc");
+	bzero(fino, sizeof(struct found_inode));
+	fino->ino = ino;
+	if (!RB_FIND(scanned_dirent_inode_tree,
+	    &scanned_dirent_inodes.head, fino)) {
+		if (RB_INSERT(scanned_dirent_inode_tree,
+		    &scanned_dirent_inodes.head, fino)
+		    != NULL) {
+			free(fino);
+			return XERRF(e, XLOG_ERRNO, errno,
+			    "RB_INSERT");
+		}
+		scanned_dirent_inodes.count++;
+	}
+	return 0;
+}
+
+int
+validate_dir_v1(int mgr, ino_t ino, char *dir, size_t *dir_sz,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	struct dir_entry_v1 *de;
+	int                  dirty = 0;
+
+	for (de = (struct dir_entry_v1 *)(dir + sizeof(struct dir_hdr));
+	    (char *)de < (dir + *dir_sz); de++) {
+		if (de->inode > 0) {
+			fsck_printf("    dirent: %lu (%s)",
+			    de->inode, de->name);
+			stats->n_dirents++;
+
+			if (!valid_inode(mgr, de->inode)) {
+				stats->errors++;
+
+				if (fsck_fix) {
+					if (clear_dir_entry(
+					    (struct dir_entry_v1 *)dir, de,
+					    dir_sz, xerrz(e)) == -1)
+						xerr_print(e);
+					else
+						dirty = 1;
+				}
+				continue;
+			}
+
+			/*
+			 * Keep track of all linked inodes to later verify
+			 * if any of them are not.
+			 */
+			if (add_found_inode(de->inode, e) == -1)
+				return XERR_PREPENDFN(e);
+		}
+		if (de->next > 0 && de->next <= ((char *)de - dir)) {
+			/*
+			 * We link to a next entry, but the offset is
+			 * the current offset or before, which is
+			 * invalid.
+			 */
+			stats->errors++;
+			warnx("invalid chaining in directory "
+			    "inode %lu; entry %s at offset %lu",
+			    ino, de->name, (char *)de - dir);
+		}
+	}
+	return dirty;
+}
+
+int
+validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
+    off_t b_off, int depth, uint8_t *dir_blocks,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	struct dir_block_v2 *b = (struct dir_block_v2 *)(dir + b_off);
+	struct dir_entry_v2  de_v2;
+	const char          *p;
+	ssize_t              r;
+	size_t               i;
+	int                  bucket;
+
+	if ((char *)b > dir + dir_sz) {
+		warnx("dir inode %lu: trying to read a block at offset %ld, "
+		    "which is past the end of the dir inode", ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	if (!(b->v.flags & DI_BLOCK_ALLOCATED)) {
+		warnx("unallocated block in dir inode %lu at offset %ld",
+		    ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	dir_blocks[(b_off - sizeof(struct dir_hdr_v2)) /
+	    sizeof(struct dir_block_v2)] = 1;
+
+	if (b->v.flags & DI_BLOCK_LEAF) {
+		for (;;) {
+			for (p = b->v.leaf.data, i = 0;
+			    p - b->v.leaf.data < b->v.leaf.length; p += r) {
+				dir_blocks[((p - sizeof(struct dir_hdr_v2)) -
+				    dir) / sizeof(struct dir_block_v2)] = 1;
+				/*
+				 * Dir entries in the inode are always
+				 * contiguous. If we see one that's not
+				 * allocated, it means there are no more after.
+				 */
+				if ((r = di_unpack_v2(p,
+				    b->v.leaf.length - (p - b->v.leaf.data),
+				    &de_v2)) >
+				    b->v.leaf.length - (p - b->v.leaf.data))
+					break;
+
+				if (!(de_v2.flags & DI_ALLOCATED)) {
+					warnx("dir inode %lu: unallocated dir "
+					    "entry at offset %lu in dir "
+					    "block offset %ld", ino,
+					    p - b->v.leaf.data, b_off);
+					stats->errors++;
+					break;
+				}
+
+				i++;
+				stats->n_dirents++;
+
+				if (!valid_inode(mgr, de_v2.inode)) {
+					stats->errors++;
+					continue;
+				}
+				if (add_found_inode(de_v2.inode, e) == -1)
+					return XERR_PREPENDFN(e);
+
+				if (di_fnv1a32(de_v2.name, de_v2.length) !=
+				    de_v2.hash) {
+					warnx("dir inode %lu: mismatching hash "
+					    "for entry at offset %lu in dir "
+					    "block offset %ld", ino,
+					    p - b->v.leaf.data, b_off);
+					stats->errors++;
+				}
+			}
+
+			if (i != b->v.leaf.entries) {
+				warnx("dir inode %lu / block %ld: mismatching"
+				    "number of entries in dir block header and "
+				    "leaf data: header=%lu, data=%lu",
+				    ino, b_off, b->v.leaf.entries, i);
+				stats->errors++;
+			}
+
+			if (b->v.leaf.next == 0)
+				break;
+
+			b = (struct dir_block_v2 *)(dir + b->v.leaf.next);
+			if ((char *)b > dir + dir_sz) {
+				warnx("dir inode %lu / block %ld: "
+				    "next is point past the end of the"
+				    " inode: next=%ld, size=%lu",
+				    ino, b_off, b->v.leaf.next, dir_sz);
+				stats->errors++;
+			}
+		}
+		return 0;
+	}
+
+	if (depth >= DI_BLOCK_V2_MAX_DEPTH) {
+		warnx("dir inode %lu / block %ld: max depth reached",
+		    ino, b_off);
+		stats->errors++;
+		return 0;
+	}
+
+	for (bucket = 0; bucket < 32; bucket++) {
+		if (b->v.idx.buckets[bucket] == 0)
+			continue;
+
+		if (validate_dir_block_v2(mgr, ino, dir, dir_sz,
+		    b->v.idx.buckets[bucket], depth + 1,
+		    dir_blocks, stats, e) == -1)
+			return XERR_PREPENDFN(e);
+	}
+	return 0;
+}
+
+int
+validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
+    struct fsck_stats *stats, struct xerr *e)
+{
+	int                  dirty = 0;
+	struct dir_hdr_v2   *hdr = (struct dir_hdr_v2 *)dir;
+	uint8_t             *dir_blocks;
+	size_t               dir_blocks_sz;
+	struct dir_block_v2 *b;
+
+	if (!valid_inode(mgr, hdr->v.h.inode))
+		stats->errors++;
+	if (add_found_inode(hdr->v.h.inode, e) == -1)
+		return XERR_PREPENDFN(e);
+	stats->n_dirents++;
+
+	if (!valid_inode(mgr, hdr->v.h.parent))
+		stats->errors++;
+	if (add_found_inode(hdr->v.h.parent, e) == -1)
+		return XERR_PREPENDFN(e);
+	stats->n_dirents++;
+
+	if (*dir_sz % DEV_BSIZE != 0) {
+		warnx("dir inode size is node a multiple of %d: "
+		    "inode=%lu", DEV_BSIZE, hdr->v.h.inode);
+		stats->errors++;
+	}
+	/*
+	 * Every element in the array is either 0 or 1, where
+	 * 1 means this block offset is used.
+	 */
+	dir_blocks_sz = sizeof(uint8_t) *
+	    ((*dir_sz - sizeof(struct dir_hdr_v2)) /
+	     sizeof(struct dir_block_v2));
+	dir_blocks = malloc(dir_blocks_sz);
+	if (dir_blocks == NULL)
+		return XERRF(e, XLOG_ERRNO, errno, "malloc");
+	bzero(dir_blocks, dir_blocks_sz);
+
+	if (validate_dir_block_v2(mgr, hdr->v.h.inode, dir, *dir_sz,
+	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	for (b = (struct dir_block_v2 *)(dir + hdr->v.h.free_list_start);
+	    (char *)b - dir > 0;
+	    b = (struct dir_block_v2 *)(dir + b->v.leaf.next)) {
+		if (b->v.flags & DI_BLOCK_ALLOCATED) {
+			stats->errors++;
+			warnx("dir inode %lu has a block part of its freelist "
+			    "that's allocated at offset %ld",
+			    hdr->v.h.inode, (char *)b - dir);
+			return 0;
+		}
+		dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
+		    sizeof(struct dir_block_v2)] = 1;
+	}
+
+	for (b = (struct dir_block_v2 *)(dir + sizeof(struct dir_hdr_v2));
+	    (char *)b - dir < *dir_sz; b++) {
+		/*
+		 * See if this block offset is either part of the freelist
+		 * or referenced in the dir hash tree. Skip if it lies
+		 * at the boundary of inline inode data, which we don't
+		 * use in dirinodes.
+		 */
+		if (dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
+		    sizeof(struct dir_block_v2)] == 0) {
+			stats->errors++;
+			warnx("dir inode %lu has a block that is neither "
+			    "allocated or part of the freelist, at offset %ld",
+			    hdr->v.h.inode, (char *)b - dir);
+		}
+	}
+	free(dir_blocks);
+
+	return dirty;
+}
+
+int
 fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
     struct fsck_stats *stats, struct xerr *e)
 {
-	struct dir_entry   *de;
 	char               *dir;
 	size_t              dir_sz;
 	int                 dirty = 0;
@@ -321,6 +592,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			free(fino);
 			return XERRF(e, XLOG_ERRNO, errno, "RB_INSERT");
 		}
+		scanned_inodes.count++;
 	}
 
 	stats->n_inodes++;
@@ -337,57 +609,14 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	}
 	dir_sz = inode->v.f.size;
 
-	for (de = (struct dir_entry *)(dir + sizeof(struct dir_hdr));
-	    (char *)de < (dir + dir_sz); de++) {
-		if (de->inode > 0) {
-			fsck_printf("    dirent: %lu (%s)",
-			    de->inode, de->name);
-			stats->n_dirents++;
-
-			if (!valid_inode(mgr, de->inode)) {
-				stats->errors++;
-
-				if (fsck_fix) {
-					if (clear_dir_entry(
-					    (struct dir_entry *)dir, de,
-					    &dir_sz, xerrz(e)) == -1)
-						xerr_print(e);
-					else
-						dirty = 1;
-				}
-				continue;
-			}
-
-			/*
-			 * Keep track of all linked inodes to later verify
-			 * if any of them are not.
-			 */
-			if ((fino = malloc(sizeof(struct found_inode))) == NULL)
-				return XERRF(e, XLOG_ERRNO, errno, "malloc");
-			bzero(fino, sizeof(struct found_inode));
-			fino->ino = de->inode;
-			if (!RB_FIND(scanned_dirent_inode_tree,
-			    &scanned_dirent_inodes.head, fino)) {
-				if (RB_INSERT(scanned_dirent_inode_tree,
-				    &scanned_dirent_inodes.head, fino)
-				    != NULL) {
-					free(fino);
-					return XERRF(e, XLOG_ERRNO, errno,
-					    "RB_INSERT");
-				}
-			}
-		}
-		if (de->next > 0 && de->next <= ((char *)de - dir)) {
-			/*
-			 * We link to a next entry, but the offset is
-			 * the current offset or before, which is
-			 * invalid.
-			 */
-			stats->errors++;
-			warnx("invalid chaining in directory "
-			    "inode %lu; entry %s at offset %lu",
-			    ino, de->name, (char *)de - dir);
-		}
+	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
+		dirty = validate_dir_v1(mgr, ino, dir, &dir_sz, stats, e);
+		if (dirty == -1)
+			return XERR_PREPENDFN(e);
+	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
+		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats, e);
+		if (dirty == -1)
+			return XERR_PREPENDFN(e);
 	}
 
 	if (dirty) {
@@ -667,6 +896,10 @@ fsck(int argc, char **argv)
 	}
 
 	close(mgr);
+
+	if (fsck_verbose)
+		printf("Checking for missing inodes; tables=%d, dirents=%d\n",
+		    scanned_inodes.count, scanned_dirent_inodes.count);
 
 	for (fino = RB_MIN(scanned_inode_tree, &scanned_inodes.head);
 	    fino != NULL;
@@ -1224,18 +1457,18 @@ write_dir(int mgr, char *data, struct inode *inode)
 	struct xerr    e = XLOG_ERR_INITIALIZER;
 	off_t          offset;
 
-	if (inode->v.f.size < inode_max_inline_b()) {
+	if (inode->v.f.size < INODE_INLINE_BYTES) {
 		memcpy(inode_data(inode), data, inode->v.f.size);
 		bzero(inode_data(inode) + inode->v.f.size,
-		    inode_max_inline_b() - inode->v.f.size);
+		    INODE_INLINE_BYTES - inode->v.f.size);
 		offset = inode->v.f.size;
 	} else {
-		memcpy(inode_data(inode), data, inode_max_inline_b());
-		offset = inode_max_inline_b();
+		memcpy(inode_data(inode), data, INODE_INLINE_BYTES);
+		offset = INODE_INLINE_BYTES;
 	}
 
 	while (offset <= inode->v.f.size &&
-	    inode->v.f.size > inode_max_inline_b()) {
+	    inode->v.f.size > INODE_INLINE_BYTES) {
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, inode->v.f.inode, offset);
@@ -1432,45 +1665,28 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 	struct mgr_msg  m;
 	struct oslab   *b;
 	char            path[PATH_MAX];
-	char           *d, *d_realloc;
+	char           *d;
 	struct xerr     e = XLOG_ERR_INITIALIZER;
-	struct dir_hdr  d_hdr = { DIRINODE_FORMAT };
 
 	// TODO: properly return an error, don't err()
 
 	if ((d = malloc(inode->v.f.size)) == NULL)
 		err(1, "malloc");
 
-	r_offset = (inode->v.f.size < (inode_max_inline_b()))
+	r_offset = (inode->v.f.size < INODE_INLINE_BYTES)
 	    ? inode->v.f.size
-	    : inode_max_inline_b();
+	    : INODE_INLINE_BYTES;
 	w_offset = r_offset;
 	dir_sz = inode->v.f.size;
 
 	memcpy(d, inode_data(inode), r_offset);
 
-	if (((struct dir_hdr *)d)->dirinode_format != DIRINODE_FORMAT) {
-		/*
-		 * 46 is the ASCII code for ".", which should be the first
-		 * byte in our older, unversioned format.
-		 */
-		if (((struct dir_hdr *)d)->dirinode_format == 46 && fsck_fix) {
-			inode->v.f.size += sizeof(struct dir_hdr);
-			if ((d_realloc = realloc(d, inode->v.f.size)) == NULL) {
-				free(d);
-				err(1, "realloc");
-			}
-			d = d_realloc;
-			memcpy(d, &d_hdr, sizeof(d_hdr));
-			memcpy(d + sizeof(d_hdr), inode_data(inode), r_offset);
-			w_offset += sizeof(d_hdr);
-			*dirty = 1;
-		} else {
-			warnx("%s: unsupposed dirinode format %u",
-			    __func__, ((struct dir_hdr *)d)->dirinode_format);
-			free(d);
-			return -1;
-		}
+	if (((struct dir_hdr *)d)->dirinode_format > DIRINODE_FORMAT ||
+	    ((struct dir_hdr *)d)->dirinode_format == 0) {
+		warnx("%s: unsupposed dirinode format %u",
+		    __func__, ((struct dir_hdr *)d)->dirinode_format);
+		free(d);
+		return -1;
 	}
 
 	if (w_offset >= inode->v.f.size) {
@@ -1507,7 +1723,7 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		}
 
 		if ((b = malloc(sizeof(struct oslab))) == NULL)
-			err(1, "calloc");
+			err(1, "malloc");
 		bzero(b, sizeof(struct oslab));
 
 		b->fd = fd;
@@ -1540,10 +1756,13 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 
 		if ((r = slab_read(b, d + w_offset,
 		    r_offset % slab_get_max_size(),
-		    slab_get_max_size(), &e)) == -1) {
+		    ((dir_sz - w_offset < slab_get_max_size())
+		    ? dir_sz - w_offset
+		    : slab_get_max_size()), &e)) == -1) {
 			xerr_print(&e);
 			goto fail_free_slab;
 		}
+		w_offset += r;
 
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_UNCLAIM;
@@ -1629,7 +1848,7 @@ show_inode(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 	print_inode(&inode, 0);
 
-	for (i = inode_max_inline_b(); i < inode.v.f.size;
+	for (i = INODE_INLINE_BYTES; i < inode.v.f.size;
 	    i += slab_get_max_size()) {
 		if (slab_path(path, sizeof(path),
 		    slab_key(&sk, ino, i), 1, &e) == -1) {
@@ -1674,17 +1893,17 @@ show_inode(int argc, char **argv)
 int
 show_dir(int argc, char **argv)
 {
-	struct slab_hdr   hdr;
-	int               n, mgr;
-	off_t             i;
-	ino_t             ino;
-	struct inode      inode;
-	char             *data;
-	void             *slab_data;
-	size_t            slab_sz;
-	struct slab_key   sk;
-	struct dir_entry *de;
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct slab_hdr      hdr;
+	int                  n, mgr;
+	off_t                i;
+	ino_t                ino;
+	struct inode         inode;
+	char                *data;
+	void                *slab_data;
+	size_t               slab_sz;
+	struct slab_key      sk;
+	struct dir_entry_v1 *de;
+	struct xerr          e;
 
 	if (argc < 1) {
 		usage();
@@ -1697,12 +1916,12 @@ show_dir(int argc, char **argv)
 	if (ino < 1)
 		errx(1, "inode must be greater than zero");
 
-	if ((mgr = mgr_connect(1, &e)) == -1) {
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}
 
-	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
+	if (inode_inspect(mgr, ino, &inode, xerrz(&e)) == -1) {
 		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
@@ -1718,9 +1937,9 @@ show_dir(int argc, char **argv)
 	if ((data = calloc(inode.v.f.size, 1)) == NULL)
 		err(1, "calloc");
 
-	i = (inode.v.f.size < inode_max_inline_b())
+	i = (inode.v.f.size < INODE_INLINE_BYTES)
 	    ?  inode.v.f.size
-	    : inode_max_inline_b();
+	    : INODE_INLINE_BYTES;
 
 	memcpy(data, inode_data(&inode), i);
 
@@ -1763,9 +1982,9 @@ show_dir(int argc, char **argv)
 		warnx("  ** inode is truncated; data might be incomplete");
 	printf("  dirents:\n\n");
 
-	de = (struct dir_entry *)data;
+	de = (struct dir_entry_v1 *)(data + sizeof(struct dir_hdr));
 
-	for (n = 0; i > 0; i -= sizeof(struct dir_entry), de++, n++) {
+	for (n = 0; i > 0; i -= sizeof(struct dir_entry_v1), de++, n++) {
 		printf("    name:        %s\n", de->name);
 		printf("    offset:      %lu\n", (char *)de - data);
 		printf("    inode:       %lu\n", de->inode);
@@ -1773,6 +1992,7 @@ show_dir(int argc, char **argv)
 	}
 
 	printf("  Total dirents: %d\n", n);
+	free(data);
 
 	return 0;
 }
@@ -1862,7 +2082,7 @@ show_slab(int argc, char **argv)
 	print_slab_hdr(&b.hdr);
 
 	if (!b.hdr.v.f.key.ino) {
-		itbl_hdr = (struct slab_itbl_hdr *)b.hdr.v.f.data;
+		itbl_hdr = (struct slab_itbl_hdr *)b.hdr.v.padding.data;
 
 		printf("  itbl hdr:\n");
 		printf("       base:    %lu\n", b.hdr.v.f.key.base);

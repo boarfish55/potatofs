@@ -23,6 +23,108 @@
 char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
 
+/*
+ * The following file names have matching hashes (fnv1a32) for their
+ * rightmost 30 bits.
+ */
+const char *same_hash_30b_suffix[] = {
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac9qqjF",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadcKcN1",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadKAotI",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadMEfm9",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad9UAjk",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaexAzeK",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagtR9CU",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagTL3v2",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaag6OlTP",
+
+	NULL
+};
+
+/*
+ * This name's fnv1a32 has matches the rightmost 16bits of the names
+ * in the above array.
+ */
+const char *same_hash_16b_suffix =
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabjCA";
+
+const char *shorter_same_hash_30b_suffix[] = {
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa30DR7a",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadftA0Na",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeaMjUua",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagPeQcwa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahd5ufqa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaah3hdQQa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaajrRdsva",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaajRl84Ea",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaakTSdGXa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaalJMfBla",
+
+	NULL
+};
+
 extern locale_t log_locale;
 
 static struct path
@@ -352,7 +454,7 @@ test_slab_size()
 		return ERR(msg, 0);
 	}
 
-	hdr_data_sz = sizeof(hdr) - (hdr.v.f.data - (char *)&hdr);
+	hdr_data_sz = sizeof(hdr) - (hdr.v.padding.data - (char *)&hdr);
 	if (sizeof(struct slab_itbl_hdr) > hdr_data_sz) {
 		snprintf(msg, sizeof(msg),
 		    "struct slab_itbl_hdr's size (%lu) does not fit in "
@@ -556,7 +658,7 @@ test_unlink()
 			}
 		} else {
 			return ERR("file still exists on-disk "
-			    "after unlink", 0);
+			    "in the inode table after unlink", 0);
 		}
 		return NULL;
 	}
@@ -648,6 +750,290 @@ test_rmdir_notempty_notdir()
 		return ERR("directory should still exist after rmdir", 0);
 
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
+}
+
+char *
+test_readdir_max_v2_dir_depth()
+{
+	char          *p = makepath("readdir_v2_max_depth");
+	char           file[PATH_MAX];
+	DIR           *dir;
+	struct dirent *de;
+	int           *found;
+	int            found_count, i;
+
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_16b_suffix);
+	if (mknod(file, 0600, 0) == -1)
+		return ERR("", errno);
+
+	found_count = i + 1;
+	found = malloc(sizeof(int) * found_count);
+	if (found == NULL)
+		err(1, "malloc");
+	bzero(found, sizeof(int) * found_count);
+
+	if ((dir = opendir(p)) == NULL)
+		return ERR("", errno);
+	while ((de = readdir(dir))) {
+		for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+			if (strcmp(de->d_name, same_hash_30b_suffix[i]) == 0)
+				found[i] = 1;
+		}
+		if (strcmp(de->d_name, same_hash_16b_suffix) == 0)
+			found[found_count - 1] = 1;
+	}
+	closedir(dir);
+
+	for (i = 0; i < found_count; i++) {
+		if (found[i] == 0) {
+			free(found);
+			return ERR("not all created entries were found "
+			    "by readdir()", 0);
+		}
+	}
+
+	free(found);
+	return NULL;
+}
+
+char *
+test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth()
+{
+	char          *p = makepath("mkdirent_fill_first_chained_leaf_v2_dir");
+	char           file[PATH_MAX];
+	struct stat    st, st_want;
+	int            i;
+
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+
+	st_want.st_size = st.st_size;
+
+	for (i = 0; shorter_same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    shorter_same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+
+	/*
+	 * See if we can re-insert in a leaf chain that's not at the
+	 * end.
+	 */
+	snprintf(file, sizeof(file), "%s/%s", p,
+	    shorter_same_hash_30b_suffix[1]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
+	if (mknod(file, 0600, 0) == -1)
+		return ERR("", errno);
+
+	return check_stat(p, &st_want, ST_SIZE);
+}
+
+char *
+test_lookup_dot_dotdot()
+{
+	char        *p_root = makepath("");
+	char        *p = makepath("lookup_dot_dotdot");
+	char        *p2 = makepath("lookup_dot_dotdot/.");
+	char        *p3 = makepath("lookup_dot_dotdot/..");
+	struct stat  st, st_want_p2, st_want_p3;
+	char        *r;
+
+	if (stat(p_root, &st) == -1)
+		return ERR("", errno);
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	st_want_p3.st_mode = st.st_mode;
+	st_want_p3.st_nlink = st.st_nlink + 1;
+	st_want_p3.st_ino = st.st_ino;
+
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+
+	st_want_p2.st_mode = (S_IFDIR | 0755);
+	st_want_p2.st_nlink = 2;
+	st_want_p2.st_ino = st.st_ino;
+	if ((r = check_stat(p2, &st_want_p2,
+	    ST_MODE|ST_NLINK|ST_INODE)) != NULL)
+		return r;
+
+	return check_stat(p3, &st_want_p3, ST_MODE|ST_NLINK|ST_INODE);
+}
+
+char *
+test_lookup_max_v2_dir_depth()
+{
+	char        *p = makepath("lookup_v2_max_depth");
+	char         file[PATH_MAX];
+	int          i;
+	struct stat  st_want;
+
+	st_want.st_mode = (S_IFREG | 0600);
+	st_want.st_nlink = 1;
+
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+
+	return check_stat(file, &st_want, ST_MODE|ST_NLINK);
+}
+
+char *
+test_unlink_max_v2_dir_depth()
+{
+	char          *p = makepath("unlink_v2_max_depth");
+	char           file[PATH_MAX];
+	int           *found;
+	int            found_count, i;
+	char           msg[1024];
+
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+	found_count = i;
+	found = malloc(sizeof(int) * found_count);
+	if (found == NULL)
+		err(1, "malloc");
+	for (i = 0; i < found_count; i++)
+		found[i] = 1;
+
+	/*
+	 * Remove an entry at the end, in the middle, and at the start
+	 * of our list of files.
+	 */
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i - 1]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
+	found[i - 1] = 0;
+	i--;
+
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i / 2]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
+	found[i / 2] = 0;
+	i--;
+
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[0]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
+	found[0] = 0;
+	i--;
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (found[i] == 1 && access(file, F_OK) == -1) {
+			free(found);
+			snprintf(msg, sizeof(msg),
+			    "failed to lookup entry #%d that should "
+			    "exist after unlinking another file: ", i);
+			return ERR(msg, errno);
+		}
+		if (found[i] == 0 && access(file, F_OK) == 0) {
+			free(found);
+			snprintf(msg, sizeof(msg),
+			    "successful lookup for entry #%d that "
+			    "was just unlinked", i);
+			return ERR(msg, 0);
+		}
+	}
+
+	if (rmdir(p) == 0)
+		return ERR("successfully removed directory that "
+		    "is not empty", 0);
+	else if (errno != ENOTEMPTY)
+		return ERR("", errno);
+
+	/*
+	 * And now delete them all.
+	 */
+	for (i = 0; i < found_count; i++) {
+		if (found[i] == 1) {
+			snprintf(file, sizeof(file), "%s/%s", p,
+			    same_hash_30b_suffix[i]);
+			if (unlink(file) == -1)
+				return ERR("", errno);
+		}
+	}
+
+	if (rmdir(p) == -1)
+		return ERR("", errno);
+
+	free(found);
+	return NULL;
+}
+
+char *
+test_dir_freelist()
+{
+	char        *p = makepath("dir_freelist");
+	char         file[PATH_MAX];
+	struct stat  st, st_want;
+	int          i;
+
+	if (mkdir(p, 0755) == -1)
+		return ERR("", errno);
+
+	for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+	st_want.st_size = st.st_size;
+	st_want.st_nlink = st.st_nlink;
+
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[0]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
+
+	if (stat(p, &st) == -1)
+		return ERR("", errno);
+	if (st.st_size != st_want.st_size)
+		return ERR("dir was truncated even though we did not"
+		    "remove entries at the end", 0);
+
+	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[0]);
+	if (mknod(file, 0600, 0) == -1)
+		return ERR("", errno);
+
+	return check_stat(p, &st_want, ST_SIZE|ST_NLINK);
 }
 
 char *
@@ -744,7 +1130,7 @@ test_file_size_and_mtime()
 	}
 
 	if ((sz = lseek(fd, 0, SEEK_CUR)) == -1)
-		return ERR(msg, 0);
+		return ERR("", 0);
 
 	if (close(fd) == -1)
 		return ERR("", errno);
@@ -766,7 +1152,7 @@ test_file_size_and_mtime()
 		    "slab size doesn't match "
 		    "total size minus max inline for the inode: "
 		    "current=%lu, want=%lu",
-		    slab_sz, sz - inode_max_inline_b());
+		    slab_sz, sz - INODE_INLINE_BYTES);
 		return ERR(msg, 0);
 	}
 
@@ -859,6 +1245,7 @@ test_link_max()
 	char *d = makepath("link_max");
 	char  src[PATH_MAX];
 	char  dst[PATH_MAX];
+	char  msg[PATH_MAX * 2 + 64];
 
 	if (mkdir(d, 0700) == -1)
 		return ERR("", errno);
@@ -869,8 +1256,11 @@ test_link_max()
 
 	for (i = 2; i <= FS_LINK_MAX; i++) {
 		snprintf(dst, sizeof(dst), "%s/hardlink%d", d, i);
-		if (link(src, dst) == -1)
-			return ERR("", errno);
+		if (link(src, dst) == -1) {
+			snprintf(msg, sizeof(msg),
+			    "link: %s -> %s", src, dst);
+			return ERR(msg, errno);
+		}
 	}
 
 	snprintf(dst, sizeof(dst), "%s/hardlink%d", d, i);
@@ -1016,6 +1406,9 @@ test_rename_replace()
 
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
+
+	if (access(p1, F_OK) != -1)
+		return ERR("old file was not removed", 0);
 
 	/*
 	 * We have to sleep until FUSE calls FORGET on the inode, which
@@ -1476,7 +1869,7 @@ test_file_content()
 
 	/* Fill the inline bytes with 'a', the rest with 'b' */
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = (i < inode_max_inline_b()) ? 'a': 'b';
+		buf[i] = (i < INODE_INLINE_BYTES) ? 'a': 'b';
 	if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 		if (w == -1)
 			return ERR("", errno);
@@ -1485,7 +1878,7 @@ test_file_content()
 
 	/* The second block in the file has no inline bytes, so all 'b' */
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = 'b';
+		buf[i] = 'c';
 	for (i = sizeof(buf); i < SLAB_SIZE_DEFAULT; i += w) {
 		if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 			if (w == -1)
@@ -1495,7 +1888,7 @@ test_file_content()
 	}
 
 	for (i = 0; i < sizeof(buf); i++)
-		buf[i] = 'c';
+		buf[i] = 'd';
 	for (i = 0; i < SLAB_SIZE_DEFAULT; i += w) {
 		if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 			if (w == -1)
@@ -1531,11 +1924,11 @@ test_file_content()
 	if (r < sizeof(buf))
 		return ERR("short read on first slab", 0);
 	for (i = 0; i < sizeof(buf); i++) {
-		if (buf[i] != ((i < inode_max_inline_b()) ? '\0': 'b')) {
+		if (buf[i] != ((i < INODE_INLINE_BYTES) ? '\0': 'b')) {
 			snprintf(msg, sizeof(msg),
 			    "unexpected byte in slab %s; "
 			    "current=0x%x, want=%s", path, buf[i],
-			    (i < inode_max_inline_b()) ? "\\0": "b");
+			    (i < INODE_INLINE_BYTES) ? "\\0": "b");
 			return ERR(msg, 0);
 		}
 	}
@@ -1546,7 +1939,7 @@ test_file_content()
 		if (r < sizeof(buf))
 			return ERR("short read on first slab", 0);
 		for (; i < sizeof(buf); i++) {
-			if (buf[i] != 'b') {
+			if (buf[i] != 'c') {
 				snprintf(msg, sizeof(msg),
 				    "unexpected byte in slab %s; "
 				    "current=0x%x, want='b'",
@@ -1568,7 +1961,7 @@ test_file_content()
 	}
 
 	/*
-	 * The second slab should be all 'c'.
+	 * The second slab should be all 'd'.
 	 */
 	if (slab_path(path, sizeof(path),
 	    slab_key(&sk, ino, SLAB_SIZE_DEFAULT), 0, &e) == -1) {
@@ -1585,7 +1978,7 @@ test_file_content()
 		if (r < sizeof(buf))
 			return ERR("short read on first slab", 0);
 		for (; i < sizeof(buf); i++) {
-			if (buf[i] != 'c') {
+			if (buf[i] != 'd') {
 				snprintf(msg, sizeof(msg),
 				    "unexpected byte in slab %s; "
 				    "current=0x%x, want='c'",
@@ -2027,9 +2420,10 @@ test_many_inodes()
 	char          *d = makepath("many_inodes");
 	int            i, n_inodes = slab_inode_max() + 1;
 	struct inode   inode;
-	struct xerr    e = XLOG_ERR_INITIALIZER;
+	struct xerr    e;
 	DIR           *dir;
 	struct dirent *de;
+	char           msg[LINE_MAX];
 
 	if (mkdir(d, 0700) == -1)
 		return ERR("", errno);
@@ -2043,17 +2437,22 @@ test_many_inodes()
 	if ((dir = opendir(d)) == NULL)
 		return ERR("", errno);
 	errno = 0;
+	i = 0;
 	while ((de = readdir(dir))) {
-		if (inode_disk_inspect(de->d_ino, &inode, &e) == -1) {
+		if (inode_disk_inspect(de->d_ino, &inode, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			return ERR("reading inode failed", 0);
 		}
-		n_inodes--;
+		i++;
 	}
 	closedir(dir);
 
-	if (n_inodes > 0)
-		return ERR("inode count is not what it should be", 0);
+	if ((i - 2) != n_inodes) {
+		snprintf(msg, sizeof(msg),
+		    "inode count is not what it should be; want=%d, actual=%d",
+		    n_inodes, i);
+		return ERR(msg, 0);
+	}
 	return NULL;
 }
 
@@ -2537,6 +2936,30 @@ struct potatofs_test {
 	{
 		"claim from backend",
 		&test_claim_from_backend
+	},
+	{
+		"test readdir on v2 dirs at maximum hash tree depth",
+		&test_readdir_max_v2_dir_depth
+	},
+	{
+		"test lookup on v2 dirs at maximum hash tree depth",
+		&test_lookup_max_v2_dir_depth
+	},
+	{
+		"test lookup for . and ..",
+		&test_lookup_dot_dotdot
+	},
+	{
+		"test unlink on v2 dirs at maximum hash tree depth",
+		&test_unlink_max_v2_dir_depth
+	},
+	{
+		"test dir freelist",
+		&test_dir_freelist
+	},
+	{
+		"test v2 dir mkdirent filling first chained leaf",
+		&test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth
 	},
 
 	/* End */
