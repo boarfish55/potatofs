@@ -91,9 +91,39 @@ const char *same_hash_16b_suffix =
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabjCA";
 
-const char *shorter_same_hash_30b_suffix =
+const char *shorter_same_hash_30b_suffix[] = {
 	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa30DR7a";
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa30DR7a",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadftA0Na",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeaMjUua",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagPeQcwa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahd5ufqa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaah3hdQQa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaajrRdsva",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaajRl84Ea",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaakTSdGXa",
+
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaalJMfBla",
+
+	NULL
+};
 
 extern locale_t log_locale;
 
@@ -745,11 +775,8 @@ test_readdir_max_v2_dir_depth()
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_16b_suffix);
 	if (mknod(file, 0600, 0) == -1)
 		return ERR("", errno);
-	snprintf(file, sizeof(file), "%s/%s", p, shorter_same_hash_30b_suffix);
-	if (mknod(file, 0600, 0) == -1)
-		return ERR("", errno);
 
-	found_count = i + 2;
+	found_count = i + 1;
 	found = malloc(sizeof(int) * found_count);
 	if (found == NULL)
 		err(1, "malloc");
@@ -763,8 +790,6 @@ test_readdir_max_v2_dir_depth()
 				found[i] = 1;
 		}
 		if (strcmp(de->d_name, same_hash_16b_suffix) == 0)
-			found[found_count - 2] = 1;
-		if (strcmp(de->d_name, shorter_same_hash_30b_suffix) == 0)
 			found[found_count - 1] = 1;
 	}
 	closedir(dir);
@@ -803,7 +828,21 @@ test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth()
 
 	st_want.st_size = st.st_size;
 
-	snprintf(file, sizeof(file), "%s/%s", p, shorter_same_hash_30b_suffix);
+	for (i = 0; shorter_same_hash_30b_suffix[i] != NULL; i++) {
+		snprintf(file, sizeof(file), "%s/%s", p,
+		    shorter_same_hash_30b_suffix[i]);
+		if (mknod(file, 0600, 0) == -1)
+			return ERR("", errno);
+	}
+
+	/*
+	 * See if we can re-insert in a leaf chain that's not at the
+	 * end.
+	 */
+	snprintf(file, sizeof(file), "%s/%s", p,
+	    shorter_same_hash_30b_suffix[1]);
+	if (unlink(file) == -1)
+		return ERR("", errno);
 	if (mknod(file, 0600, 0) == -1)
 		return ERR("", errno);
 
