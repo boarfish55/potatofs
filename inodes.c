@@ -752,6 +752,8 @@ inode_unload(struct oinode *oi, struct xerr *e)
 		needle.ino.v.f.inode = ino;
 
 		if (oi->ino.v.f.nlink == 0) {
+			xlog_dbg(XLOG_INODE, "%s: inode %lu: deallocating",
+			    __func__, ino);
 			if (inode_dealloc(ino, xerrz(e)) == -1)
 				xlog(LOG_ERR, e, __func__);
 			/*

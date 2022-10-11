@@ -22,6 +22,7 @@
 
 char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
+int  verbose = 0;
 
 /*
  * The following file names have matching hashes (fnv1a32) for their
@@ -133,17 +134,42 @@ static struct path
 	struct path *next;
 } *all_paths = NULL;
 
-char *
-fail(const char *msg, int e, const char *fn, int line)
+struct test_status
 {
-	char *m;
+	char *msg;
+	enum {
+		OK = 0,
+		FAIL,
+		FLAKED
+	} status;
+} test_status;
 
-	if (asprintf(&m, "%s%s (errno=%d; %s:%d)", msg,
+const char *status_description[] = {
+	"OK",
+	"FAIL",
+	"FLAKED"
+};
+
+
+struct test_status *
+success()
+{
+	test_status.status = OK;
+	test_status.msg = NULL;
+	return &test_status;
+}
+
+struct test_status *
+fail(int status, const char *msg, int e, const char *fn, int line)
+{
+	test_status.status = status;
+	if (asprintf(&test_status.msg, "%s%s (errno=%d; %s:%d)", msg,
 	    (e) ? strerror_l(e, log_locale) : "", e, fn, line) == -1)
 		err(1, "asprintf");
-        return m;
+        return &test_status;
 }
-#define ERR(msg, e) fail(msg, e, __func__, __LINE__)
+#define ERR(msg, e) fail(FAIL, msg, e, __func__, __LINE__)
+#define FLAKY(msg, e) fail(FLAKED, msg, e, __func__, __LINE__)
 
 char *
 makepath(const char *p)
@@ -205,18 +231,38 @@ xnanosleep()
 #define ST_MTIME  0x0200
 
 int
-get_disk_inode(ino_t ino, struct stat *st, struct xerr *e)
+get_disk_inode(ino_t ino, struct inode *inode, struct stat *st, struct xerr *e)
 {
-	struct inode inode;
+	struct inode i;
 
-	if (inode_disk_inspect(ino, &inode, e) == -1)
+	if (inode_disk_inspect(ino, &i, e) == -1)
 		return -1;
 	if (st != NULL)
-		inode_cp_stat(st, &inode);
+		inode_cp_stat(st, &i);
+	if (inode != NULL)
+		memcpy(inode, &i, sizeof(i));
 	return 0;
 }
 
-char *
+/*
+ * After unlink, an inode is not immediately deacllocated. We have to way
+ * for the kernel to "forget" about the inode, which resets the refcount.
+ * Only then can it be truly deleted. For some tests, we need to wait for
+ * this to happen. Those tests are essentially flaky but still valuable.
+ */
+int
+wait_for_inode_forget(ino_t ino, struct stat *st, struct xerr *e)
+{
+	int i, r;
+	for (i = 0; i < 100; i++) {
+		if ((r = get_disk_inode(ino, NULL, st, xerrz(e))) == -1)
+			break;
+		xnanosleep();
+	}
+	return r;
+}
+
+struct test_status *
 check_stat(const char *p, struct stat *st_want, uint16_t what)
 {
 	char         msg[LINE_MAX];
@@ -401,10 +447,10 @@ check_stat(const char *p, struct stat *st_want, uint16_t what)
 		}
 	}
 
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 check_utime_gte(const char *p, struct timespec *mintime, uint16_t what)
 {
 	struct stat     st;
@@ -436,10 +482,10 @@ check_utime_gte(const char *p, struct timespec *mintime, uint16_t what)
 		    mintime->tv_sec, mintime->tv_nsec);
 		return ERR(msg, 0);
 	}
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_slab_size()
 {
 	char            msg[LINE_MAX];
@@ -462,10 +508,10 @@ test_slab_size()
 		    sizeof(struct slab_itbl_hdr), hdr_data_sz);
 		return ERR(msg, 0);
 	}
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_mounted()
 {
 	struct stat st_want;
@@ -474,7 +520,7 @@ test_mounted()
 	return check_stat(mnt, &st_want, ST_INODE);
 }
 
-char *
+struct test_status *
 test_mkdir()
 {
 	struct stat  st_want;
@@ -490,7 +536,7 @@ test_mkdir()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_mknod()
 {
 	struct stat  st_want;
@@ -507,18 +553,18 @@ test_mknod()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_mknod_exists()
 {
 	char *p = makepath("a");
 
 	if (mknod(p, 0640, 0) == -1 && errno == EEXIST)
-		return NULL;
+		return success();
 
 	return ERR("file creation should have failed with EEXIST", 0);
 }
 
-char *
+struct test_status *
 test_utimes_file()
 {
 	char            *p = makepath("times");
@@ -563,13 +609,13 @@ test_utimes_file()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_ATIME|ST_MTIME);
 }
 
-char *
+struct test_status *
 test_chmod()
 {
-	char            *p = makepath("perms");
-	struct stat      st_want, st;
-	char            *r;
-	struct timespec  tp;
+	char               *p = makepath("perms");
+	struct stat         st_want, st;
+	struct test_status *r;
+	struct timespec     tp;
 
 	st_want.st_mode = (S_IFREG | 0466);
 	st_want.st_nlink = 1;
@@ -591,7 +637,7 @@ test_chmod()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK);
 }
 
-char *
+struct test_status *
 test_parent_mtime_after_mknod()
 {
 	char            *d1 = makepath("parent_mtime_after_mknod");
@@ -610,7 +656,7 @@ test_parent_mtime_after_mknod()
 	return check_utime_gte(d1, &tp, ST_MTIME);
 }
 
-char *
+struct test_status *
 test_atime()
 {
 	char        *p = makepath("atime");
@@ -634,7 +680,7 @@ test_atime()
 	return check_utime_gte(p, &st.st_atim, ST_ATIME);
 }
 
-char *
+struct test_status *
 test_unlink()
 {
 	struct stat  st;
@@ -651,21 +697,23 @@ test_unlink()
 		return ERR("", errno);
 
 	if (access(p, R_OK|F_OK) == -1 && errno == ENOENT) {
-		if (get_disk_inode(ino, &st, &e) == -1) {
+		if (wait_for_inode_forget(ino, &st, xerrz(&e)) == -1) {
 			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 		} else {
-			return ERR("file still exists on-disk "
+			if (verbose)
+				warnx("%s: inode=%lu", __func__, ino);
+			return FLAKY("file still exists on-disk "
 			    "in the inode table after unlink", 0);
 		}
-		return NULL;
+		return success();
 	}
 	return ERR("file still exists after unlink", 0);
 }
 
-char *
+struct test_status *
 test_parent_mtime_after_rmnod()
 {
 	char            *d1 = makepath("parent_mtime_after_rmnod");
@@ -686,7 +734,7 @@ test_parent_mtime_after_rmnod()
 	return check_utime_gte(d1, &tp, ST_MTIME);
 }
 
-char *
+struct test_status *
 test_rmdir()
 {
 	struct stat  st;
@@ -703,21 +751,23 @@ test_rmdir()
 		return ERR("", errno);
 
 	if (access(p, R_OK|X_OK) == -1 && errno == ENOENT) {
-		if (get_disk_inode(ino, &st, &e) == -1) {
+		if (wait_for_inode_forget(ino, &st, xerrz(&e)) == -1) {
 			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
 				xerr_print(&e);
 				return ERR("error querying inode", 0);
 			}
 		} else {
-			return ERR("directory still exists on-disk "
-			    "after rmdir", 0);
+			if (verbose)
+				warnx("%s: inode=%lu", __func__, ino);
+			return FLAKY("directory still exists on-disk "
+			    "in the inode table after rmdir", 0);
 		}
-		return NULL;
+		return success();
 	}
 	return ERR("directory still exists after unlink", 0);
 }
 
-char *
+struct test_status *
 test_rmdir_notempty_notdir()
 {
 	struct stat  st;
@@ -752,7 +802,7 @@ test_rmdir_notempty_notdir()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_readdir_max_v2_dir_depth()
 {
 	char          *p = makepath("readdir_v2_max_depth");
@@ -803,10 +853,10 @@ test_readdir_max_v2_dir_depth()
 	}
 
 	free(found);
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth()
 {
 	char          *p = makepath("mkdirent_fill_first_chained_leaf_v2_dir");
@@ -849,15 +899,15 @@ test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth()
 	return check_stat(p, &st_want, ST_SIZE);
 }
 
-char *
+struct test_status *
 test_lookup_dot_dotdot()
 {
-	char        *p_root = makepath("");
-	char        *p = makepath("lookup_dot_dotdot");
-	char        *p2 = makepath("lookup_dot_dotdot/.");
-	char        *p3 = makepath("lookup_dot_dotdot/..");
-	struct stat  st, st_want_p2, st_want_p3;
-	char        *r;
+	char               *p_root = makepath("");
+	char               *p = makepath("lookup_dot_dotdot");
+	char               *p2 = makepath("lookup_dot_dotdot/.");
+	char               *p3 = makepath("lookup_dot_dotdot/..");
+	struct stat         st, st_want_p2, st_want_p3;
+	struct test_status *r;
 
 	if (stat(p_root, &st) == -1)
 		return ERR("", errno);
@@ -881,7 +931,7 @@ test_lookup_dot_dotdot()
 	return check_stat(p3, &st_want_p3, ST_MODE|ST_NLINK|ST_INODE);
 }
 
-char *
+struct test_status *
 test_lookup_max_v2_dir_depth()
 {
 	char        *p = makepath("lookup_v2_max_depth");
@@ -905,7 +955,7 @@ test_lookup_max_v2_dir_depth()
 	return check_stat(file, &st_want, ST_MODE|ST_NLINK);
 }
 
-char *
+struct test_status *
 test_unlink_max_v2_dir_depth()
 {
 	char          *p = makepath("unlink_v2_max_depth");
@@ -993,10 +1043,10 @@ test_unlink_max_v2_dir_depth()
 		return ERR("", errno);
 
 	free(found);
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_dir_freelist()
 {
 	char        *p = makepath("dir_freelist");
@@ -1036,7 +1086,7 @@ test_dir_freelist()
 	return check_stat(p, &st_want, ST_SIZE|ST_NLINK);
 }
 
-char *
+struct test_status *
 test_rmdir_contains_dir()
 {
 	struct stat  st;
@@ -1066,7 +1116,7 @@ test_rmdir_contains_dir()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_file_size_and_mtime()
 {
 	struct stat      st_want, st;
@@ -1159,7 +1209,7 @@ test_file_size_and_mtime()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_symlink()
 {
 	struct stat  st_want;
@@ -1177,7 +1227,7 @@ test_symlink()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_readlink_path_max()
 {
 	char            *p = makepath("readlink_path_max");
@@ -1202,12 +1252,12 @@ test_readlink_path_max()
 
 	strlcat(target, "a", sizeof(target));
 	if (symlink(target, p) == -1 && errno == ENAMETOOLONG)
-		return NULL;
+		return success();
 
 	return ERR("symlink created with name in excess of FS_PATH_MAX", 0);
 }
 
-char *
+struct test_status *
 test_hardlink()
 {
 	struct stat  st_want, st;
@@ -1238,7 +1288,7 @@ test_hardlink()
 	    ST_INODE|ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_link_max()
 {
 	int   i;
@@ -1265,12 +1315,12 @@ test_link_max()
 
 	snprintf(dst, sizeof(dst), "%s/hardlink%d", d, i);
 	if (link(src, dst) == -1 && errno == EMLINK)
-		return NULL;
+		return success();
 
 	return ERR("link succeeded beyond FS_LINK_MAX", 0);
 }
 
-char *
+struct test_status *
 test_ctime_after_link()
 {
 	struct timespec  tp;
@@ -1288,7 +1338,7 @@ test_ctime_after_link()
 	return check_utime_gte(p, &tp, ST_CTIME);
 }
 
-char *
+struct test_status *
 test_parent_mtime_after_link()
 {
 	char            *d1 = makepath("parent_mtime_after_link");
@@ -1309,7 +1359,7 @@ test_parent_mtime_after_link()
 	return check_utime_gte(d1, &tp, ST_MTIME);
 }
 
-char *
+struct test_status *
 test_hardlink_dir()
 {
 	char *p = makepath("hardlink_dir");
@@ -1319,20 +1369,20 @@ test_hardlink_dir()
 		return ERR("", errno);
 
 	if (link(p, p2) == -1 && errno == EPERM)
-		return NULL;
+		return success();
 
 	return ERR("hardlink to a directory is supposed to fail; "
 	    "errno: ", errno);
 }
 
-char *
+struct test_status *
 test_rename()
 {
-	struct stat  st_want, st_root;
-	char        *root = makepath("");
-	char        *p = makepath("before_move");
-	char        *p2 = makepath("after_move");
-	char        *r;
+	struct stat         st_want, st_root;
+	char               *root = makepath("");
+	char               *p = makepath("before_move");
+	char               *p2 = makepath("after_move");
+	struct test_status *r;
 
 	if (stat(root, &st_root) == -1)
 		return ERR("", errno);
@@ -1352,13 +1402,13 @@ test_rename()
 	return check_stat(root, &st_root, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_rename_to_self()
 {
-	struct stat  st_want, st_root;
-	char        *p = makepath("move_self");
-	char        *root = makepath("");
-	char        *r;
+	struct stat         st_want, st_root;
+	char               *p = makepath("move_self");
+	char               *root = makepath("");
+	struct test_status *r;
 
 	if (mknod(p, 0444, 0) == -1)
 		return ERR("", errno);
@@ -1378,17 +1428,16 @@ test_rename_to_self()
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_rename_replace()
 {
-	struct stat  st_want, st_unlink, st_root;
-	char        *root = makepath("");
-	char        *p1 = makepath("before_move_replace");
-	char        *p2 = makepath("after_move_replace");
-	ino_t        gone;
-	struct xerr  e = XLOG_ERR_INITIALIZER;
-	int          i = 0;
-	char        *r;
+	struct stat         st_want, st_unlink, st_root;
+	char               *root = makepath("");
+	char               *p1 = makepath("before_move_replace");
+	char               *p2 = makepath("after_move_replace");
+	ino_t               gone;
+	struct xerr         e = XLOG_ERR_INITIALIZER;
+	struct test_status *r;
 
 	if (stat(root, &st_root) == -1)
 		return ERR("", errno);
@@ -1414,18 +1463,17 @@ test_rename_replace()
 	 * We have to sleep until FUSE calls FORGET on the inode, which
 	 * when nlookup is 0, the inode will be deallocated.
 	 */
-	for (i = 5; i > 0; i--) {
-		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
-				xerr_print(&e);
-				return ERR("error querying inode", 0);
-			}
-			break;
+	if (wait_for_inode_forget(gone, NULL, xerrz(&e)) == -1) {
+		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
+			xerr_print(&e);
+			return ERR("error querying inode", 0);
 		}
-		xnanosleep();
+	} else {
+		if (verbose)
+			warnx("%s: inode=%lu", __func__, gone);
+		return FLAKY("file still exists on-disk "
+		    "in the inode table after unlink", 0);
 	}
-	if (i == 0)
-		return ERR("file still exists on-disk after unlink", 0);
 
 	if ((r = check_stat(p2, &st_want,
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE)) != NULL)
@@ -1433,16 +1481,16 @@ test_rename_replace()
 	return check_stat(root, &st_root, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_rename_crossdir()
 {
-	struct stat      st_want, st_want_d1, st_want_d2;
-	char            *d1 = makepath("crossdir1");
-	char            *d2 = makepath("crossdir2");
-	char            *p1 = makepath("crossdir1/moved");
-	char            *p2 = makepath("crossdir2/moved");
-	char            *r;
-	struct timespec  tp;
+	struct stat         st_want, st_want_d1, st_want_d2;
+	char               *d1 = makepath("crossdir1");
+	char               *d2 = makepath("crossdir2");
+	char               *p1 = makepath("crossdir1/moved");
+	char               *p2 = makepath("crossdir2/moved");
+	struct test_status *r;
+	struct timespec     tp;
 
 	if (mkdir(d1, 0700) == -1)
 		return ERR("", errno);
@@ -1479,16 +1527,16 @@ test_rename_crossdir()
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_rename_dir_crossdir()
 {
-	struct stat      st_want, st_want_d1, st_want_d2;
-	char            *d1 = makepath("dir_crossdir1");
-	char            *d2 = makepath("dir_crossdir2");
-	char            *p1 = makepath("dir_crossdir1/moved");
-	char            *p2 = makepath("dir_crossdir2/moved");
-	char            *r;
-	struct timespec  tp;
+	struct stat         st_want, st_want_d1, st_want_d2;
+	char               *d1 = makepath("dir_crossdir1");
+	char               *d2 = makepath("dir_crossdir2");
+	char               *p1 = makepath("dir_crossdir1/moved");
+	char               *p2 = makepath("dir_crossdir2/moved");
+	struct test_status *r;
+	struct timespec     tp;
 
 	if (mkdir(d1, 0700) == -1)
 		return ERR("", errno);
@@ -1527,7 +1575,7 @@ test_rename_dir_crossdir()
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_rename_replace_crossdir()
 {
 	struct stat       st_want, st_unlink;
@@ -1537,7 +1585,6 @@ test_rename_replace_crossdir()
 	char             *p2 = makepath("crossdir_replace2/y");
 	ino_t             gone;
 	struct xerr       e = XLOG_ERR_INITIALIZER;
-	int               i = 0;
 
 	if (mkdir(d1, 0700) == -1)
 		return ERR("", errno);
@@ -1562,24 +1609,23 @@ test_rename_replace_crossdir()
 	 * We have to sleep until FUSE calls FORGET on the inode, which
 	 * when nlookup is 0, the inode will be deallocated.
 	 */
-	for (i = 5; i > 0; i--) {
-		if (get_disk_inode(gone, NULL, &e) == -1) {
-			if (!xerr_is(&e, XLOG_FS, ENOENT)) {
-				xerr_print(&e);
-				return ERR("error querying inode", 0);
-			}
-			break;
+	if (wait_for_inode_forget(gone, NULL, xerrz(&e)) == -1) {
+		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
+			xerr_print(&e);
+			return ERR("error querying inode", 0);
 		}
-		xnanosleep();
+	} else {
+		if (verbose)
+			warnx("%s: inode=%lu", __func__, gone);
+		return FLAKY("file still exists on-disk "
+		    "in the inode table after unlink", 0);
 	}
-	if (i == 0)
-		return ERR("file still exists on-disk after unlink", 0);
 
 	return check_stat(p2, &st_want,
 	    ST_MODE|ST_NLINK|ST_UID|ST_GID|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_rename_to_descendant()
 {
 	char *d1 = makepath("rename_descendant");
@@ -1599,17 +1645,17 @@ test_rename_to_descendant()
 	if (rename(d2, d3) == -1) {
 		if (errno != EINVAL)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	if (rename(d2, d4) == -1) {
 		if (errno != EINVAL)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename to descendant should return EINVAL", 0);
 }
 
-char *
+struct test_status *
 test_rename_to_ancestor()
 {
 	char *d1 = makepath("rename_ancestor");
@@ -1629,17 +1675,17 @@ test_rename_to_ancestor()
 	if (rename(d3, d2) == -1) {
 		if (errno != ENOTEMPTY)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	if (rename(d4, d2) == -1) {
 		if (errno != ENOTEMPTY)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename to ancestor should return EINVAL", 0);
 }
 
-char *
+struct test_status *
 test_rename_nondir_to_dir()
 {
 	char *d = makepath("rename_nondir_to_dir");
@@ -1656,12 +1702,12 @@ test_rename_nondir_to_dir()
 	if (rename(p1, p2) == -1) {
 		if (errno != EISDIR)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename from non-dir to dir should fail with EISDIR", 0);
 }
 
-char *
+struct test_status *
 test_rename_dir_to_nondir()
 {
 	char *d = makepath("rename_dir_to_nondir");
@@ -1678,13 +1724,13 @@ test_rename_dir_to_nondir()
 	if (rename(p1, p2) == -1) {
 		if (errno != EISDIR)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename from dir to non-dir should fail with "
 	    "ENOTDIR (or EISDIR if FUSE handles it)", 0);
 }
 
-char *
+struct test_status *
 test_rename_crossdir_nondir_to_dir()
 {
 	char *d1 = makepath("rename_crossdir_nondir_to_dir1");
@@ -1704,12 +1750,12 @@ test_rename_crossdir_nondir_to_dir()
 	if (rename(p1, p2) == -1) {
 		if (errno != EISDIR)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename from non-dir to dir should fail with EISDIR", 0);
 }
 
-char *
+struct test_status *
 test_rename_crossdir_dir_to_nondir()
 {
 	char *d1 = makepath("rename_crossdir_dir_to_nondir1");
@@ -1729,12 +1775,12 @@ test_rename_crossdir_dir_to_nondir()
 	if (rename(p1, p2) == -1) {
 		if (errno != ENOTDIR)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("rename from non-dir to dir should fail with ENOTDIR", 0);
 }
 
-char *
+struct test_status *
 test_rename_dir_to_existing_emtpy_dir()
 {
 	char        *d = makepath("rename_dir_to_dir");
@@ -1759,7 +1805,7 @@ test_rename_dir_to_existing_emtpy_dir()
 	return check_stat(d, &st_want, ST_MODE|ST_NLINK|ST_UID|ST_GID);
 }
 
-char *
+struct test_status *
 test_rename_dir_to_existing_nonemtpy_dir()
 {
 	char        *d = makepath("rename_dir_to_nonempty_dir");
@@ -1778,14 +1824,14 @@ test_rename_dir_to_existing_nonemtpy_dir()
 
 	if (rename(p1, p2) == -1) {
 		if (errno == ENOTEMPTY)
-			return NULL;
+			return success();
 		return ERR("", errno);
 	}
 
 	return ERR("replacing non-empty dir should fail", 0);
 }
 
-char *
+struct test_status *
 test_rename_root_inode()
 {
 	char *d = makepath("fail_with_root_inode");
@@ -1814,20 +1860,20 @@ test_rename_root_inode()
 		 */
 		if (errno != EBUSY && errno != EXDEV)
 			return ERR("", errno);
-		return NULL;
+		return success();
 	}
 	return ERR("renaming or replacing root inode should fail", 0);
 }
 
-char *
+struct test_status *
 test_parents_mtime_after_rename()
 {
-	char            *d1 = makepath("parent_mtime_after_rename1");
-	char            *d2 = makepath("parent_mtime_after_rename2");
-	char            *p1 = makepath("parent_mtime_after_rename1/x");
-	char            *p2 = makepath("parent_mtime_after_rename2/y");
-	char            *r;
-	struct timespec  tp;
+	char               *d1 = makepath("parent_mtime_after_rename1");
+	char               *d2 = makepath("parent_mtime_after_rename2");
+	char               *p1 = makepath("parent_mtime_after_rename1/x");
+	char               *p2 = makepath("parent_mtime_after_rename2/y");
+	struct test_status *r;
+	struct timespec     tp;
 
 	if (mkdir(d1, 0755) == -1)
 		return ERR("", errno);
@@ -1846,7 +1892,7 @@ test_parents_mtime_after_rename()
 	return check_utime_gte(d2, &tp, ST_MTIME);
 }
 
-char *
+struct test_status *
 test_file_content()
 {
 	struct stat      st_want, st;
@@ -2002,7 +2048,7 @@ test_file_content()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_fallocate()
 {
 	int          fd, i;
@@ -2051,7 +2097,7 @@ test_fallocate()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_fallocate_large()
 {
 	int              fd;
@@ -2097,7 +2143,7 @@ test_fallocate_large()
 	return check_stat(p, &st_want, ST_MODE|ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_truncate()
 {
 	int              fd, i;
@@ -2195,7 +2241,7 @@ test_truncate()
 	return check_stat(p, &st_want, ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_truncate_less_than_inline()
 {
 	int              fd, i;
@@ -2277,7 +2323,7 @@ test_truncate_less_than_inline()
 	return check_stat(p, &st_want, ST_NLINK|ST_SIZE);
 }
 
-char *
+struct test_status *
 test_delayed_truncate_large()
 {
 	int                fd, slab_fd, i, mgr;
@@ -2312,6 +2358,9 @@ test_delayed_truncate_large()
 
 	if (fstat(fd, &st) == -1)
 		return ERR("", errno);
+
+	if (verbose)
+		warnx("%s: inode=%lu", __func__, st.st_ino);
 
 	/*
 	 * Wait for each slab involved in our large file to be
@@ -2410,10 +2459,10 @@ test_delayed_truncate_large()
 			    "than the slab header", 0);
 	}
 
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_many_inodes()
 {
 	char           path[PATH_MAX];
@@ -2453,10 +2502,10 @@ test_many_inodes()
 		    n_inodes, i);
 		return ERR(msg, 0);
 	}
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 inode_reuse()
 {
 	struct stat    st;
@@ -2478,6 +2527,18 @@ inode_reuse()
 	if (unlink(p) == -1)
 		return ERR("", errno);
 
+	if (wait_for_inode_forget(st.st_ino, NULL, xerrz(&e)) == -1) {
+		if (!xerr_is(&e, XLOG_FS, ENOENT)) {
+			xerr_print(&e);
+			return ERR("error querying inode", 0);
+		}
+	} else {
+		if (verbose)
+			warnx("%s: inode=%lu", __func__, st.st_ino);
+		return FLAKY("directory still exists on-disk "
+		    "in the inode table after unlink", 0);
+	}
+
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 
@@ -2493,10 +2554,10 @@ inode_reuse()
 		    st.st_ino, inode.v.f.generation, gen + 1);
 		return ERR(msg, 0);
 	}
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_clock_gettime()
 {
 	struct timespec tp;
@@ -2504,10 +2565,10 @@ test_clock_gettime()
 		return ERR("CLOCK_REALTIME", errno);
 	if (clock_gettime(CLOCK_MONOTONIC, &tp) == -1)
 		return ERR("CLOCK_MONOTONIC", errno);
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_xlog_over_line_max()
 {
 	int         i;
@@ -2523,10 +2584,10 @@ test_xlog_over_line_max()
 	XERRF(&e, XLOG_APP, XLOG_INVAL, msg);
 	if (e.msg[LINE_MAX - 2] != '*')
 		return ERR("truncated message formatting incorrect", 0);
-	return NULL;
+	return success();
 }
 
-char *
+struct test_status *
 test_name_max()
 {
 	char *p = makepath("name_max");
@@ -2551,13 +2612,13 @@ test_name_max()
 
 	snprintf(path, sizeof(path), "%s/%s", p, n2);
 	if (mknod(path, 0640, 0) == -1 && errno == ENAMETOOLONG)
-		return NULL;
+		return success();
 
 	return ERR("file creation with name longer than FS_NAME_MAX should "
 	    "have failed", 0);
 }
 
-char *
+struct test_status *
 test_path_max()
 {
 	char       *p = makepath("path_max");
@@ -2596,13 +2657,13 @@ test_path_max()
 	 */
 	strlcat(path, "a", sizeof(path));
 	if (mknod(path, 0640, 0) == -1 && errno == ENAMETOOLONG)
-		return NULL;
+		return success();
 
 	return ERR("path creation with name longer than FS_PATH_MAX should "
 	    "have failed", 0);
 }
 
-char *
+struct test_status *
 test_claim_from_backend()
 {
 	char            *p = makepath("claim_me");
@@ -2725,12 +2786,12 @@ test_claim_from_backend()
 	if (access(path, F_OK) == -1)
 		return ERR("", errno);
 
-	return NULL;
+	return success();
 }
 
 struct potatofs_test {
-	char  description[256];
-	char *(*fn)();
+	char                description[256];
+	struct test_status *(*fn)();
 } tests[] = {
 	{
 		"slab size",
@@ -2972,6 +3033,7 @@ usage()
 	fprintf(stderr,
 	    "Usage: potatofs_tests [options] <mount point> [test substring]\n"
 	    "\t-h\t\t\tPrints this help\n"
+	    "\t-d\t\t\tDebug output\n"
 	    "\t-c <config path>\tPath to the configuration file\n");
 }
 
@@ -2979,21 +3041,24 @@ int
 main(int argc, char **argv)
 {
 	struct potatofs_test *t;
-	char                 *msg;
 	struct xerr           e = XLOG_ERR_INITIALIZER;
 	struct fs_info        fs_info;
 	int                   status = 0;
 	char                  opt;
 	char                  cfg[PATH_MAX];
+	struct test_status   *s;
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
-	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
+	while ((opt = getopt(argc, argv, "hdc:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
 				exit(0);
+			case 'd':
+				verbose = 1;
+				break;
 			case 'c':
 				strlcpy(cfg, optarg, sizeof(cfg));
 				fs_config.cfg_path = cfg;
@@ -3041,19 +3106,20 @@ main(int argc, char **argv)
 		    strstr(t->description, argv[optind]) == NULL)
 			continue;
 
-		msg = t->fn();
+		s = t->fn();
 		free_all_paths();
-		printf("[%s] %s\n", (msg) ? "ERROR" : "OK", t->description);
-		if (msg) {
+		printf("[%s] %s\n", status_description[s->status],
+		    t->description);
+		if (s->msg && (s->status == FAIL || s->status == FLAKED)) {
 			status = 1;
-			printf("\n%s\n\n", msg);
-			free(msg);
+			printf("\n%s\n\n", s->msg);
+			free(s->msg);
 
 			/*
 			 * Our first test is "mounted". If that fails,
 			 * we stop here.
 			 */
-			if (t == tests)
+			if (t - tests < 5)
 				break;
 		}
 	}

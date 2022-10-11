@@ -81,7 +81,7 @@ else
 fi
 echo ""
 
-read -p "Press any key to terminate..." PAUSE
+read -p "Press any key to cleanup..." PAUSE
 
 echo "*** cleanup ***"
 while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do

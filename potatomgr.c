@@ -66,7 +66,7 @@ struct delayed_truncates {
 	int             count;
 };
 
-struct timeval     socket_timeout = {60, 0};
+struct timeval     socket_timeout = {300, 0};
 uuid_t             instance_id;
 struct mgr_shared *mgr_shared;
 const uint32_t     flock_timeout = 10;

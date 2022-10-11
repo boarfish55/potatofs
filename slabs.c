@@ -201,7 +201,9 @@ slab_unclaim(struct oslab *b)
 		} else if (memcmp(&m.v.unclaim.key, &b->hdr.v.f.key,
 		    sizeof(struct slab_key))) {
 			/* We close the fd here to avoid deadlocks. */
-			close(b->fd);
+			if (close(b->fd) == -1)
+				xlog_strerror(LOG_ERR, errno,
+				    "%s: close(b->fd)", __func__);
 			xlog(LOG_ERR, NULL,
 			    "%s: bad manager response for unclaim; "
 			    "ino: expected=%lu, received=%lu"
@@ -218,11 +220,15 @@ fail:
 		 * or until an external action is taken.
 		 */
 		if (mgr != -1)
-			close(mgr);
+			if (close(mgr) == -1)
+				xlog_strerror(LOG_ERR, errno,
+				    "%s: close", __func__);
 		nanosleep(&tp, NULL);
 	}
-	close(mgr);
-	close(b->fd);
+	if (close(mgr) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close(mgr)", __func__);
+	if (close(b->fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close(b->fd)", __func__);
 	LK_LOCK_DESTROY(&b->lock);
 	LK_LOCK_DESTROY(&b->bytes_lock);
 	free(b);
@@ -290,7 +296,6 @@ slab_purge(void *unused)
 		}
 		MTX_UNLOCK(&owned_slabs.lock);
 	}
-	MTX_UNLOCK(&owned_slabs.lock);
 	return NULL;
 }
 
@@ -910,7 +915,9 @@ fail_free_b:
 	}
 end:
 	if (mgr != -1)
-		close(mgr);
+		if (close(mgr) == -1)
+			xlog_strerror(LOG_ERR, errno,
+			    "%s: close(mgr)", __func__);
 	MTX_UNLOCK(&owned_slabs.lock);
 	return b;
 }
@@ -1141,7 +1148,9 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 			counter_incr(COUNTER_FS_DELAYED_TRUNCATE);
 		}
 
-		close(mgr);
+		if (close(mgr) == -1)
+			xlog_strerror(LOG_ERR, errno,
+			    "%s: close(mgr)", __func__);
 		break;
 fail:
 		/*
@@ -1152,7 +1161,9 @@ fail:
 		 * taken.
 		 */
 		if (mgr != -1)
-			close(mgr);
+			if (close(mgr) == -1)
+				xlog_strerror(LOG_ERR, errno,
+				    "%s: close(mgr)", __func__);
 		fs_error_set();
 		nanosleep(&tp, NULL);
 	}
@@ -1287,11 +1298,13 @@ slab_disk_inspect(struct slab_key *sk, struct slab_hdr *hdr,
 		free(data);
 		goto fail;
 	}
-	close(fd);
+	if (close(fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close(fd)", __func__);
 
 	return data;
 fail:
-	close(fd);
+	if (close(fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close(fd)", __func__);
 	return NULL;
 }
 
@@ -1408,13 +1421,15 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 		goto fail_free_data;
 	}
 
-	close(b->fd);
+	if (close(b->fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close", __func__);
 	free(b);
 	return data;
 fail_free_data:
 	free(data);
 fail_free_slab:
-	close(fd);
+	if (close(fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close(fd)", __func__);
 	free(b);
 	return NULL;
 }
