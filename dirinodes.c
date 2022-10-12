@@ -169,10 +169,34 @@ di_read_dir_hdr_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct xerr *e)
 	if ((r = inode_read(oi, 0, hdr,
 	    sizeof(struct dir_hdr_v2), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
+	else if (r == 0)
+		return XERRF(e, XLOG_APP, XLOG_EOF,
+		    "tried to read a dir_hdr_v2 past the end of the file: "
+		    "inode=%lu", inode_ino(oi));
 	else if (r < sizeof(struct dir_hdr_v2))
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "short read on dir_hdr_v2 for inode=%lu", inode_ino(oi));
 	return 0;
+}
+
+static ssize_t
+di_read_dir_block_v2(struct oinode *oi, off_t b_off, struct dir_block_v2 *b,
+    struct xerr *e)
+{
+	ssize_t r;
+
+	if ((r = inode_read(oi, b_off, b,
+	    sizeof(struct dir_block_v2), xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+	else if (r == 0)
+		return XERRF(e, XLOG_APP, XLOG_EOF,
+		    "tried to read a dir_block_v2 past the end of the file: "
+		    "inode=%lu", inode_ino(oi));
+	else if (r < sizeof(struct dir_block_v2))
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "short read on dir_block_v2; possible corruption: "
+		    "inode=%lu", inode_ino(oi));
+	return r;
 }
 
 ssize_t
@@ -432,10 +456,13 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	ssize_t             r;
 	int                 bucket, i = 0;
 
-	if ((r = inode_read(oi, b_off, &b, sizeof(b), xerrz(e))) == 0)
-		return 0;
-	else if (r == -1)
+	if ((r = di_read_dir_block_v2(oi, b_off, &b, xerrz(e))) == -1) {
+		if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
+			xerrz(e);
+			return 0;
+		}
 		return XERR_PREPENDFN(e);
+	}
 
 	if (!(b.v.flags & DI_BLOCK_ALLOCATED))
 		return 0;
@@ -449,11 +476,14 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		    b.v.leaf.length, dirs + i, count - i,
 		    ((uint64_t)d_off) & 0x00000000FFFFFFFF, 2, xerrz(e));
 		while (b.v.leaf.next > 0) {
-			if ((r = inode_read(oi, b.v.leaf.next, &b,
-			    sizeof(b), xerrz(e))) == 0) {
-				return 0;
-			} else if (r == -1)
+			if ((r = di_read_dir_block_v2(oi, b.v.leaf.next, &b,
+			    xerrz(e))) == -1) {
+				if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
+					xerrz(e);
+					return 0;
+				}
 				return XERR_PREPENDFN(e);
+			}
 			i += di_readdir_buf_v2(b.v.leaf.data,
 			    b.v.leaf.length, dirs + i, count - i,
 			    ((uint64_t)d_off) & 0x00000000FFFFFFFF,
@@ -618,14 +648,12 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	struct dir_block_v2 b;
 	int                 i;
 
-	if ((r = inode_read(oi, b_off, &b, sizeof(b), xerrz(e))) == 0) {
-		return XERRF(e, XLOG_FS, ENOENT,
-		    "no such directory entry: %s", name);
-	} else if (r < sizeof(b)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "corrupted directory; incomplete entries");
-	} else if (r == -1)
+	if ((r = di_read_dir_block_v2(oi, b_off, &b, xerrz(e))) == -1) {
+		if (xerr_is(e, XLOG_APP, XLOG_EOF))
+			return XERRF(e, XLOG_FS, ENOENT,
+			    "no such directory entry: %s", name);
 		return XERR_PREPENDFN(e);
+	}
 
 	if (b.v.flags & DI_BLOCK_LEAF) {
 		r = di_lookup_buf_v2(b.v.leaf.data,
@@ -637,14 +665,14 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 			return XERR_PREPENDFN(e);
 
 		while (b.v.leaf.next > 0) {
-			if ((r = inode_read(oi, b.v.leaf.next, &b,
-			    sizeof(b), xerrz(e))) == 0) {
-				return 0;
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "corrupted directory; incomplete entries");
-			} else if (r == -1)
+			if ((r = di_read_dir_block_v2(oi, b.v.leaf.next, &b,
+			    xerrz(e))) == -1) {
+				if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
+					xerrz(e);
+					return 0;
+				}
 				return XERR_PREPENDFN(e);
+			}
 
 			r = di_lookup_buf_v2(b.v.leaf.data,
 			    b.v.leaf.length, de, hash, name, xerrz(e));
@@ -854,13 +882,9 @@ di_mkdirent_getblock_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		 */
 		do {
 			offset = hdr->v.h.free_list_start;
-			r = inode_read(parent, offset, &b, sizeof(b), xerrz(e));
-			if (r == -1)
+			if ((r = di_read_dir_block_v2(parent, offset, &b,
+			    xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
-			else if (r < sizeof(b))
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dir_block_v2, this directory "
-				    "might be corrupted");
 			hdr->v.h.free_list_start = b.v.leaf.next;
 		} while (b.v.flags & DI_BLOCK_ALLOCATED);
 	}
@@ -957,12 +981,8 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 	char                *p;
 	off_t                valid_off = -1;
 
-	if ((r = inode_read(parent, b_off, &b_head, sizeof(b), xerrz(e))) == -1)
+	if ((r = di_read_dir_block_v2(parent, b_off, &b_head, xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
-	else if (r < sizeof(b_head))
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dir_block_v2, this directory "
-		    "might be corrupted");
 
 	if (!(b_head.v.flags & DI_BLOCK_ALLOCATED))
 		return XERRF(e, XLOG_APP, XLOG_IO,
@@ -992,13 +1012,9 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 				break;
 
 			b_off = b.v.leaf.next;
-			if ((r = inode_read(parent, b.v.leaf.next, &b,
-			    sizeof(b), xerrz(e))) == -1)
+			if ((r = di_read_dir_block_v2(parent, b.v.leaf.next,
+			    &b, xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
-			else if (r < sizeof(b))
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dir_block_v2, this directory "
-				    "might be corrupted");
 
 			if (!(b.v.flags & DI_BLOCK_ALLOCATED))
 				return XERRF(e, XLOG_APP, XLOG_IO,
@@ -1049,13 +1065,9 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 * be loaded in 'b'.
 		 */
 		if (valid_off > -1 && valid_off != b_off) {
-			if ((r = inode_read(parent, valid_off, &b,
-			    sizeof(b), xerrz(e))) == -1)
+			if ((r = di_read_dir_block_v2(parent, valid_off,
+			    &b, xerrz(e))) == -1)
 				return XERR_PREPENDFN(e);
-			else if (r < sizeof(b))
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dir_block_v2, this directory "
-				    "might be corrupted");
 			b_off = valid_off;
 		}
 
@@ -1258,14 +1270,13 @@ di_isempty_v2(struct oinode *oi, struct xerr *e)
 	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
-	if ((r = inode_read(oi, sizeof(hdr), &b, sizeof(b), xerrz(e))) == -1)
+	if ((r = di_read_dir_block_v2(oi, sizeof(hdr), &b, xerrz(e))) == -1) {
+		if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
+			xerrz(e);
+			return 1;
+		}
 		return XERR_PREPENDFN(e);
-	else if (r == 0)
-		return 1;
-	else if (r < sizeof(b))
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dir_block_v2, this directory "
-		    "might be corrupted");
+	}
 
 	if (!(b.v.flags & DI_BLOCK_ALLOCATED))
 		return 1;
@@ -1405,14 +1416,13 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 	int                 i;
 	off_t               b_off, b_off_prev;
 
-	if ((r = inode_read(parent, head_b_off, &b, sizeof(b), xerrz(e))) == 0) {
-		return XERRF(e, XLOG_FS, ENOENT,
-		    "no such directory entry: %s", name);
-	} else if (r < sizeof(b)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "corrupted directory; incomplete entries");
-	} else if (r == -1)
+	if ((r = di_read_dir_block_v2(parent, head_b_off,
+	    &b, xerrz(e))) == -1) {
+		if (xerr_is(e, XLOG_APP, XLOG_EOF))
+			return XERRF(e, XLOG_FS, ENOENT,
+			    "no such directory entry: %s", name);
 		return XERR_PREPENDFN(e);
+	}
 
 	if (!(b.v.flags & DI_BLOCK_ALLOCATED))
 		return XERRF(e, XLOG_FS, ENOENT,
@@ -1473,15 +1483,14 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 			memcpy(&b_prev, &b, sizeof(b_prev));
 			b_off = b.v.leaf.next;
 
-			if ((r = inode_read(parent, b_off, &b,
-			    sizeof(b), xerrz(e))) == 0) {
-				return XERRF(e, XLOG_FS, ENOENT,
-				    "no such directory entry: %s", name);
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "corrupted directory; incomplete entries");
-			} else if (r == -1)
+			if ((r = di_read_dir_block_v2(parent, b_off,
+			    &b, xerrz(e))) == -1) {
+				if (xerr_is(e, XLOG_APP, XLOG_EOF))
+					return XERRF(e, XLOG_FS, ENOENT,
+					    "no such directory entry: %s",
+					    name);
 				return XERR_PREPENDFN(e);
+			}
 			continue;
 		}
 
