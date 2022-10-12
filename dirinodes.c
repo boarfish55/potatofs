@@ -161,7 +161,7 @@ di_check_format(struct oinode *oi, struct xerr *e)
 	return hdr.dirinode_format;
 }
 
-static int
+static ssize_t
 di_read_dir_hdr_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct xerr *e)
 {
 	ssize_t r;
@@ -197,6 +197,21 @@ di_read_dir_block_v2(struct oinode *oi, off_t b_off, struct dir_block_v2 *b,
 		    "short read on dir_block_v2; possible corruption: "
 		    "inode=%lu", inode_ino(oi));
 	return r;
+}
+
+static ssize_t
+di_write_dir_block_v2(struct oinode *oi, off_t b_off, struct dir_block_v2 *b,
+    struct xerr *e)
+{
+	ssize_t w;
+	if ((w = inode_write(oi, b_off, b,
+	    sizeof(struct dir_block_v2), xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+	else if (w < sizeof(struct dir_block_v2))
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "partial dir_block_v2 write, this directory might "
+		    "be corrupted");
+	return w;
 }
 
 ssize_t
@@ -310,12 +325,8 @@ di_create_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 	bzero(&b, sizeof(b));
 	b.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
-	if ((w = inode_write(oi, sizeof(hdr), &b, sizeof(b), xerrz(e))) == -1)
+	if (di_write_dir_block_v2(oi, sizeof(hdr), &b, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
-	else if (w < sizeof(b))
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dir_block_v2 write, this directory might "
-		    "be corrupted");
 
 	if ((w = inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
@@ -829,7 +840,6 @@ static int
 di_unlink_freelist_add_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
     off_t b_off, struct dir_block_v2 *b, struct xerr *e)
 {
-	ssize_t r;
 	off_t   end = inode_getsize(parent);
 
 	if (b_off == end - sizeof(struct dir_block_v2)) {
@@ -848,14 +858,8 @@ di_unlink_freelist_add_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 
 	hdr->v.h.free_list_start = b_off;
 
-	r = inode_write(parent, b_off, b, sizeof(struct dir_block_v2), xerrz(e));
-	if (r == -1) {
+	if (di_write_dir_block_v2(parent, b_off, b, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
-	} else if (r < sizeof(struct dir_block_v2)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dirent write, this directory "
-		    "might be corrupted");
-	}
 	return 0;
 }
 
@@ -946,25 +950,13 @@ di_to_hash_v2(struct oinode *oi, struct dir_hdr_v2 *hdr, struct dir_block_v2 *b,
 		if (root.v.idx.buckets[i] == -1)
 			return XERR_PREPENDFN(e);
 
-		r = inode_write(oi, root.v.idx.buckets[i],
-		    &child_blks[i], sizeof(child_blks[i]), xerrz(e));
-		if (r == -1) {
+		if (di_write_dir_block_v2(oi, root.v.idx.buckets[i],
+		    &child_blks[i], xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
-		} else if (r < sizeof(child_blks[i])) {
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "partial dir_block_v2 write, this directory "
-			    "might be corrupted");
-		}
 	}
 
-	r = inode_write(oi, b_off, &root, sizeof(root), xerrz(e));
-	if (r == -1) {
+	if (di_write_dir_block_v2(oi, b_off, &root, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
-	} else if (r < sizeof(root)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "partial dir index write, this directory "
-		    "might be corrupted");
-	}
 
 	memcpy(b, &root, sizeof(root));
 
@@ -1047,14 +1039,9 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			    DI_DIR_BLOCK_HDR_V2_BYTES - b.v.leaf.length, de);
 			b.v.leaf.length = p - b.v.leaf.data;
 
-			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b_off,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this "
-				    "directory might be corrupted");
-			}
 			return 0;
 		}
 
@@ -1082,14 +1069,9 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			b.v.leaf.length = p - b.v.leaf.data;
 			b.v.leaf.entries++;
 
-			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b_off,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this directory "
-				    "might be corrupted");
-			}
 			return 0;
 		}
 
@@ -1123,24 +1105,13 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 			b_next.v.leaf.length = p - b_next.v.leaf.data;
 			b_next.v.leaf.entries++;
 
-			r = inode_write(parent, b.v.leaf.next,
-			    &b_next, sizeof(b_next), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b.v.leaf.next,
+			    &b_next, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b_next)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dir_block_v2 write, this "
-				    "directory might be corrupted");
-			}
 
-			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b_off,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this directory "
-				    "might be corrupted");
-			}
 			return 0;
 		}
 
@@ -1167,26 +1138,17 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		bzero(&b, sizeof(b));
 		b.v.leaf.flags = DI_BLOCK_ALLOCATED|DI_BLOCK_LEAF;
 
-		if ((r = inode_write(parent, b_head.v.idx.buckets[i], &b,
-		    sizeof(b), xerrz(e))) == -1)
+		if (di_write_dir_block_v2(parent, b_head.v.idx.buckets[i],
+		    &b, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
-		else if (r < sizeof(b))
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "partial dir_block_v2 write, this directory might "
-			    "be corrupted");
 
 		if (di_mkdirent_deep_v2(parent, hdr, b_head.v.idx.buckets[i],
 		    depth + 1, de, replace, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
 
-		r = inode_write(parent, b_off, &b_head, sizeof(b_head), xerrz(e));
-		if (r == -1) {
+		if (di_write_dir_block_v2(parent, b_off,
+		    &b_head, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
-		} else if (r < sizeof(b_head)) {
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "partial dirent write, this directory "
-			    "might be corrupted");
-		}
 		return 0;
 	}
 
@@ -1451,15 +1413,10 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 
 		i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
 		parent_b->v.idx.buckets[i] = 0;
-		r = inode_write(parent, parent_b_off, parent_b,
-		    sizeof(struct dir_block_v2), xerrz(e));
-		if (r == -1) {
+
+		if (di_write_dir_block_v2(parent, parent_b_off,
+		    parent_b, xerrz(e)) == -1)
 			return XERR_PREPENDFN(e);
-		} else if (r < sizeof(struct dir_block_v2)) {
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "partial dirent write, this directory "
-			    "might be corrupted");
-		}
 
 		if (di_unlink_freelist_add_v2(parent, hdr, head_b_off, &b,
 		    xerrz(e)) == -1)
@@ -1501,40 +1458,24 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		 * We never de-allocate the root block.
 		 */
 		if (depth == 0 || b.v.leaf.entries > 0) {
-			r = inode_write(parent, b_off, &b, sizeof(b), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b_off,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this "
-				    "directory might be corrupted");
-			}
 			return 0;
 		}
 
 		if (b_off == head_b_off) {
 			i = (hash >> ((depth - 1) * 5)) & 0x0000001F;
 			parent_b->v.idx.buckets[i] = b.v.leaf.next;
-			r = inode_write(parent, parent_b_off, parent_b,
-			    sizeof(struct dir_block_v2), xerrz(e));
-			if (r == -1) {
+
+			if (di_write_dir_block_v2(parent, parent_b_off,
+			    parent_b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(struct dir_block_v2)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this "
-				    "directory might be corrupted");
-			}
 		} else {
 			b_prev.v.leaf.next = b.v.leaf.next;
-			r = inode_write(parent, b_off_prev, &b_prev,
-			    sizeof(b_prev), xerrz(e));
-			if (r == -1) {
+			if (di_write_dir_block_v2(parent, b_off_prev,
+			    &b_prev, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
-			} else if (r < sizeof(b_prev)) {
-				return XERRF(e, XLOG_APP, XLOG_IO,
-				    "partial dirent write, this "
-				    "directory might be corrupted");
-			}
 		}
 
 		/*
