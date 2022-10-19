@@ -822,11 +822,11 @@ fsck(int argc, char **argv)
 	char                 **arg;
 	struct found_inode    *fino, *nfino, *dfino;
 
-	fsck_verbose = 1;
+	fsck_verbose = 0;
 
 	for (arg = argv; *arg != NULL; arg++) {
-		if (strcmp(*arg, "quiet") == 0)
-			fsck_verbose = 0;
+		if (strcmp(*arg, "verbose") == 0)
+			fsck_verbose = 1;
 		else if (strcmp(*arg, "fix") == 0)
 			fsck_fix = 1;
 	}
@@ -919,15 +919,14 @@ fsck(int argc, char **argv)
 		free(fino);
 	}
 end:
-	if (fsck_verbose) {
-		printf("Filesystem statistics:\n");
-		printf("    inodes:      %lu\n", stats.n_inodes);
-		printf("    directories: %lu\n", stats.n_dirs);
-		printf("    dirents:     %lu\n", stats.n_dirents);
-		printf("    errors:      %lu\n", stats.errors);
-		printf("Scan result: %s\n",
-		    (stats.errors) ? "errors" : "clean");
-	}
+	printf("Filesystem statistics:\n");
+	printf("    inodes:      %lu\n", stats.n_inodes);
+	printf("    directories: %lu\n", stats.n_dirs);
+	printf("    dirents:     %lu\n", stats.n_dirents);
+	printf("    errors:      %lu\n", stats.errors);
+	printf("Scan result: %s\n",
+	    (stats.errors) ? "errors" : "clean");
+
 	if (mgr_send_shutdown(xerrz(&e)) == -1)
 		xerr_print(&e);
 	return (stats.errors) ? 1 : 0;

@@ -73,11 +73,9 @@ echo "*** fsck ***"
 while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
 	sleep 1
 done
-./potatoctl -c "$conf" fsck quiet
+./potatoctl -c "$conf" fsck
 if [ $? -ne 0 ]; then
-	warn "fsck had errors"
-else
-	echo "Success."
+	st=$?
 fi
 echo ""
 

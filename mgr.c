@@ -32,6 +32,8 @@ mgr_connect(int retry, struct xerr *e)
 	int                 mgr;
 	struct sockaddr_un  mgr_addr;
 	struct timespec     tp = {1, 0};
+	int                 refused_count = 0;
+	int                 nosock_count = 0;
 
 	for (;;) {
 		if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
@@ -46,12 +48,28 @@ mgr_connect(int retry, struct xerr *e)
 
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,
 		    sizeof(mgr_addr)) == -1) {
-			if (errno == ENOENT)
+			switch (errno) {
+			case ENOENT:
+				if (++nosock_count < 3)
+					break;
 				xlog(LOG_NOTICE, NULL, "%s: no socket; "
 				    "waiting for mgr to start", __func__);
-			else
+				nosock_count = 0;
+				break;
+			case ECONNREFUSED:
+				/*
+				 * Don't inform every time of connection
+				 * refused. This is bound to happen at least
+				 * once at startup and we don't want to
+				 * alarm users just yet.
+				 */
+				if (++refused_count < 3)
+					break;
+			default:
+				refused_count = 0;
 				xlog_strerror(LOG_ERR, errno,
 				    "%s: connect", __func__);
+			}
 			goto fail;
 		}
 		return mgr;
