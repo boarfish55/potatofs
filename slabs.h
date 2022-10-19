@@ -168,8 +168,14 @@ struct oslab {
 	int                dirty;
 
 	/*
+	 * Set to 1 if the slab is currently being claimed by the mgr.
+	 * We may not issue reads & writes until this is set back to 0.
+	 */
+	int                pending;
+
+	/*
 	 * Used for inode tables, since they need serialized access
-	 * to the slab bytes, since they contain inodes.
+	 * to the slab bytes as they contain inodes.
 	 */
 	rwlk               bytes_lock;
 
