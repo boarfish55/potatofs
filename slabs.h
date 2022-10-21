@@ -158,9 +158,17 @@ struct oslab {
 	int                fd;
 
 	/*
+	 * Used for inode tables, since they need serialized access
+	 * to the slab bytes as they contain inodes. This lock controls
+	 * access to the data inline to the slab header.
+	 */
+	rwlk               bytes_lock;
+
+	/*
 	 * The lock is only for the fields in this structure and
 	 * the included slab_hdr. It does not guarantee exclusive
-	 * access to bytes via 'fd' (except the slab_hdr).
+	 * access to bytes via 'fd' (except the slab_hdr). The above bytes_lock
+	 * should be acquired before this one.
 	 */
 	rwlk               lock;
 
@@ -172,12 +180,6 @@ struct oslab {
 	 * We may not issue reads & writes until this is set back to 0.
 	 */
 	int                pending;
-
-	/*
-	 * Used for inode tables, since they need serialized access
-	 * to the slab bytes as they contain inodes.
-	 */
-	rwlk               bytes_lock;
 
 	uint32_t           oflags;
 #define OSLAB_NOCREATE  0x00000001

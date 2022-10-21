@@ -139,10 +139,6 @@ KNOWN ISSUES
   recover until the backend is available again. Error handling in these
   situations is questionable at best and needs to be reviewed. We can't
   properly interrupt I/O ops in flight at this time.
-* When downloading from the backend (slab_load()), we hold the slab
-  lock the entire time, meaning we can't do anything. We might have to
-  queue slab downloads without holding the lock?? Or maybe read lock?
-  Then upgrade to a write lock when the slab is local.
 * When potatoctl fsck errors out, it may not always shutdown the mgr.
 
 TODO
@@ -152,7 +148,6 @@ TODO
 * Memory-bound our stuff. open() is allowed to return ENOMEM, so we can
   actually cap how many open inodes we have at once. We should return
   ENOMEM as XLOG_FS.
-* Make directory lookups faster; too slow on large directories
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
   - Leaving an unreferenced directory with nlink 1.

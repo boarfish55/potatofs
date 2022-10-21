@@ -96,7 +96,7 @@ mtx_lock(pthread_mutex_t *lock, const char *lockname, const char *file,
 	int         r;
 	struct xerr e;
 
-	xlog_dbg(XLOG_LOCK, "locking %p (%s, flags=%u) at %s:%d",
+	xlog_dbg(XLOG_LOCK, "locking %p (%s) at %s:%d",
 	    lock, lockname, file, line);
 
 	if ((r = pthread_mutex_lock(lock)) != 0) {
