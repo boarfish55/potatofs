@@ -81,13 +81,13 @@ static pthread_t slab_purger;
 static int
 slab_cmp(struct oslab *b1, struct oslab *b2)
 {
-	if (b1->hdr.v.f.key.ino < b2->hdr.v.f.key.ino)
+	if (b1->sk.ino < b2->sk.ino)
 		return -1;
-	if (b1->hdr.v.f.key.ino > b2->hdr.v.f.key.ino)
+	if (b1->sk.ino > b2->sk.ino)
 		return 1;
-	if (b1->hdr.v.f.key.base < b2->hdr.v.f.key.base)
+	if (b1->sk.base < b2->sk.base)
 		return -1;
-	if (b1->hdr.v.f.key.base > b2->hdr.v.f.key.base)
+	if (b1->sk.base > b2->sk.base)
 		return 1;
 	return 0;
 }
@@ -113,28 +113,23 @@ slab_read_hdr(struct oslab *b, struct xerr *e)
  * Should be called *before* any writes. If we die before the write,
  * happens, there is little harm. We'll just sync a slab with no changes.
  * The opposite could result in local changes that are never synced to the
- * backend.
+ * backend. Must be called with the write-lock held.
  */
 static int
 slab_set_dirty_hdr(struct oslab *b, struct xerr *e)
 {
-	LK_WRLOCK(&b->lock);
 	if (!(b->hdr.v.f.flags & SLAB_DIRTY)) {
-		if (slab_write_hdr_nolock(b, e) == -1) {
-			LK_UNLOCK(&b->lock);
+		if (slab_write_hdr(b, e) == -1)
 			return -1;
-		}
 	}
-	LK_UNLOCK(&b->lock);
 	return 0;
 }
 
-/* Must be called in write-lock context */
 static int
 slab_realloc(struct oslab *b, struct xerr *e)
 {
 	b->hdr.v.f.flags &= ~SLAB_REMOVED;
-	if (slab_write_hdr_nolock(b, e) == -1)
+	if (slab_write_hdr(b, e) == -1)
 		return -1;
 	return 0;
 }
@@ -154,10 +149,9 @@ slab_unclaim(struct oslab *b)
 
 	if (b->fd == -1) {
 		xlog(LOG_ERR, NULL, "%s: fd is -1 on slab sk=%lu/%ld",
-		    __func__, b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+		    __func__, b->sk.ino, b->sk.base);
 		fs_error_set();
 		LK_LOCK_DESTROY(&b->lock);
-		LK_LOCK_DESTROY(&b->bytes_lock);
 		free(b);
 		return;
 	}
@@ -174,7 +168,7 @@ slab_unclaim(struct oslab *b)
 
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_UNCLAIM;
-		memcpy(&m.v.unclaim.key, &b->hdr.v.f.key,
+		memcpy(&m.v.unclaim.key, &b->sk,
 		    sizeof(struct slab_key));
 
 		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
@@ -186,19 +180,18 @@ slab_unclaim(struct oslab *b)
 			xlog(LOG_ERR, &e, "%s: failed to receive response "
 			    "for unclaim of slab sk=%lu/%lu, but "
 			    "closing it anyway", __func__,
-			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+			    b->sk.ino, b->sk.base);
 		} else if (m.m == MGR_MSG_UNCLAIM_ERR) {
 			xlog(LOG_ERR, &m.v.err,
 			    "%s: failed to unclaim slab sk=%lu/%lu, but "
 			    "closing it anyway: mgr_recv", __func__,
-			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+			    b->sk.ino, b->sk.base);
 		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
 			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
 			    "unexpected response: %d for slab sk=%lu/%lu",
-			    __func__, m.m, b->hdr.v.f.key.ino,
-			    b->hdr.v.f.key.base);
+			    __func__, m.m, b->sk.ino, b->sk.base);
 			goto fail;
-		} else if (memcmp(&m.v.unclaim.key, &b->hdr.v.f.key,
+		} else if (memcmp(&m.v.unclaim.key, &b->sk,
 		    sizeof(struct slab_key))) {
 			/* We close the fd here to avoid deadlocks. */
 			if (close(b->fd) == -1)
@@ -208,8 +201,8 @@ slab_unclaim(struct oslab *b)
 			    "%s: bad manager response for unclaim; "
 			    "ino: expected=%lu, received=%lu"
 			    "base: expected=%lu, received=%lu", __func__,
-			    b->hdr.v.f.key.ino, m.v.unclaim.key.ino,
-			    b->hdr.v.f.key.base, m.v.unclaim.key.base);
+			    b->sk.ino, m.v.unclaim.key.ino,
+			    b->sk.base, m.v.unclaim.key.base);
 			goto fail;
 		}
 		break;
@@ -220,17 +213,12 @@ fail:
 		 * or until an external action is taken.
 		 */
 		if (mgr != -1)
-			if (close(mgr) == -1)
-				xlog_strerror(LOG_ERR, errno,
-				    "%s: close", __func__);
+			close_x(mgr, __func__);
 		nanosleep(&tp, NULL);
 	}
-	if (close(mgr) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close(mgr)", __func__);
-	if (close(b->fd) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close(b->fd)", __func__);
+	close_x(mgr, __func__);
+	close_x(b->fd, __func__);
 	LK_LOCK_DESTROY(&b->lock);
-	LK_LOCK_DESTROY(&b->bytes_lock);
 	free(b);
 }
 
@@ -284,10 +272,10 @@ slab_purge(void *unused)
 			xlog_dbg(XLOG_SLAB, "%s: purging slab%s, "
 			    "ino=%lu, base=%lu", __func__,
 			    (purge) ? " (forced)" : "",
-			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+			    b->sk.ino, b->sk.base);
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);
-			if (!b->hdr.v.f.key.ino)
+			if (!b->sk.ino)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,
 				    itbl_entry);
 			slab_unclaim(b);
@@ -302,16 +290,12 @@ slab_purge(void *unused)
 void
 slab_set_dirty(struct oslab *b)
 {
-	if (b->oflags & OSLAB_SYNC)
-		return;
-
-	LK_WRLOCK(&b->lock);
-	b->dirty = 1;
-	LK_UNLOCK(&b->lock);
+	if (!(b->oflags & OSLAB_SYNC))
+		b->dirty = 1;
 }
 
 int
-slab_write_hdr_nolock(struct oslab *b, struct xerr *e)
+slab_write_hdr(struct oslab *b, struct xerr *e)
 {
 	b->hdr.v.f.flags |= SLAB_DIRTY;
 	if (pwrite_x(b->fd, &b->hdr, sizeof(b->hdr), 0) < sizeof(b->hdr))
@@ -319,18 +303,6 @@ slab_write_hdr_nolock(struct oslab *b, struct xerr *e)
 		    "short write on slab header");
 	if (!(b->oflags & OSLAB_SYNC))
 		b->dirty = 1;
-	return 0;
-}
-
-int
-slab_write_hdr(struct oslab *b, struct xerr *e)
-{
-	LK_WRLOCK(&b->lock);
-	if (slab_write_hdr_nolock(b, e) == -1) {
-		LK_UNLOCK(&b->lock);
-		return -1;
-	}
-	LK_UNLOCK(&b->lock);
 	return 0;
 }
 
@@ -440,9 +412,8 @@ slab_make_dirs(struct xerr *e)
 int
 slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
 {
-	int            r;
-	pthread_attr_t attr;
-	struct rlimit  nofile, locks;
+	int           r;
+	struct rlimit nofile, locks;
 
 	owned_slabs.max_open = max_open;
 
@@ -486,10 +457,7 @@ slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
 	xlog(LOG_NOTICE, NULL, "slab max age is %lu seconds",
 	    owned_slabs.max_age);
 
-	if ((r = pthread_attr_init(&attr)) != 0)
-		return XERRF(e, XLOG_ERRNO, r, "pthread_attr_init");
-	if ((r = pthread_create(&slab_purger, &attr,
-	    &slab_purge, NULL)) != 0)
+	if ((r = pthread_create(&slab_purger, NULL, &slab_purge, NULL)) != 0)
 		return XERRF(e, XLOG_ERRNO, r, "pthread_create");
 	return 0;
 }
@@ -512,27 +480,27 @@ slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 
 	ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 
-	LK_LOCK(&b->bytes_lock, LK_LOCK_RW);
+	LK_LOCK(&b->lock, LK_LOCK_RW);
 	if (ihdr->initialized == 0) {
 		ihdr->initialized = 1;
 		bzero(ihdr->bitmap, sizeof(ihdr->bitmap));
 		ihdr->n_free = slab_inode_max();
 	}
-	LK_UNLOCK(&b->bytes_lock);
+	LK_UNLOCK(&b->lock);
 
 	return b;
 }
 
 void
-slab_lock_bytes(struct oslab *b, rwlk_flags lkf)
+slab_lock(struct oslab *b, rwlk_flags lkf)
 {
-	LK_LOCK(&b->bytes_lock, lkf);
+	LK_LOCK(&b->lock, lkf);
 }
 
 void
-slab_unlock_bytes(struct oslab *b)
+slab_unlock(struct oslab *b)
 {
-	LK_UNLOCK(&b->bytes_lock);
+	LK_UNLOCK(&b->lock);
 }
 
 ino_t
@@ -542,7 +510,6 @@ slab_itbl_find_unallocated(struct oslab *b)
 	uint32_t             *p;
 	uint32_t              mask;
 	struct slab_itbl_hdr *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
-
 
 	if (ihdr->n_free == 0)
 		return 0;
@@ -651,12 +618,12 @@ slab_shutdown(struct xerr *e)
 		if (b->refcnt != 0)
 			xlog(LOG_ERR, NULL, "%s: slab has non-zero refcnt: "
 			    "ino=%lu, base=%lu, refcnt %d",
-			    __func__, b->hdr.v.f.key.ino,
-			    b->hdr.v.f.key.base, b->refcnt);
+			    __func__, b->sk.ino,
+			    b->sk.base, b->refcnt);
 		else
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);
 		SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
-		if (!b->hdr.v.f.key.ino)
+		if (!b->sk.ino)
 			TAILQ_REMOVE(&owned_slabs.itbl_head, b, itbl_entry);
 		slab_unclaim(b);
 		counter_decr(COUNTER_N_OPEN_SLABS);
@@ -727,22 +694,22 @@ slab_parse_path(const char *path, struct slab_key *sk, struct xerr *e)
 	return slab_key_valid(sk, e);
 }
 
-/*
- * Must be called with slab lock and bytes_lock.
- */
 static int
 slab_claim(const struct slab_key *sk, struct oslab *b, struct xerr *e)
 {
 	int              mgr = -1;
 	struct mgr_msg   m;
 
-	if ((mgr = mgr_connect(1, e)) == -1)
-		return XERR_PREPENDFN(e);
+	xlog_dbg(XLOG_SLAB, "%s: claiming sk=%lu/%ld",
+	    __func__, sk->ino, sk->base);
 
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	memcpy(&m.v.claim.key, sk, sizeof(struct slab_key));
 	m.v.claim.oflags = b->oflags;
+
+	if ((mgr = mgr_connect(1, e)) == -1)
+		return XERR_PREPENDFN(e);
 
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		goto fail;
@@ -773,12 +740,6 @@ slab_claim(const struct slab_key *sk, struct oslab *b, struct xerr *e)
 		    "mgr returned fd -1 on slab sk=%lu/%lu", sk->ino, sk->base);
 		goto fail;
 	}
-
-	/*
-	 * While slab_read_hdr() will fill this up, if it fails we'll
-	 * need it to unclaim.
-	 */
-	memcpy(&b->hdr.v.f.key, sk, sizeof(struct slab_key));
 
 	if (slab_read_hdr(b, e) == -1)
 		goto fail;
@@ -832,7 +793,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 		return NULL;
 	}
 
-	memcpy(&needle.hdr.v.f.key, sk, sizeof(struct slab_key));
+	memcpy(&needle.sk, sk, sizeof(struct slab_key));
 
 	xlog_dbg(XLOG_SLAB, "%s: loading sk=%lu/%ld",
 	    __func__, sk->ino, sk->base);
@@ -862,24 +823,11 @@ error_retry:
 			goto error_retry;
 		}
 
-		/*
-		 * Fill the header's key right away because it's needed
-		 * for indexing in the slab_tree.
-		 */
-		memcpy(&b->hdr.v.f.key, sk, sizeof(struct slab_key));
-
+		memcpy(&b->sk, sk, sizeof(struct slab_key));
 		b->oflags = oflags;
 
-		if (LK_LOCK_INIT(&b->bytes_lock, e) == -1) {
-			MTX_UNLOCK(&owned_slabs.lock);
-			free(b);
-			xlog(LOG_ERR, e, __func__);
-			xerrz(e);
-			goto error_retry;
-		}
 		if (LK_LOCK_INIT(&b->lock, e) == -1) {
 			MTX_UNLOCK(&owned_slabs.lock);
-			LK_LOCK_DESTROY(&b->bytes_lock);
 			free(b);
 			xlog(LOG_ERR, e, __func__);
 			xerrz(e);
@@ -895,64 +843,48 @@ error_retry:
 			free(b);
 			goto error_retry;
 		}
-		if (!b->hdr.v.f.key.ino)
+		if (!b->sk.ino)
 			TAILQ_INSERT_TAIL(&owned_slabs.itbl_head, b, itbl_entry);
 		counter_incr(COUNTER_N_OPEN_SLABS);
-
-		/*
-		 * Claim both locks while we are claiming the slab from the mgr.
-		 * We want to release the owned_slacks.lock to allow other slabs
-		 * to be loaded in the meantime. Claiming could take a while.
-		 */
-		LK_WRLOCK(&b->bytes_lock);
-		LK_WRLOCK(&b->lock);
 	} else {
 		if (b->refcnt == 0)
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);
 		b->refcnt++;
-
-		/*
-		 * We must grab the slab lock here in case we're in the
-		 * process of claiming it in another thread. This will
-		 * unlock once the claim is complete.
-		 */
-		LK_WRLOCK(&b->bytes_lock);
-		LK_WRLOCK(&b->lock);
-
-		if (b->pending) {
-			/*
-			 * A previous attempt to claim the slab from
-			 * the mgr failed. We can try again.
-			 */
-			LK_WRLOCK(&b->lock);
-			LK_WRLOCK(&b->bytes_lock);
-			xlog_dbg(XLOG_SLAB, "%s: slab sk=%lu/%ld is pending",
-			    __func__, sk->ino, sk->base);
-		} else {
-			/*
-			 * No need to check for NOCREATE, because if it's loaded
-			 * it must already have been created.
-			 */
-			if ((b->hdr.v.f.flags & SLAB_REMOVED) &&
-			    slab_realloc(b, e) == -1) {
-				XERR_PREPENDFN(e);
-				LK_UNLOCK(&b->bytes_lock);
-				LK_UNLOCK(&b->lock);
-				MTX_UNLOCK(&owned_slabs.lock);
-				return NULL;
-			}
-			LK_UNLOCK(&b->lock);
-			LK_UNLOCK(&b->bytes_lock);
-			MTX_UNLOCK(&owned_slabs.lock);
-			return b;
-		}
 	}
-
 	MTX_UNLOCK(&owned_slabs.lock);
 
-	xlog_dbg(XLOG_SLAB, "%s: slab_claim for sk=%lu/%ld",
-	    __func__, sk->ino, sk->base);
+	/*
+	 * We must grab the slab lock here in case we're in the
+	 * process of claiming it in another thread. This will
+	 * unlock once the claim is complete.
+	 */
+	LK_WRLOCK(&b->lock);
+
+	if (b->pending) {
+		/*
+		 * A previous attempt to claim the slab from
+		 * the mgr failed. We can try again.
+		 */
+		xlog_dbg(XLOG_SLAB, "%s: slab sk=%lu/%ld is pending",
+		    __func__, sk->ino, sk->base);
+	} else {
+
+		/*
+		 * No need to check for NOCREATE, because if it's loaded
+		 * it must already have been created.
+		 */
+		if ((b->hdr.v.f.flags & SLAB_REMOVED) &&
+		    slab_realloc(b, e) == -1) {
+			XERR_PREPENDFN(e);
+			LK_UNLOCK(&b->lock);
+			return NULL;
+		}
+		LK_UNLOCK(&b->lock);
+		return b;
+	}
+
 	if (slab_claim(sk, b, xerrz(e)) == -1) {
+		LK_UNLOCK(&b->lock);
 		/*
 		 * We weren't able to claim our slab from
 		 * the mgr. Drop out refcnt, and if we're at
@@ -965,18 +897,17 @@ error_retry:
 			    "ino=%lu, base=%lu", __func__,
 			    sk->ino, sk->base);
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
-			if (!b->hdr.v.f.key.ino)
+			if (!b->sk.ino)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,
 				    itbl_entry);
 			slab_unclaim(b);
+			counter_decr(COUNTER_N_OPEN_SLABS);
 		}
 		MTX_UNLOCK(&owned_slabs.lock);
 		XERR_PREPENDFN(e);
 		return NULL;
 	}
-
 	LK_UNLOCK(&b->lock);
-	LK_UNLOCK(&b->bytes_lock);
 	return b;
 }
 
@@ -997,7 +928,7 @@ slab_forget(struct oslab *b, struct xerr *e)
 
 	MTX_LOCK(&owned_slabs.lock);
 	xlog_dbg(XLOG_SLAB, "%s: forgetting sk=%lu/%ld, refcnt=%lu",
-	    __func__, b->hdr.v.f.key.ino, b->hdr.v.f.key.base, b->refcnt);
+	    __func__, b->sk.ino, b->sk.base, b->refcnt);
 	b->refcnt--;
 	if (b->refcnt == 0) {
 		if (clock_gettime(CLOCK_MONOTONIC, &t) == -1) {
@@ -1005,12 +936,12 @@ slab_forget(struct oslab *b, struct xerr *e)
 		} else if (b->open_since.tv_sec
 		    <= t.tv_sec - owned_slabs.max_age) {
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
-			if (!b->hdr.v.f.key.ino)
+			if (!b->sk.ino)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,
 				    itbl_entry);
 			xlog_dbg(XLOG_SLAB,
 			    "%s: unclaiming slab %lu/%ld", __func__,
-			    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+			    b->sk.ino, b->sk.base);
 			slab_unclaim(b);
 			counter_decr(COUNTER_N_OPEN_SLABS);
 		} else
@@ -1043,10 +974,13 @@ slab_itbls(off_t *bases, size_t n, struct xerr *e)
 		 * If the itbl base is zero, this could be because
 		 * this slab is being initialized. Skip it.
 		 */
-		if (b->hdr.v.f.key.base == 0 || ihdr->n_free == 0)
+		LK_RDLOCK(&b->lock);
+		if (b->hdr.v.f.key.base == 0 || ihdr->n_free == 0) {
+			LK_UNLOCK(&b->lock);
 			continue;
-
+		}
 		bases[i++] = b->hdr.v.f.key.base;
+		LK_UNLOCK(&b->lock);
 
 		if (i >= n)
 			break;
@@ -1099,11 +1033,27 @@ slab_write(struct oslab *b, const void *buf, off_t offset,
 		return XERRF(e, XLOG_APP, XLOG_INVAL,
 		    "count (%lu) cannot exceed SSIZE_MAX", count);
 
+	/*
+	 * We mark the slab as dirty on-disk before performing the write.
+	 * If we marked it dirty after instead, and the system crashed
+	 * before we had the chance to mark it dirty, we could lose data
+	 * by purging that slab thinking that nothing was written to it.
+	 *
+	 * There is no risk of purging the slab before the actual write
+	 * goes into it since we are holding the flock(), preventing the
+	 * purger from touching it.
+	 */
 	if (slab_set_dirty_hdr(b, e) == -1)
 		return -1;
+
 	offset += sizeof(b->hdr);
 	if ((w = pwrite_x(b->fd, buf, count, offset)) == -1)
 		return XERRF(e, XLOG_ERRNO, errno, "pwrite_x");
+
+	/*
+	 * Then finally mark the open slab structure as having
+	 * non-fsync'd data (unless O_SYNC).
+	 */
 	slab_set_dirty(b);
 	return w;
 }
@@ -1138,25 +1088,28 @@ slab_delayed_truncate(struct slab_key *sk, off_t offset, struct xerr *e)
 	/*
 	 * If we have the slab loaded in-memory, just truncate now.
 	 */
-	memcpy(&needle.hdr.v.f.key, sk, sizeof(struct slab_key));
+	memcpy(&needle.sk, sk, sizeof(struct slab_key));
 	MTX_LOCK(&owned_slabs.lock);
 	if ((b = SPLAY_FIND(slab_tree, &owned_slabs.head, &needle)) != NULL) {
 		LK_WRLOCK(&b->lock);
 		if (offset == 0)
 			b->hdr.v.f.flags |= SLAB_REMOVED;
-		if ((ftruncate(b->fd, offset + sizeof(b->hdr))) == -1)
+		if ((ftruncate(b->fd, offset + sizeof(b->hdr))) == -1) {
+			LK_UNLOCK(&b->lock);
+			MTX_UNLOCK(&owned_slabs.lock);
 			return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
-		if (slab_write_hdr_nolock(b, e) != -1)
+		}
+		if (slab_write_hdr(b, xerrz(e)) != -1)
 			truncated = 1;
 		LK_UNLOCK(&b->lock);
 	}
 
 	/*
-	 * Unless slab_write_hdr_nolock() failed, we can just stop here.
+	 * Unless slab_write_hdr() failed, we can just stop here.
 	 */
 	if (truncated) {
 		MTX_UNLOCK(&owned_slabs.lock);
-		return 0;
+		return xerr_fail(e);
 	}
 
 	for (;;) {
@@ -1224,9 +1177,7 @@ fail:
 		 * taken.
 		 */
 		if (mgr != -1)
-			if (close(mgr) == -1)
-				xlog_strerror(LOG_ERR, errno,
-				    "%s: close(mgr)", __func__);
+			close_x(mgr, __func__);
 		fs_error_set();
 		nanosleep(&tp, NULL);
 	}
@@ -1238,7 +1189,7 @@ int
 slab_truncate(struct oslab *b, off_t offset, struct xerr *e)
 {
 	if (slab_set_dirty_hdr(b, e) == -1)
-		return -1;
+		return XERR_PREPENDFN(e);
 	offset += sizeof(b->hdr);
 	if ((ftruncate(b->fd, offset)) == -1)
 		return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
@@ -1249,17 +1200,11 @@ slab_truncate(struct oslab *b, off_t offset, struct xerr *e)
 int
 slab_unlink(struct oslab *b, struct xerr *e)
 {
-	LK_WRLOCK(&b->lock);
 	b->hdr.v.f.flags |= SLAB_REMOVED;
-	if ((ftruncate(b->fd, sizeof(struct slab_hdr))) == -1) {
-		LK_UNLOCK(&b->lock);
+	if ((ftruncate(b->fd, sizeof(struct slab_hdr))) == -1)
 		return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
-	}
-	if (slab_write_hdr_nolock(b, e) == -1) {
-		LK_UNLOCK(&b->lock);
-		return -1;
-	}
-	LK_UNLOCK(&b->lock);
+	if (slab_write_hdr(b, xerrz(e)) == -1)
+		return XERR_PREPENDFN(e);
 	return 0;
 }
 
@@ -1274,25 +1219,21 @@ slab_size(struct oslab *b, struct xerr *e)
 	return st.st_size - sizeof(struct slab_hdr);
 }
 
-/* Must be called in lock context */
 int
 slab_sync(struct oslab *b, struct xerr *e)
 {
-	if (b->oflags & OSLAB_SYNC)
+	if (b->oflags & OSLAB_SYNC || !b->dirty)
 		return 0;
 
-	LK_WRLOCK(&b->lock);
-	if (b->dirty) {
-		if (fsync(b->fd) == -1) {
-			LK_UNLOCK(&b->lock);
-			return XERRF(e, XLOG_ERRNO, errno, "fsync");
-		}
-		b->dirty = 0;
-	}
-	LK_UNLOCK(&b->lock);
+	if (fsync(b->fd) == -1)
+		return XERRF(e, XLOG_ERRNO, errno, "fsync");
+	b->dirty = 0;
 	return 0;
 }
 
+/*
+ * An inode read-lock is sufficient if write_fd is zero.
+ */
 void
 slab_splice_fd(struct oslab *b, off_t offset, size_t count,
     off_t *rel_offset, size_t *b_count, int *fd, int write_fd)
@@ -1387,12 +1328,12 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	m.v.claim.oflags = oflags;
 
 	if (mgr_send(mgr, -1, &m, e) == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return NULL;
 	}
 
 	if (mgr_recv(mgr, &fd, &m, e) == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return NULL;
 	}
 
@@ -1403,7 +1344,7 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	} else if (m.m == MGR_MSG_CLAIM_ERR) {
 		// TODO: handle backend unavailability
 		memcpy(e, &m.v.err, sizeof(struct xerr));
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		return NULL;
 	} else if (m.m != MGR_MSG_CLAIM_OK) {
 		XERRF(e, XLOG_APP, XLOG_MGRERROR,
@@ -1429,13 +1370,13 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 	b->fd = fd;
 
 	if (slab_read_hdr(b, e) == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_slab;
 	}
 	memcpy(hdr, &b->hdr, sizeof(struct slab_hdr));
 
 	if ((*slab_sz = slab_size(b, e)) == ULONG_MAX) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_slab;
 	}
 
@@ -1450,25 +1391,25 @@ slab_inspect(int mgr, struct slab_key *sk, uint32_t oflags,
 			    "short read on slab; expected size from "
 			    "fstat() is %lu, slab_read() returned %lu",
 			    *slab_sz, r);
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_data;
 	}
 
 	m.m = MGR_MSG_UNCLAIM;
 	memcpy(&m.v.unclaim.key, sk, sizeof(struct slab_key));
 	if (mgr_send(mgr, b->fd, &m, e) == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_data;
 	}
 
 	if (mgr_recv(mgr, NULL, &m, e) == -1) {
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_data;
 	}
 
 	if (m.m == MGR_MSG_UNCLAIM_ERR) {
 		memcpy(e, &m.v.err, sizeof(struct xerr));
-		xerr_prepend(e, __func__);
+		XERR_PREPENDFN(e);
 		goto fail_free_data;
 	} else if (m.m != MGR_MSG_UNCLAIM_OK) {
 		XERRF(e, XLOG_APP, XLOG_MGRERROR,

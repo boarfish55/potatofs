@@ -373,6 +373,10 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	}
 
 	inode_lock(oi, LK_LOCK_RW);
+	/*
+	 * We get the bytes lock because this may be used to
+	 * truncate the file.
+	 */
 	if (inode_setattr(oi, &st, mask, &e) == -1) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
@@ -476,13 +480,18 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 			goto fail;
 		if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL)
 			goto fail;
+		inode_lock(oi, LK_LOCK_RW);
 		inode_nlink(oi, 2);
-
-		if (di_create(oi, FS_ROOT_INODE, xerrz(&e)) == -1)
+		if (di_create(oi, FS_ROOT_INODE, xerrz(&e)) == -1) {
+			inode_unlock(oi);
 			goto fail;
+		}
+		if (inode_flush(oi, 0, xerrz(&e)) == -1) {
+			inode_unlock(oi);
+			goto fail;
+		}
+		inode_unlock(oi);
 	}
-	if (inode_flush(oi, 0, xerrz(&e)) == -1)
-		goto fail;
 	if (inode_unload(oi, xerrz(&e)) == -1)
 		goto fail;
 	return;
@@ -683,7 +692,9 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		return;
 	}
 
+	inode_lock(of->oi, LK_LOCK_RD);
 	if (inode_splice_begin_read(&si, of->oi, off, size, &e) == -1) {
+		inode_unlock(of->oi);
 		FS_ERR(&r_sent, req, &e);
 		free(bv);
 		return;
@@ -693,6 +704,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	bv->idx = 0;
 	bv->off = 0;
 	if (si.nv == 0) {
+		inode_unlock(of->oi);
 		FUSE_REPLY(&r_sent, fuse_reply_buf(req, "", 0));
 	} else {
 		for (i = 0; i < si.nv; i++) {
@@ -707,18 +719,24 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 				    FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
 			}
 		}
-		counter_add(COUNTER_READ_BYTES, fuse_buf_size(bv));
-		inode_lock(of->oi, LK_LOCK_RW);
-		if (fs_config.noatime) {
-			fs_set_time(of->oi, INODE_ATTR_ATIME);
-			if (inode_flush(of->oi, 0, xerrz(&e)) == -1)
-				FS_ERR(&r_sent, req, &e);
-		}
-		inode_unlock(of->oi);
 		FUSE_REPLY(&r_sent, fuse_reply_data(req, bv,
 		    FUSE_BUF_FORCE_SPLICE));
-	}
+		inode_unlock(of->oi);
 
+		counter_add(COUNTER_READ_BYTES, fuse_buf_size(bv));
+
+		if (fs_config.noatime) {
+			inode_lock(of->oi, LK_LOCK_RW);
+			fs_set_time(of->oi, INODE_ATTR_ATIME);
+			if (inode_flush(of->oi, 0, xerrz(&e)) == -1) {
+				inode_unlock(of->oi);
+				FS_ERR(&r_sent, req, &e);
+				goto end;
+			}
+			inode_unlock(of->oi);
+		}
+	}
+end:
 	if (inode_splice_end_read(&si, &e) == -1)
 		xlog(LOG_ERR, &e, "%s: inode_splice_end_read", __func__);
 	free(bv);
@@ -749,8 +767,14 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 		return;
 	}
 
+	/*
+	 * Initiating a splice'd write to an inode doesn't actually
+	 * require a write lock. We only load the slabs and their fd.
+	 */
+	inode_lock(of->oi, LK_LOCK_RD);
 	if (inode_splice_begin_write(&si, of->oi, off,
-	    fuse_buf_size(bufv), &e) == -1) {
+	    fuse_buf_size(bufv), xerrz(&e)) == -1) {
+		inode_unlock(of->oi);
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -774,11 +798,15 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 		}
 	}
 
+	/*
+	 * Read lock is still sufficient here, we don't modify anything
+	 * protected by the inode lock, yet.
+	 */
 	if ((w = fuse_buf_copy(bv, bufv, FUSE_BUF_FORCE_SPLICE)) < 0) {
+		inode_unlock(of->oi);
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, -w));
 		return;
 	}
-	xerrz(&e);
 
 	/*
 	 * We still need to do cleanup on error. Let's report zero bytes
@@ -789,9 +817,10 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 
 	bufv->off += w;
 
-	if (inode_splice_end_write(&si, w, &e) == -1)
+	if (inode_splice_end_write(&si, w, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 	free(bv);
+	inode_unlock(of->oi);
 
 	inode_lock(of->oi, LK_LOCK_RW);
 	fs_set_time(of->oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
@@ -984,7 +1013,7 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
 			goto end;
 		}
-	} else if (oi->ino.v.f.nlink > 2) {
+	} else if (inode_nlink(oi, 0) > 2) {
 		/* If nlink > 2, we have child directories */
 		FUSE_REPLY(&r_sent,
 		    fuse_reply_err(req, ENOTEMPTY));
@@ -1287,8 +1316,7 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	entry.entry_timeout = fs_config.entry_timeouts;
 	inode_cp_stat(&entry.attr, &inode);
 
-	if ((of = openfile_alloc(inode.v.f.inode,
-	    fi->flags, &e)) == NULL) {
+	if ((of = openfile_alloc(inode.v.f.inode, fi->flags, &e)) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1324,6 +1352,7 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 		return;
 	}
 
+	inode_lock(oi, LK_LOCK_RW);
 	if (inode_fallocate(oi, offset, length, mode, &e) == -1) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
@@ -1331,6 +1360,7 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 			FS_ERR(&r_sent, req, &e);
 	} else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
+	inode_unlock(oi);
 
 	if (inode_unload(oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
@@ -1438,7 +1468,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 		xerrz(&e);
 		goto end;
 	}
-	if (oi->ino.v.f.nlink >= FS_LINK_MAX) {
+	if (inode_nlink(oi, 0) >= FS_LINK_MAX) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EMLINK));
 		xerrz(&e);
 		goto end;
@@ -1543,8 +1573,8 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 			FS_ERR(&r_sent, req, &e);
 		goto unlock;
 	}
-	inode_lock(oi, LK_LOCK_RD);
 
+	inode_lock(oi, LK_LOCK_RD);
 	for (offset = 0; offset < (FS_PATH_MAX - 1); offset += r) {
 		r = inode_read(oi, offset, link + offset,
 		    FS_PATH_MAX - offset - 1, &e);
@@ -1560,14 +1590,15 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 		}
 	}
 	link[offset] = '\0';
+	inode_unlock(oi);
 
 	if (fs_config.noatime) {
+		inode_lock(oi, LK_LOCK_RW);
 		fs_set_time(oi, INODE_ATTR_ATIME);
 		if (inode_flush(oi, 0, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
+		inode_unlock(oi);
 	}
-
-	inode_unlock(oi);
 
 	if (inode_unload(oi, &e) == -1)
 		FS_ERR(&r_sent, req, &e);
@@ -1987,7 +2018,7 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 
 		/* We can't rename a dir over a non-empty dir */
 		if (inode_isdir(oi) && inode_isdir(new_oi)) {
-			if (new_oi->ino.v.f.nlink > 2) {
+			if (inode_nlink(new_oi, 0) > 2) {
 				FUSE_REPLY(&r_sent, fuse_reply_err(req,
 				    ENOTEMPTY));
 				goto unlock_inodes;

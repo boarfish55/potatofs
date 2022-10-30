@@ -63,5 +63,6 @@ ssize_t write_x(int, const void *, size_t);
 ssize_t pwrite_x(int, const void *, size_t, off_t);
 int     mkdir_x(const char *, mode_t);
 int     open_wflock(const char *, int, mode_t, int, uint32_t);
+void    close_x(int, const char *);
 
 #endif

@@ -108,14 +108,14 @@ alloc_inode(ino_t *inode, struct xerr *e)
 			XERR_PREPENDFN(e);
 			return NULL;
 		}
-		slab_lock_bytes(b, LK_LOCK_RW);
+		slab_lock(b, LK_LOCK_RW);
 		ino = slab_itbl_find_unallocated(b);
 		if (ino > 0) {
 			if (inode != NULL)
 				*inode = ino;
 			return b;
 		}
-		slab_unlock_bytes(b);
+		slab_unlock(b);
 		if (slab_forget(b, xerrz(e)) == -1) {
 			XERR_PREPENDFN(e);
 			return NULL;
@@ -136,14 +136,14 @@ alloc_inode(ino_t *inode, struct xerr *e)
 			return NULL;
 		}
 
-		slab_lock_bytes(b, LK_LOCK_RW);
+		slab_lock(b, LK_LOCK_RW);
 		ino = slab_itbl_find_unallocated(b);
 		if (ino > 0) {
 			if (inode != NULL)
 				*inode = ino;
 			return b;
 		}
-		slab_unlock_bytes(b);
+		slab_unlock(b);
 
 		if (slab_forget(b, xerrz(e)) == -1) {
 			XERR_PREPENDFN(e);
@@ -178,11 +178,11 @@ inode_dealloc(ino_t ino, struct xerr *e)
 		return -1;
 	}
 
-	slab_lock_bytes(b, LK_LOCK_RW);
+	slab_lock(b, LK_LOCK_RW);
 	xlog_dbg(XLOG_INODE, "%s: deallocating inode %lu", __func__, ino);
 	slab_itbl_dealloc(b, ino);
 	slab_write_hdr(b, xerrz(e));
-	slab_unlock_bytes(b);
+	slab_unlock(b);
 
 	if (slab_forget(b, xerrz(&e_close_tbl)) == -1) {
 		fs_error_set();
@@ -195,30 +195,18 @@ inode_dealloc(ino_t ino, struct xerr *e)
 off_t
 inode_getsize(struct oinode *oi)
 {
-	off_t sz;
-
+	off_t size;
 	LK_RDLOCK(&oi->bytes_lock);
-	sz = oi->ino.v.f.size;
+	size = oi->ino.v.f.size;
 	LK_UNLOCK(&oi->bytes_lock);
-	return sz;
-}
-
-static void
-inode_set_bytes_dirty(struct oinode *oi)
-{
-	LK_WRLOCK(&oi->bytes_lock);
-	oi->bytes_dirty = 1;
-	LK_UNLOCK(&oi->bytes_lock);
+	return size;
 }
 
 static int
 inode_incr_size(struct oinode *oi, off_t offset, off_t written,
     struct xerr *e)
 {
-	LK_WRLOCK(&oi->bytes_lock);
-
 	if (written > LONG_MAX - offset) {
-		LK_UNLOCK(&oi->bytes_lock);
 		return XERRF(e, XLOG_FS, EFBIG,
 		    "file size overflow: %lu", oi->ino.v.f.inode);
 	}
@@ -228,7 +216,6 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 		oi->ino.v.f.blocks = (offset + written) / 512 + 1;
 		oi->bytes_dirty = 1;
 	}
-	LK_UNLOCK(&oi->bytes_lock);
 	return 0;
 }
 
@@ -252,7 +239,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 		b = alloc_inode(&ino, xerrz(e));
 	} else {
 		b = slab_load_itbl(slab_key(&sk, 0, ino), xerrz(e));
-		slab_lock_bytes(b, LK_LOCK_RW);
+		slab_lock(b, LK_LOCK_RW);
 	}
 
 	if (b == NULL) {
@@ -323,7 +310,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	if (slab_write_hdr(b, xerrz(e)) == -1)
 		goto fail;
 
-	slab_unlock_bytes(b);
+	slab_unlock(b);
 	if (slab_forget(b, xerrz(e)) == -1)
 		return -1;
 
@@ -332,7 +319,7 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 
 	return 0;
 fail:
-	slab_unlock_bytes(b);
+	slab_unlock(b);
 	if (slab_forget(b, xerrz(&e_close_tbl)) == -1) {
 		fs_error_set();
 		xlog(LOG_ERR, &e_close_tbl, __func__);
@@ -396,23 +383,17 @@ int
 inode_fallocate(struct oinode *oi, off_t offset, off_t len,
     int mode, struct xerr *e)
 {
-	off_t old_size;
-	int   done = 0;
-
 	if (mode != 0)
 		return XERRF(e, XLOG_FS, EOPNOTSUPP,
 		    "non-zero mode isn't support by fallocate() "
 		    "at this time");
 
-	LK_WRLOCK(&oi->bytes_lock);
-	old_size = oi->ino.v.f.size;
-	if (offset + len <= old_size)
-		done = 1;
-	LK_UNLOCK(&oi->bytes_lock);
-
-	if (done)
+	LK_RDLOCK(&oi->bytes_lock);
+	if (offset + len <= oi->ino.v.f.size) {
+		LK_UNLOCK(&oi->bytes_lock);
 		return 0;
-
+	}
+	LK_UNLOCK(&oi->bytes_lock);
 	return inode_truncate(oi, offset + len, xerrz(e));
 }
 
@@ -428,6 +409,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	struct slab_key  sk;
 
 	LK_WRLOCK(&oi->bytes_lock);
+
 	old_size = oi->ino.v.f.size;
 	if (old_size == offset)
 		goto end;
@@ -471,7 +453,7 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 		if (slab_delayed_truncate(slab_key(&sk, oi->ino.v.f.inode,
 		    c_off), truncate_to, xerrz(e)) == -1) {
 			fs_error_set();
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			goto end;
 		}
 	}
@@ -484,11 +466,11 @@ inode_truncate(struct oinode *oi, off_t offset, struct xerr *e)
 	 */
 	for (c_off = old_size; c_off <= offset; c_off += slab_get_max_size()) {
 		if ((b = slab_at(oi, c_off, 0, xerrz(e))) == NULL) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			goto end;
 		}
 		if (slab_forget(b, xerrz(e)) == -1) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			goto end;
 		}
 	}
@@ -548,6 +530,9 @@ inode_nlookup(struct oinode *oi, int nlookup_incr)
 {
 	unsigned long prev;
 
+	if (nlookup_incr == 0)
+		return oi->nlookup;
+
 	prev = oi->nlookup;
 
 	if (nlookup_incr < 0 && abs(nlookup_incr) > oi->nlookup) {
@@ -584,6 +569,8 @@ inode_nlookup_ino(ino_t ino, int nlookup_incr, struct xerr *e)
 nlink_t
 inode_nlink(struct oinode *oi, int incr)
 {
+	if (incr == 0)
+		return oi->ino.v.f.nlink;
 	if (incr < 0 && abs(incr) > oi->ino.v.f.nlink) {
 		xlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
 		    "ino=%lu (%p); tried to decrement nlink %ld by %d",
@@ -651,7 +638,7 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 		XERR_PREPENDFN(e);
 		goto end;
 	}
-	slab_lock_bytes(b, LK_LOCK_RD);
+	slab_lock(b, LK_LOCK_RD);
 
 	if (slab_itbl_is_free(b, ino)) {
 		XERRF(e, XLOG_FS, ENOENT,
@@ -665,10 +652,10 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 	}
 	bzero(oi, sizeof(struct oinode));
 
-	if (LK_LOCK_INIT(&oi->bytes_lock, xerrz(e)) == -1)
-		goto fail_free_oi;
 	if (LK_LOCK_INIT(&oi->lock, xerrz(e)) == -1)
-		goto fail_destroy_bytes_lock;
+		goto fail_free_oi;
+	if (LK_LOCK_INIT(&oi->bytes_lock, xerrz(e)) == -1)
+		goto fail_destroy_lock;
 	oi->refcnt = 1;
 	oi->oflags = oflags;
 	oi->itbl = b;
@@ -676,11 +663,11 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
 	    sizeof(struct inode), xerrz(e));
 	if (r == -1) {
-		goto fail_destroy_lock;
+		goto fail_destroy_bytes_lock;
 	} else if (r < sizeof(struct inode)) {
 		XERRF(e, XLOG_APP, XLOG_IO,
 		    "short read while reading inode %lu", ino);
-		goto fail_destroy_lock;
+		goto fail_destroy_bytes_lock;
 	}
 
 	if (oi->ino.v.f.mode & S_IFDIR)
@@ -688,7 +675,7 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
 		XERRF(e, XLOG_APP, XLOG_IO, "inode already loaded %lu", ino);
-		goto fail_destroy_lock;
+		goto fail_destroy_bytes_lock;
 	}
 
 	xlog_dbg(XLOG_INODE, "%s: loaded inode %lu refcnt %llu nlookup %lu "
@@ -697,18 +684,18 @@ inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 
 	counter_incr(COUNTER_N_OPEN_INODES);
 
-	slab_unlock_bytes(b);
+	slab_unlock(b);
 
 	goto end;
-fail_destroy_lock:
-	LK_LOCK_DESTROY(&oi->lock);
 fail_destroy_bytes_lock:
 	LK_LOCK_DESTROY(&oi->bytes_lock);
+fail_destroy_lock:
+	LK_LOCK_DESTROY(&oi->lock);
 fail_free_oi:
 	free(oi);
 	oi = NULL;
 fail_close_itbl:
-	slab_unlock_bytes(b);
+	slab_unlock(b);
 	if (slab_forget(b, xerrz(&e_close_itbl)) == -1)
 		xlog(LOG_ERR, &e_close_itbl, __func__);
 end:
@@ -744,8 +731,9 @@ inode_unload(struct oinode *oi, struct xerr *e)
 		    __func__, oi->ino.v.f.inode, oi);
 	} else
 		oi->refcnt--;
-	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu nlookup %lu nlink %ld",
-	    __func__, ino, oi->refcnt, oi->nlookup, oi->ino.v.f.nlink);
+
+	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu",
+	    __func__, ino, oi->refcnt);
 
 	if (oi->nlookup == 0) {
 		bzero(&needle, sizeof(needle));
@@ -772,8 +760,8 @@ inode_unload(struct oinode *oi, struct xerr *e)
 			}
 
 			SPLAY_REMOVE(ino_tree, &open_inodes.head, &needle);
-			LK_LOCK_DESTROY(&oi->bytes_lock);
 			LK_LOCK_DESTROY(&oi->lock);
+			LK_LOCK_DESTROY(&oi->bytes_lock);
 			free(oi);
 			oi = NULL;
 			counter_decr(COUNTER_N_OPEN_INODES);
@@ -784,7 +772,6 @@ end:
 	return xerr_fail(e);
 }
 
-/* Must be called in inode write-lock context. */
 int
 inode_sync(struct oinode *oi, struct xerr *e)
 {
@@ -802,10 +789,13 @@ inode_sync(struct oinode *oi, struct xerr *e)
 	if (oi->oflags & INODE_OSYNC)
 		return 0;
 
-	size = inode_getsize(oi);
+	LK_RDLOCK(&oi->bytes_lock);
+	size = oi->ino.v.f.size;
 
-	if (size < INODE_INLINE_BYTES)
+	if (size < INODE_INLINE_BYTES) {
+		LK_UNLOCK(&oi->bytes_lock);
 		return 0;
+	}
 
 	/*
 	 * Then sync any data living in subsequent slabs.
@@ -818,31 +808,35 @@ inode_sync(struct oinode *oi, struct xerr *e)
 				xerrz(e);
 				continue;
 			}
+			LK_UNLOCK(&oi->bytes_lock);
 			return -1;
 		}
 
+		slab_lock(b, LK_LOCK_RW);
 		if (slab_sync(b, xerrz(e)) == -1) {
 			fs_error_set();
 			xlog(LOG_ERR, e, "%s: ino=%lu (%p)", __func__,
 			    oi->ino, oi);
 		}
+		slab_unlock(b);
 
 		slab_forget(b, xerrz(e));
 	}
+	LK_UNLOCK(&oi->bytes_lock);
 	return xerr_fail(e);
 }
 
 /*
  * Write inode to underlying file; if flag INODE_FLUSH_DATA_ONLY is set,
- * we only write inline data, thus waiving the inode lock requirement.
- * Otherwise, we flush the entire inode, both inline data and metadata,
- * meaning the caller must acquire the inode lock.
+ * we only write inline data and the inode size, not the inode structure.
+ * This is useful if we must order things so that the inode size must be
+ * increased before other attributes are updated, such as when dealing with
+ * directory inode writes.
  *
  * If INODE_FLUSH_RELEASE is set, we decrement the slab's refcnt to inform
  * the mgr that it is safe to purge the slab to free up space.
  *
- * We still get the bytes_lock, no matter what. This is typically called
- * on fd close().
+ * This is typically called on fd close().
  */
 int
 inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
@@ -857,15 +851,20 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 
 	LK_WRLOCK(&oi->bytes_lock);
 	if (!oi->dirty && !oi->bytes_dirty) {
-		LK_UNLOCK(&oi->bytes_lock);
-		if (!(flags & INODE_FLUSH_RELEASE))
+		if (!(flags & INODE_FLUSH_RELEASE)) {
+			LK_UNLOCK(&oi->bytes_lock);
 			return 0;
+		}
+
+		if (slab_forget(oi->itbl, xerrz(e)) == -1) {
+			LK_UNLOCK(&oi->bytes_lock);
+			return XERR_PREPENDFN(e);
+		}
+		LK_UNLOCK(&oi->bytes_lock);
+		return 0;
 	}
 
-	slab_lock_bytes(oi->itbl, LK_LOCK_RW);
-
-	if (!oi->dirty && !oi->bytes_dirty)
-		goto end;
+	slab_lock(oi->itbl, LK_LOCK_RW);
 
 	if (flags & INODE_FLUSH_DATA_ONLY) {
 		/*
@@ -876,7 +875,10 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 		 * without O_SYNC for inodes.
 		 *
 		 * This will write the size (last field) plus the
-		 * inline data that immediately follows.
+		 * inline data that follows.
+		 *
+		 * In some cases we want to make sure inline data
+		 * is written _before_ we commit nlink to disk.
 		 */
 		sz_off = (char *)&oi->ino.v.f.size - (char *)&oi->ino;
 		if ((w = slab_write(oi->itbl, &oi->ino.v.f.size,
@@ -892,7 +894,6 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 			oi->dirty = 0;
 		}
 	}
-	LK_UNLOCK(&oi->bytes_lock);
 
 	if (w == -1) {
 		goto end;
@@ -904,7 +905,8 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 		goto end;
 	}
 end:
-	slab_unlock_bytes(oi->itbl);
+	LK_UNLOCK(&oi->bytes_lock);
+	slab_unlock(oi->itbl);
 	if (!xerr_fail(e) && (flags & INODE_FLUSH_RELEASE)) {
 		if (slab_forget(oi->itbl, xerrz(&e_close_itbl)) == -1)
 			xlog(LOG_ERR, &e_close_itbl, __func__);
@@ -954,8 +956,8 @@ inode_shutdown()
 		if (inode_flush(oi, INODE_FLUSH_RELEASE, xerrz(&e)) == -1)
 			xlog(LOG_ERR, &e, __func__);
 
-		LK_LOCK_DESTROY(&oi->bytes_lock);
 		LK_LOCK_DESTROY(&oi->lock);
+		LK_LOCK_DESTROY(&oi->bytes_lock);
 		free(oi);
 		counter_decr(COUNTER_N_OPEN_INODES);
 
@@ -989,9 +991,13 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 		    : count;
 		memcpy(f_data + offset, buf, c);
 		written += c;
-		inode_set_bytes_dirty(oi);
-		if (inode_incr_size(oi, offset, written, xerrz(e)) == -1)
+		LK_WRLOCK(&oi->bytes_lock);
+		oi->bytes_dirty = 1;
+		if (inode_incr_size(oi, offset, written, xerrz(e)) == -1) {
+			LK_UNLOCK(&oi->bytes_lock);
 			return -1;
+		}
+		LK_UNLOCK(&oi->bytes_lock);
 		if ((oi->oflags & INODE_OSYNC) &&
 		    inode_flush(oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)
 			return -1;
@@ -1014,7 +1020,9 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 		c = (count - written > slab_get_max_size() - rel_offset)
 		    ? slab_get_max_size() - rel_offset
 		    : count - written;
+		slab_lock(b, LK_LOCK_RW);
 		w = slab_write(b, buf + written, rel_offset, c, xerrz(e));
+		slab_unlock(b);
 
 		if (slab_forget(b, xerrz(e)) == -1)
 			return -1;
@@ -1023,8 +1031,12 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 			return -1;
 
 		written += w;
-		if (inode_incr_size(oi, offset, written, xerrz(e)) == -1)
+		LK_WRLOCK(&oi->bytes_lock);
+		if (inode_incr_size(oi, offset, written, xerrz(e)) == -1) {
+			LK_UNLOCK(&oi->bytes_lock);
 			return -1;
+		}
+		LK_UNLOCK(&oi->bytes_lock);
 
 		if (w < c)
 			break;
@@ -1049,7 +1061,9 @@ inode_read(struct oinode *oi, off_t offset, void *buf,
 	ssize_t       r;
 	struct oslab *b;
 
-	size = inode_getsize(oi);
+	LK_RDLOCK(&oi->bytes_lock);
+	size = oi->ino.v.f.size;
+	LK_UNLOCK(&oi->bytes_lock);
 
 	if (offset >= size)
 		return 0;
@@ -1077,7 +1091,10 @@ inode_read(struct oinode *oi, off_t offset, void *buf,
 		c = (count - rd > slab_get_max_size() - rel_offset)
 		    ? slab_get_max_size() - rel_offset
 		    : count - rd;
+
+		slab_lock(b, LK_LOCK_RD);
 		r = slab_read(b, buf + rd, rel_offset, c, xerrz(e));
+		slab_unlock(b);
 
 		if (slab_forget(b, xerrz(e)) == -1)
 			return -1;
@@ -1090,7 +1107,6 @@ inode_read(struct oinode *oi, off_t offset, void *buf,
 			 * size, we haven't created the backing bytes yet.
 			 * So just return zeroes.
 			 */
-			size = inode_getsize(oi);
 			if (offset + rd < size) {
 				c = ((count - rd) < (size - (offset + rd)))
 				    ? count - rd
@@ -1115,7 +1131,9 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 	off_t         size, b_size;
 	struct oslab *b;
 
-	size = inode_getsize(oi);
+	LK_RDLOCK(&oi->bytes_lock);
+	size = oi->ino.v.f.size;
+	LK_UNLOCK(&oi->bytes_lock);
 
 	si->oi = oi;
 	si->offset = offset;
@@ -1154,7 +1172,10 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 			free(si->v);
 			return -1;
 		}
+
+		slab_lock(b, LK_LOCK_RD);
 		if ((b_size = slab_size(b, xerrz(e))) == -1) {
+			slab_unlock(b);
 			free(si->v);
 			return -1;
 		}
@@ -1162,9 +1183,11 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 			slab_splice_fd(b, offset, count,
 			    &si->v[si->nv].rel_offset,
 			    &si->v[si->nv].count, &si->v[si->nv].fd, 0);
+			slab_unlock(b);
 			si->v[si->nv].buf = NULL;
 			si->v[si->nv].b = b;
 		} else {
+			slab_unlock(b);
 			if (slab_forget(b, xerrz(e)) == -1) {
 				free(si->v);
 				return -1;
@@ -1238,8 +1261,10 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 			free(si->v);
 			return -1;
 		}
+		slab_lock(b, LK_LOCK_RW);
 		slab_splice_fd(b, offset, count, &si->v[si->nv].rel_offset,
 		    &si->v[si->nv].count, &si->v[si->nv].fd, 1);
+		slab_unlock(b);
 		si->v[si->nv].buf = NULL;
 		si->v[si->nv].b = b;
 		offset += si->v[si->nv].count;
@@ -1252,24 +1277,30 @@ int
 inode_splice_end_write(struct inode_splice_bufvec *si,
     size_t written, struct xerr *e)
 {
-	if (inode_incr_size(si->oi, si->offset, written, xerrz(e)) == -1)
+	LK_WRLOCK(&si->oi->bytes_lock);
+	if (inode_incr_size(si->oi, si->offset, written, xerrz(e)) == -1) {
+		LK_UNLOCK(&si->oi->bytes_lock);
 		goto fail;
+	}
+	if (si->offset < INODE_INLINE_BYTES) {
+		si->oi->bytes_dirty = 1;
+		LK_UNLOCK(&si->oi->bytes_lock);
+		if ((si->oi->oflags & INODE_OSYNC) &&
+		    inode_flush(si->oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)
+			goto fail;
+	} else {
+		LK_UNLOCK(&si->oi->bytes_lock);
+	}
 
 	for (; si->nv > 0; si->nv--) {
 		if (si->v[si->nv - 1].b != NULL) {
+			slab_lock(si->v[si->nv - 1].b, LK_LOCK_RW);
 			slab_set_dirty(si->v[si->nv - 1].b);
+			slab_unlock(si->v[si->nv - 1].b);
 			if (slab_forget(si->v[si->nv - 1].b, xerrz(e)) == -1)
 				goto fail;
 		}
 	}
-
-	if (si->offset < INODE_INLINE_BYTES) {
-		inode_set_bytes_dirty(si->oi);
-		if ((si->oi->oflags & INODE_OSYNC) &&
-		    inode_flush(si->oi, INODE_FLUSH_DATA_ONLY, xerrz(e)) == -1)
-			goto fail;
-	}
-
 	free(si->v);
 	return 0;
 fail:

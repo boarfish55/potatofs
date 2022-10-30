@@ -258,6 +258,13 @@ mkdir_x(const char *path, mode_t mode)
 	return 0;
 }
 
+void
+close_x(int fd, const char *fn)
+{
+	if (close(fd) == -1)
+		xlog_strerror(LOG_ERR, errno, "%s: close_x", fn);
+}
+
 /*
  * If wait_seconds is 0, don't set LOCK_NB. We behave like plain open() + flock().
  * If wait_seconds is >0, we will sleep for a maximum of this many seconds in

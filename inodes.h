@@ -87,12 +87,16 @@ struct inode {
 };
 
 struct oinode {
+	/* refcnt and entry are protected by the open_inodes lock. */
 	SPLAY_ENTRY(oinode)  entry;
-
-	struct inode         ino;
-
-	/* refcnt may only be modified in open_inodes WRLOCK context. */
 	uint64_t             refcnt;
+
+	/*
+	 * Used to protect all remaining fields in this structure, with the
+	 * exception of inline inode bytes.
+	 */
+	rwlk                 lock;
+	int                  dirty;
 
 	/*
 	 * From FUSE, the nlookup count is incremented on every call to
@@ -101,22 +105,25 @@ struct oinode {
 	unsigned long        nlookup;
 
 	/*
-	 * Used to protect the inode metadata (this structure) except
-	 * inode size and the bytes_dirty field. The dirty field is
-	 * set to 1 when those same fields are modified.
-	 */
-	rwlk                 lock;
-	int                  dirty;
-
-	/*
-	 * Used to protect the bytes_dirty field and inode size. This
-	 * lock must *never* be acquired before the inode lock. The
-	 * bytes_dirty field is set to 1 when either the size or
+	 * The bytes_dirty field is set to 1 when either the size or
 	 * inline inode data is modified. It doesn't care about modified
 	 * slabs.
+	 *
+	 * It is necessary to have different locks & dirty flags for
+	 * bytes and other inode fields because when manipulating directories
+	 * it may be necessary to flush directory data _before_ adjusting
+	 * nlink.
+	 *
+	 * The bytes lock is primarily used to prevent races between
+	 * write and truncate. It protects bytes_dirty and ino.v.f.size.
+	 * It must always be acquired inside the regular lock above.
+	 * Reads and writes to inodes only require the inode read lock
+	 * since nothing but those two variables are changing (as well
+	 * as inline bytes and disk bytes, which are not protected at all).
 	 */
 	rwlk                 bytes_lock;
 	int                  bytes_dirty;
+	struct inode         ino;
 
 	/*
 	 * The inode table slab in which we are stored.
@@ -153,10 +160,11 @@ struct inode_splice_bufvec {
 /*
  * No locks acquired; static result.
  */
-char  *inode_data(struct inode *);
+char *inode_data(struct inode *);
 
 /*
  * Only acquires slab locks. The inode isn't actually loaded at any point.
+ * Only the inode table bitmap is updated.
  */
 int inode_make(ino_t, uid_t, gid_t, mode_t, struct inode *, struct xerr *);
 int inode_dealloc(ino_t, struct xerr *);
@@ -174,58 +182,58 @@ struct oinode *inode_load(ino_t, uint32_t, struct xerr *);
 int            inode_unload(struct oinode *, struct xerr *);
 
 /*
- * The following must be called with the inode write-lock. They all
- * acquire the bytes_lock internally.
- */
-int inode_setattr(struct oinode *, struct stat *, uint32_t, struct xerr *);
-#define INODE_FLUSH_DATA_ONLY 0x01
-#define INODE_FLUSH_RELEASE   0x02
-int inode_flush(struct oinode *, uint8_t, struct xerr *);
-
-/*
- * The following do not acquire the inode lock. It's up to the caller
- * to do so, if exclusivity is desired. They all acquire the bytes_lock
- * internally. It is safe to acquire the inode lock *before* these
- * functions acquire the bytes_lock.
+ * Those need the inode read lock and acquire the bytes_lock if
+ * accessing or modifying bytes_dirty or the inode's size. The inode read lock
+ * prevents truncate/fallocate from conflicting with those calls. Since
+ * reads/writes can happen concurrently with the read lock, we need another,
+ * more fine-grained lock to protect bytes_dirty and the inode size.
  */
 ssize_t inode_write(struct oinode *, off_t, const void *,
             size_t, struct xerr *);
 ssize_t inode_read(struct oinode *, off_t, void *, size_t, struct xerr *);
-off_t   inode_getsize(struct oinode *);
-int     inode_truncate(struct oinode *, off_t, struct xerr *);
-int     inode_fallocate(struct oinode *, off_t, off_t, int, struct xerr *);
-int     inode_splice_begin_read(struct inode_splice_bufvec *, struct oinode *,
-            off_t, size_t, struct xerr *);
-int     inode_splice_end_read(struct inode_splice_bufvec *, struct xerr *);
 int     inode_splice_begin_write(struct inode_splice_bufvec *, struct oinode *,
             off_t, size_t, struct xerr *);
 int     inode_splice_end_write(struct inode_splice_bufvec *, size_t,
             struct xerr *);
+int     inode_splice_begin_read(struct inode_splice_bufvec *, struct oinode *,
+            off_t, size_t, struct xerr *);
+void    inode_stat(struct oinode *, struct stat *);
 void    inode_cp_stat(struct stat *, const struct inode *);
+int     inode_isdir(struct oinode *);
+ino_t   inode_ino(struct oinode *);
 
 /*
- * The following must be called with the inode write-lock held.
+ * No locks needed; they either acquire only the bytes lock or only
+ * deal with slabs.
  */
-int   inode_isdir(struct oinode *);
-int   inode_sync(struct oinode *, struct xerr *);
-ino_t inode_ino(struct oinode *);
+int     inode_splice_end_read(struct inode_splice_bufvec *, struct xerr *);
+off_t   inode_getsize(struct oinode *);
+void    inode_shutdown();
+int     inode_startup();
 
 /*
- * The following must be called with the inode read-lock held.
+ * The following must be called in inode write-lock context.
+ */
+int     inode_truncate(struct oinode *, off_t, struct xerr *);
+int     inode_fallocate(struct oinode *, off_t, off_t, int, struct xerr *);
+int     inode_setattr(struct oinode *, struct stat *, uint32_t, struct xerr *);
+int     inode_sync(struct oinode *, struct xerr *);
+int     inode_flush(struct oinode *, uint8_t, struct xerr *);
+#define INODE_FLUSH_DATA_ONLY 0x01
+#define INODE_FLUSH_RELEASE   0x02
+
+/*
+ * The following must be called with the inode write-lock held, or
+ * read-lock if the second argument is zero.
  */
 nlink_t       inode_nlink(struct oinode *, int);
 unsigned long inode_nlookup(struct oinode *, int);
 
-/* The following a lock on the inode. */
+/* The following place a write lock on the inode. */
 int  inode_nlookup_ino(ino_t, int, struct xerr *);
 int  inode_nlink_ino(ino_t, int, struct xerr *);
-void inode_stat(struct oinode *, struct stat *);
 
-/* Free all remaining inodes at filesystem shutdown. No locks required. */
-void inode_shutdown();
-int  inode_startup();
-
-/* For testing only, acquires no lock */
+/* For testing only; no locks acquired */
 int inode_inspect(int, ino_t, struct inode *, struct xerr *);
 int inode_disk_inspect(ino_t, struct inode *, struct xerr *);
 

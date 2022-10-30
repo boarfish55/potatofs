@@ -130,22 +130,30 @@ struct dir_block_v2 {
     (sizeof(struct dir_block_v2) - \
     ((size_t)&(((struct dir_block_v2 *)NULL)->v.leaf.data)))
 
-/* None of these acquire any lock */
+ssize_t  di_pack_v2(char *, size_t, const struct dir_entry_v2 *);
+ssize_t  di_unpack_v2(const char *, size_t, struct dir_entry_v2 *);
+uint32_t di_fnv1a32(const void *, size_t);
+
+/*
+ * None of these acquire the inode lock. Because directories are
+ * sensitive to ordering, the inode write-lock must be acquired for all
+ * the following.
+ */
 int     di_create(struct oinode *, ino_t, struct xerr *);
+int     di_mkdirent(struct oinode *, const struct dir_entry *, int,
+            struct xerr *);
+int     di_unlink(struct oinode *, const struct dir_entry *, struct xerr *);
+int     di_setparent(struct oinode *, ino_t, struct xerr *);
+
+/*
+ * The following must be called with at least the inode read-lock held.
+ */
+int     di_stat(struct oinode *, struct stat *, struct xerr *);
+int     di_isempty(struct oinode *, struct xerr *);
+ino_t   di_parent(struct oinode *, struct xerr *);
 ssize_t di_readdir(struct oinode *, struct dir_entry *, off_t, size_t,
             struct xerr *);
 int     di_lookup(struct oinode *, struct dir_entry *, const char *,
             struct xerr *);
-int     di_mkdirent(struct oinode *, const struct dir_entry *, int,
-            struct xerr *);
-int     di_unlink(struct oinode *, const struct dir_entry *, struct xerr *);
-int     di_stat(struct oinode *, struct stat *, struct xerr *);
-int     di_isempty(struct oinode *, struct xerr *);
-ino_t   di_parent(struct oinode *, struct xerr *);
-int     di_setparent(struct oinode *, ino_t, struct xerr *);
-
-ssize_t  di_pack_v2(char *, size_t, const struct dir_entry_v2 *);
-ssize_t  di_unpack_v2(const char *, size_t, struct dir_entry_v2 *);
-uint32_t di_fnv1a32(const void *, size_t);
 
 #endif

@@ -143,34 +143,41 @@ struct oslab {
 	 *    - lru_entry
 	 *    - itbl_entry
 	 *    - refcnt
+	 *    - sk
+	 *    - oflags (it's only set when the slab is allocated)
 	 *    - open_since
+	 *
+	 * If refcnt is zero, claiming the owned_slabs lock lets the caller
+	 * do anything. This is how slabs are created and destroyed.
+	 *
+	 * Lock acquisition order is:
+	 *   1) owned_slabs.lock
+	 *   3) slab lock
+	 *
 	 */
-
 	SPLAY_ENTRY(oslab) entry;
 	TAILQ_ENTRY(oslab) lru_entry;
 	TAILQ_ENTRY(oslab) itbl_entry;
 	uint64_t           refcnt;
+	struct slab_key    sk;
+	uint32_t           oflags;
 
 	/* Only meaningful when unclaiming slabs */
 	struct timespec    open_since;
 
-	struct slab_hdr    hdr;
-	int                fd;
-
 	/*
-	 * Used for inode tables, since they need serialized access
-	 * to the slab bytes as they contain inodes. This lock controls
-	 * access to the data inline to the slab header.
-	 */
-	rwlk               bytes_lock;
-
-	/*
-	 * The lock is only for the fields in this structure and
-	 * the included slab_hdr. It does not guarantee exclusive
-	 * access to bytes via 'fd' (except the slab_hdr). The above bytes_lock
-	 * should be acquired before this one.
+	 * The slab lock protects the remaining fields.
 	 */
 	rwlk               lock;
+
+	struct slab_hdr    hdr;
+
+	/*
+	 * The open file descriptor for the slab. Multiple threads may
+	 * use it at once, so they should all make sure to use the pread()
+	 * and pwrite() calls to ensure they are at the right offset.
+	 */
+	int                fd;
 
 	/* Set to 1 if we have non-fsync()'d data */
 	int                dirty;
@@ -181,7 +188,6 @@ struct oslab {
 	 */
 	int                pending;
 
-	uint32_t           oflags;
 #define OSLAB_NOCREATE  0x00000001
 #define OSLAB_SYNC      0x00000002
 #define OSLAB_EPHEMERAL 0x00000004
@@ -227,17 +233,17 @@ int           slab_forget(struct oslab *, struct xerr *);
 struct oslab *slab_load_itbl(const struct slab_key *, struct xerr *);
 
 /*
- * Lock/unlock a slab's bytes. Useful with inode tables.
+ * Lock/unlock a slab's fields.
  */
-void          slab_lock_bytes(struct oslab *, rwlk_flags);
-void          slab_unlock_bytes(struct oslab *);
+void          slab_lock(struct oslab *, rwlk_flags);
+void          slab_unlock(struct oslab *);
 
 /*
  * Return n inode table bases, which is provided by the caller.
  */
 ssize_t       slab_itbls(off_t *, size_t, struct xerr *);
 
-/* Must be called while the slab bytes_lock is held */
+/* Must be called while the slab lock is held */
 int   slab_itbl_is_free(struct oslab *, ino_t);
 ino_t slab_find_free_inode(struct oslab *);
 ino_t slab_itbl_find_unallocated(struct oslab *);
@@ -254,32 +260,26 @@ void  slab_itbl_alloc(struct oslab *, ino_t);
 void *slab_hdr_data(struct oslab *);
 
 /*
- * None of the following functions acquire a bytes_lock on the slab, so
- * if multiple threads need to perform I/O on slabs and retain consistency,
- * they should claim the slab's bytes_lock.
+ * Must be called while lock is held.
  */
 int     slab_write_hdr(struct oslab *, struct xerr *);
-int     slab_write_hdr_nolock(struct oslab *, struct xerr *);
+int     slab_read_hdr(struct oslab *, struct xerr *);
 ssize_t slab_write(struct oslab *, const void *, off_t,
             size_t, struct xerr *);
-int     slab_read_hdr(struct oslab *, struct xerr *);
 ssize_t slab_read(struct oslab *, void *, off_t,
             size_t, struct xerr *);
-int     slab_unlink(struct oslab *, struct xerr *);
+void    slab_set_dirty(struct oslab *);
 int     slab_truncate(struct oslab *, off_t, struct xerr *);
-int     slab_delayed_truncate(struct slab_key *, off_t, struct xerr *);
+int     slab_unlink(struct oslab *, struct xerr *);
 int     slab_sync(struct oslab *, struct xerr *);
 void    slab_splice_fd(struct oslab *, off_t, size_t, off_t *,
             size_t *, int *, int);
+off_t   slab_size(struct oslab *, struct xerr *);
 
 /*
- * Indicate that this slab was modified. Acquires the slab lock.
- * Does nothing for slabs opened with OSLAB_SYNC.
+ * Acquires both the owned_slabs lock and the truncated slabs' lock.
  */
-void    slab_set_dirty(struct oslab *);
-
-/* Returns the size of the slab in bytes, minus the header. */
-off_t   slab_size(struct oslab *, struct xerr *);
+int     slab_delayed_truncate(struct slab_key *, off_t, struct xerr *);
 
 /* Returns the maximum size of a slab in bytes, minus the header. */
 off_t   slab_get_max_size();
