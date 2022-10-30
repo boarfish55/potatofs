@@ -2,6 +2,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
@@ -2676,13 +2677,16 @@ test_claim_from_backend()
 	struct xerr      e = XLOG_ERR_INITIALIZER;
 	struct slab_key  sk;
 	ssize_t          r;
+	pid_t            pid;
+	int              wstatus, errors;
+	struct timespec  tp, tp2;
 
 	for (i = 0; i < sizeof(buf); i++)
 		buf[i] = 'a';
 	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
 		return ERR("", errno);
 
-	while (i < slab_get_max_size()) {
+	while (i < (slab_get_max_size() * 2)) {
 		if ((r = write(fd, buf, sizeof(buf))) == -1)
 			return ERR("", errno);
 		i += r;
@@ -2694,12 +2698,12 @@ test_claim_from_backend()
 	close(fd);
 
 	if (slab_path(path, sizeof(path),
-	    slab_key(&sk, st.st_ino, 0), 0, &e) == -1) {
+	    slab_key(&sk, st.st_ino, slab_get_max_size()), 0, &e) == -1) {
 		xerr_print(&e);
 		return ERR("failed to get slab path", 0);
 	}
 	if (slab_path(out_name, sizeof(out_name),
-	    slab_key(&sk, st.st_ino, 0), 1, &e) == -1) {
+	    slab_key(&sk, st.st_ino, slab_get_max_size()), 1, &e) == -1) {
 		xerr_print(&e);
 		return ERR("failed to get slab name", 0);
 	}
@@ -2728,8 +2732,8 @@ test_claim_from_backend()
 	/* Then reclaim; this is probably coming from the outoing dir. */
 	if ((fd = open(p, O_RDONLY)) == -1)
 		return ERR("", errno);
-	/* Reading the inode size is enough to trigger a slab download */
-	if (read(fd, buf, sizeof(struct inode)) == -1)
+	/* Reading at the start of the second a slab will trigger a download */
+	if (pread(fd, buf, sizeof(struct inode), slab_get_max_size()) == -1)
 		return ERR("", errno);
 	close(fd);
 
@@ -2775,13 +2779,56 @@ test_claim_from_backend()
 		return ERR("failed to access() slab for "
 		    "reason other than ENOENT", errno);
 
-	/* Then reclaim, hopefully from the actual backend this time. */
-	if ((fd = open(p, O_RDONLY)) == -1)
-		return ERR("", errno);
-	/* Reading the inode size is enough to trigger a slab download */
-	if (read(fd, buf, sizeof(struct inode)) == -1)
-		return ERR("", errno);
-	close(fd);
+	/*
+	 * Try to read the same pending slab concurrently 4 times. This will
+	 * trigger the pending slab codepath which is hard enough to test.
+	 * Since we have a sleep in the backend get code, all children should
+	 * stall for a few seconds.
+	 */
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'b';
+	for (i = 0; i < 4; i++) {
+		if ((pid = fork()) == -1)
+			err(1, "fork");
+		if (pid > 0)
+			continue;
+
+		if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
+			err(1, "clock_gettime");
+
+		/* Then reclaim, hopefully from the actual backend this time. */
+		if ((fd = open(p, O_RDWR)) == -1)
+			err(1, "open");
+		/*
+		 * Read at 4 different parts of the file, enough for the
+		 * read bytes to be far enough from one another and not
+		 * overlap.
+		 */
+		if (pwrite(fd, buf, sizeof(buf), slab_get_max_size() +
+		    ((slab_get_max_size() / 8) * (i + 1))) == -1)
+			err(1, "pwrite");
+		close(fd);
+
+		if (clock_gettime(CLOCK_REALTIME, &tp2) == -1)
+			err(1, "clock_gettime");
+
+		if (tp2.tv_sec - tp.tv_sec < 1)
+			errx(2, "time elapsed on claim was less than 1 second");
+		exit(0);
+	}
+	errors = 0;
+	while (i > 0) {
+		if (wait(&wstatus) == -1) {
+			if (errno == EINTR)
+				continue;
+			warn("wait");
+		}
+		if (wstatus != 0)
+			errors++;
+		i--;
+	}
+	if (errors)
+		return ERR("some read children failed", 0);
 
 	if (access(path, F_OK) == -1)
 		return ERR("", errno);

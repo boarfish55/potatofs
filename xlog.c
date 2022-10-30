@@ -142,7 +142,7 @@ xlog_init(const char *progname, const char *dbg_spec, int perror)
 {
 	char                              *dbg, *module, *save;
 	const struct module_dbg_map_entry *map;
-	int                                opt = (LOG_PERROR|LOG_PID);
+	int                                opt = LOG_PID;
 
 	if (perror)
 		opt |= LOG_PERROR;
@@ -179,13 +179,16 @@ void
 xlog_dbg(xlog_mask_t module, const char *fmt, ...)
 {
 	va_list ap;
+	char    msg[LINE_MAX];
 
 	if (fmt == NULL || (module & debug_mask) == 0)
 		return;
 
 	va_start(ap, fmt);
-	vsyslog(LOG_DEBUG, fmt, ap);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
+
+	syslog(LOG_DEBUG, "[thread=%lu]: %s", pthread_self(), msg);
 }
 
 void

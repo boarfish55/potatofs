@@ -1574,7 +1574,7 @@ bg_flush()
 		return;
 	}
 
-	xlog(LOG_DEBUG, NULL, "%s: scanning %s", __func__, outgoing_dir);
+	xlog_dbg(XLOG_MGR, "%s: scanning %s", __func__, outgoing_dir);
 
 	if ((dir = opendir(outgoing_dir)) == NULL) {
 		xlog_strerror(LOG_ERR, errno, "%s: opendir %s",

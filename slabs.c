@@ -128,6 +128,8 @@ slab_set_dirty_hdr(struct oslab *b, struct xerr *e)
 static int
 slab_realloc(struct oslab *b, struct xerr *e)
 {
+	xlog_dbg(XLOG_SLAB, "%s: reallocating removed slab sk=%lu/%ld",
+	    __func__, b->sk.ino, b->sk.base);
 	b->hdr.v.f.flags &= ~SLAB_REMOVED;
 	if (slab_write_hdr(b, e) == -1)
 		return -1;
@@ -794,9 +796,6 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 	}
 
 	memcpy(&needle.sk, sk, sizeof(struct slab_key));
-
-	xlog_dbg(XLOG_SLAB, "%s: loading sk=%lu/%ld",
-	    __func__, sk->ino, sk->base);
 error_retry:
 	MTX_LOCK(&owned_slabs.lock);
 	if ((b = SPLAY_FIND(slab_tree, &owned_slabs.head, &needle)) == NULL) {
@@ -846,7 +845,12 @@ error_retry:
 		if (!b->sk.ino)
 			TAILQ_INSERT_TAIL(&owned_slabs.itbl_head, b, itbl_entry);
 		counter_incr(COUNTER_N_OPEN_SLABS);
+		xlog_dbg(XLOG_SLAB, "%s: inserted new oslab sk=%lu/%ld",
+		    __func__, sk->ino, sk->base);
 	} else {
+		xlog_dbg(XLOG_SLAB,
+		    "%s: found in-memory slab sk=%lu/%ld, refcnt=%lu",
+		    __func__, sk->ino, sk->base, b->refcnt);
 		if (b->refcnt == 0)
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);
 		b->refcnt++;
@@ -860,15 +864,7 @@ error_retry:
 	 */
 	LK_WRLOCK(&b->lock);
 
-	if (b->pending) {
-		/*
-		 * A previous attempt to claim the slab from
-		 * the mgr failed. We can try again.
-		 */
-		xlog_dbg(XLOG_SLAB, "%s: slab sk=%lu/%ld is pending",
-		    __func__, sk->ino, sk->base);
-	} else {
-
+	if (!b->pending) {
 		/*
 		 * No need to check for NOCREATE, because if it's loaded
 		 * it must already have been created.
@@ -880,6 +876,9 @@ error_retry:
 			return NULL;
 		}
 		LK_UNLOCK(&b->lock);
+		xlog_dbg(XLOG_SLAB,
+		    "%s: loaded in-memory claimed slab sk=%lu/%ld",
+		    __func__, sk->ino, sk->base);
 		return b;
 	}
 
