@@ -19,7 +19,7 @@ basepath="$(mktemp -d /dev/shm/potatofs.XXXXXX)"
 [ -d "$basepath" ] || fatal "temp dir not found"
 [ -d "$BACKEND_DATA_PATH" ] || fatal "backend temp dir not found"
 
-cp backends/backend_cp.sh "$basepath/backend"
+cp backends/test_backend.sh "$basepath/backend"
 
 mountpoint="$basepath/mnt"
 datapath="$basepath/data"
