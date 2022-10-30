@@ -369,7 +369,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 			goto unlock;
 		}
 	} else {
-		oi = ((struct open_file *)fi->fh)->oi;
+		oi = openfile_inode((struct open_file *)fi->fh);
 	}
 
 	inode_lock(oi, LK_LOCK_RW);
@@ -506,6 +506,7 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of;
 	int               r_sent = 0, is_dir;
+	struct oinode    *oi;
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_OPENDIR);
@@ -520,9 +521,10 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 
 	fi->fh = (uint64_t)of;
 
-	inode_lock(of->oi, LK_LOCK_RD);
-	is_dir = inode_isdir(of->oi);
-	inode_unlock(of->oi);
+	oi = openfile_inode(of);
+	inode_lock(oi, LK_LOCK_RD);
+	is_dir = inode_isdir(oi);
+	inode_unlock(oi);
 
 	if (!is_dir) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOTDIR));
@@ -555,7 +557,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_READDIR);
 
-	oi = ((struct open_file *)fi->fh)->oi;
+	oi = openfile_inode((struct open_file *)fi->fh);
 
 	for (;;) {
 		inode_lock(oi, LK_LOCK_RD);
@@ -631,11 +633,13 @@ fs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	int               r_sent = 0, is_dir;
 	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of = (struct open_file *)fi->fh;
+	struct oinode    *oi;
 
 	LK_RDLOCK(&fs_tree_lock);
-	inode_lock(of->oi, LK_LOCK_RD);
-	is_dir = inode_isdir(of->oi);
-	inode_unlock(of->oi);
+	oi = openfile_inode(of);
+	inode_lock(oi, LK_LOCK_RD);
+	is_dir = inode_isdir(oi);
+	inode_unlock(oi);
 
 	counter_incr(is_dir
 	    ? COUNTER_FS_RELEASEDIR
@@ -679,10 +683,12 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	struct fuse_bufvec         *bv;
 	int                         r_sent = 0, i;
 	struct inode_splice_bufvec  si;
+	struct oinode              *oi;
 
 	counter_incr(COUNTER_FS_READ);
 
 	of = (struct open_file *)fi->fh;
+	oi = openfile_inode(of);
 
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (size / slab_get_max_size() + 2)));
@@ -692,9 +698,9 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		return;
 	}
 
-	inode_lock(of->oi, LK_LOCK_RD);
-	if (inode_splice_begin_read(&si, of->oi, off, size, &e) == -1) {
-		inode_unlock(of->oi);
+	inode_lock(oi, LK_LOCK_RD);
+	if (inode_splice_begin_read(&si, oi, off, size, &e) == -1) {
+		inode_unlock(oi);
 		FS_ERR(&r_sent, req, &e);
 		free(bv);
 		return;
@@ -704,7 +710,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	bv->idx = 0;
 	bv->off = 0;
 	if (si.nv == 0) {
-		inode_unlock(of->oi);
+		inode_unlock(oi);
 		FUSE_REPLY(&r_sent, fuse_reply_buf(req, "", 0));
 	} else {
 		for (i = 0; i < si.nv; i++) {
@@ -721,19 +727,19 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		}
 		FUSE_REPLY(&r_sent, fuse_reply_data(req, bv,
 		    FUSE_BUF_FORCE_SPLICE));
-		inode_unlock(of->oi);
+		inode_unlock(oi);
 
 		counter_add(COUNTER_READ_BYTES, fuse_buf_size(bv));
 
 		if (fs_config.noatime) {
-			inode_lock(of->oi, LK_LOCK_RW);
-			fs_set_time(of->oi, INODE_ATTR_ATIME);
-			if (inode_flush(of->oi, 0, xerrz(&e)) == -1) {
-				inode_unlock(of->oi);
+			inode_lock(oi, LK_LOCK_RW);
+			fs_set_time(oi, INODE_ATTR_ATIME);
+			if (inode_flush(oi, 0, xerrz(&e)) == -1) {
+				inode_unlock(oi);
 				FS_ERR(&r_sent, req, &e);
 				goto end;
 			}
-			inode_unlock(of->oi);
+			inode_unlock(oi);
 		}
 	}
 end:
@@ -748,6 +754,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 {
 	struct xerr                 e = XLOG_ERR_INITIALIZER;
 	struct open_file           *of;
+	struct oinode              *oi;
 	ssize_t                     w;
 	size_t                      sz = fuse_buf_size(bufv);
 	struct fuse_bufvec         *bv;
@@ -758,6 +765,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	if (FS_RO_ON_ERR(req)) return;
 
 	of = (struct open_file *)fi->fh;
+	oi = openfile_inode(of);
 
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (sz / slab_get_max_size() + 2)));
@@ -771,10 +779,10 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	 * Initiating a splice'd write to an inode doesn't actually
 	 * require a write lock. We only load the slabs and their fd.
 	 */
-	inode_lock(of->oi, LK_LOCK_RD);
-	if (inode_splice_begin_write(&si, of->oi, off,
+	inode_lock(oi, LK_LOCK_RD);
+	if (inode_splice_begin_write(&si, oi, off,
 	    fuse_buf_size(bufv), xerrz(&e)) == -1) {
-		inode_unlock(of->oi);
+		inode_unlock(oi);
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -803,7 +811,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	 * protected by the inode lock, yet.
 	 */
 	if ((w = fuse_buf_copy(bv, bufv, FUSE_BUF_FORCE_SPLICE)) < 0) {
-		inode_unlock(of->oi);
+		inode_unlock(oi);
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, -w));
 		return;
 	}
@@ -820,11 +828,11 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	if (inode_splice_end_write(&si, w, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 	free(bv);
-	inode_unlock(of->oi);
+	inode_unlock(oi);
 
-	inode_lock(of->oi, LK_LOCK_RW);
-	fs_set_time(of->oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
-	inode_unlock(of->oi);
+	inode_lock(oi, LK_LOCK_RW);
+	fs_set_time(oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
+	inode_unlock(oi);
 
 	counter_add(COUNTER_WRITE_BYTES, w);
 	FUSE_REPLY(&r_sent, fuse_reply_write(req, w));
@@ -835,17 +843,19 @@ fs_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 {
 	struct xerr       e = XLOG_ERR_INITIALIZER;
 	struct open_file *of;
+	struct oinode    *oi;
 	int               r_sent = 0;
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_FLUSH);
 
 	of = (struct open_file *)fi->fh;
+	oi = openfile_inode(of);
 
-	inode_lock(of->oi, LK_LOCK_RW);
-	if (inode_flush(of->oi, 0, &e) == -1)
+	inode_lock(oi, LK_LOCK_RW);
+	if (inode_flush(oi, 0, &e) == -1)
 		FS_ERR(&r_sent, req, &e);
-	inode_unlock(of->oi);
+	inode_unlock(oi);
 
 	FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 	LK_UNLOCK(&fs_tree_lock);
@@ -1379,7 +1389,7 @@ fs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync,
 	int            r_sent = 0;
 	struct oinode *oi;
 
-	oi = ((struct open_file *)fi->fh)->oi;
+	oi = openfile_inode((struct open_file *)fi->fh);
 
 	counter_incr(COUNTER_FS_FSYNC);
 
@@ -1407,10 +1417,10 @@ fs_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync,
 	counter_incr(COUNTER_FS_FSYNCDIR);
 	LK_RDLOCK(&fs_tree_lock);
 
-	oi = ((struct open_file *)fi->fh)->oi;
+	oi = openfile_inode((struct open_file *)fi->fh);
 
 	inode_lock(oi, LK_LOCK_RW);
-	if (inode_sync(((struct open_file *)fi->fh)->oi, &e) == -1)
+	if (inode_sync(oi, &e) == -1)
 		FS_ERR(&r_sent, req, &e);
 	else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));

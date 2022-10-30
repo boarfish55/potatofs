@@ -21,14 +21,17 @@
 #define OPENFILES_H
 
 #include <stdint.h>
+#include "util.h"
 #include "xlog.h"
 
 struct open_file {
+	rwlk           lock;
 	struct oinode *oi;
 	int            flags;
 };
 
 struct open_file *openfile_alloc(ino_t, int, struct xerr *);
 int               openfile_free(struct open_file *, struct xerr *);
+struct oinode    *openfile_inode(struct open_file *);
 
 #endif

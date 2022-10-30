@@ -41,17 +41,23 @@ openfile_alloc(ino_t ino, int flags, struct xerr *e)
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
 		return NULL;
 	}
+	if (LK_LOCK_INIT(&of->lock, xerrz(e)) == -1) {
+		XERR_PREPENDFN(e);
+		return NULL;
+	}
 
 	if (flags & O_SYNC)
 		oflags |= INODE_OSYNC;
 	if (flags & O_RDONLY)
 		oflags |= INODE_ORO;
 
-	if ((of->oi = inode_load(ino, oflags, e)) == NULL) {
+	LK_WRLOCK(&of->lock);
+	if ((of->oi = inode_load(ino, oflags, xerrz(e))) == NULL) {
 		free(of);
 		return NULL;
 	}
 	of->flags = flags;
+	LK_UNLOCK(&of->lock);
 
 	xlog_dbg(XLOG_OF, "%s: (%p), inode=%lu, flags=(%d)",
 	    __func__, of, ino, flags);
@@ -59,11 +65,26 @@ openfile_alloc(ino_t ino, int flags, struct xerr *e)
 	return of;
 }
 
+struct oinode *
+openfile_inode(struct open_file *of)
+{
+	struct oinode *oi;
+	LK_RDLOCK(&of->lock);
+	oi = of->oi;
+	LK_UNLOCK(&of->lock);
+	return oi;
+}
+
 int
 openfile_free(struct open_file *of, struct xerr *e)
 {
-	if (inode_unload(of->oi, e) == -1)
+	LK_WRLOCK(&of->lock);
+	if (inode_unload(of->oi, xerrz(e)) == -1) {
+		LK_UNLOCK(&of->lock);
 		return -1;
+	}
+	LK_UNLOCK(&of->lock);
+	LK_LOCK_DESTROY(&of->lock);
 	free(of);
 	return 0;
 }
