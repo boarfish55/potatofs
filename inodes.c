@@ -34,8 +34,7 @@
 static struct oinodes {
 	/*
 	 * The tree should contain inodes that have a refcnt greater than
-	 * zero. However, for a short time after creation it is possible
-	 * that it would be at zero until a dir_entry is created.
+	 * zero.
 	 */
 	SPLAY_HEAD(ino_tree, oinode) head;
 	pthread_mutex_t              lock;
@@ -718,31 +717,24 @@ end:
 int
 inode_unload(struct oinode *oi, struct xerr *e)
 {
-	struct oinode needle;
-	ino_t         ino;
+	LK_WRLOCK(&oi->lock);
 
 	MTX_LOCK(&open_inodes.lock);
-
-	ino = oi->ino.v.f.inode;
-
 	if (oi->refcnt == 0) {
 		xlog(LOG_ERR, NULL, "%s: prevented integer underflow for "
 		    "ino=%lu (%p); tried to decrement refcnt 0 by 1",
 		    __func__, oi->ino.v.f.inode, oi);
 	} else
 		oi->refcnt--;
-
 	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu",
-	    __func__, ino, oi->refcnt);
+	    __func__, oi->ino.v.f.inode, oi->refcnt);
+	MTX_UNLOCK(&open_inodes.lock);
 
 	if (oi->nlookup == 0) {
-		bzero(&needle, sizeof(needle));
-		needle.ino.v.f.inode = ino;
-
 		if (oi->ino.v.f.nlink == 0) {
 			xlog_dbg(XLOG_INODE, "%s: inode %lu: deallocating",
-			    __func__, ino);
-			if (inode_dealloc(ino, xerrz(e)) == -1)
+			    __func__, oi->ino.v.f.inode);
+			if (inode_dealloc(oi->ino.v.f.inode, xerrz(e)) == -1)
 				xlog(LOG_ERR, e, __func__);
 			/*
 			 * Truncate all file data, and we keep the slab header
@@ -752,23 +744,29 @@ inode_unload(struct oinode *oi, struct xerr *e)
 				xlog(LOG_ERR, e, __func__);
 		}
 
+		MTX_LOCK(&open_inodes.lock);
 		if (oi->refcnt == 0) {
 			if (inode_flush(oi, INODE_FLUSH_RELEASE,
 			    xerrz(e)) == -1) {
+				MTX_UNLOCK(&open_inodes.lock);
 				XERR_PREPENDFN(e);
 				goto end;
 			}
+			LK_UNLOCK(&oi->lock);
 
-			SPLAY_REMOVE(ino_tree, &open_inodes.head, &needle);
+			SPLAY_REMOVE(ino_tree, &open_inodes.head, oi);
 			LK_LOCK_DESTROY(&oi->lock);
 			LK_LOCK_DESTROY(&oi->bytes_lock);
 			free(oi);
 			oi = NULL;
 			counter_decr(COUNTER_N_OPEN_INODES);
+			MTX_UNLOCK(&open_inodes.lock);
+			return 0;
 		}
+		MTX_UNLOCK(&open_inodes.lock);
 	}
 end:
-	MTX_UNLOCK(&open_inodes.lock);
+	LK_UNLOCK(&oi->lock);
 	return xerr_fail(e);
 }
 
@@ -874,7 +872,7 @@ inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 		 * read-modify-write, but, hopefully one day we can do
 		 * without O_SYNC for inodes.
 		 *
-		 * This will write the size (last field) plus the
+		 * This will write the size and blocks fields, plus the
 		 * inline data that follows.
 		 *
 		 * In some cases we want to make sure inline data

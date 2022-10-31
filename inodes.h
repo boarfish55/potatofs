@@ -51,7 +51,6 @@ struct inode {
 			uid_t           uid;
 			gid_t           gid;
 			dev_t           rdev;
-			blkcnt_t        blocks;  // 512B
 			unsigned long   generation;
 			struct timespec atime;
 			struct timespec ctime;
@@ -62,6 +61,7 @@ struct inode {
 			 * together with a single write.
 			 */
 			off_t           size;
+			blkcnt_t        blocks;  // 512B
 		} f;
 		struct {
 			/*
@@ -105,9 +105,9 @@ struct oinode {
 	unsigned long        nlookup;
 
 	/*
-	 * The bytes_dirty field is set to 1 when either the size or
-	 * inline inode data is modified. It doesn't care about modified
-	 * slabs.
+	 * The bytes_dirty field is set to 1 when either the size or blocks
+	 * fields, or * inline inode data is modified. It doesn't care about
+	 * modified slabs.
 	 *
 	 * It is necessary to have different locks & dirty flags for
 	 * bytes and other inode fields because when manipulating directories
@@ -115,7 +115,8 @@ struct oinode {
 	 * nlink.
 	 *
 	 * The bytes lock is primarily used to prevent races between
-	 * write and truncate. It protects bytes_dirty and ino.v.f.size.
+	 * write and truncate. It protects bytes_dirty, ino.v.f.size and
+	 * ino.v.f.blocks.
 	 * It must always be acquired inside the regular lock above.
 	 * Reads and writes to inodes only require the inode read lock
 	 * since nothing but those two variables are changing (as well

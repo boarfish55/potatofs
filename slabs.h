@@ -68,7 +68,7 @@ struct slab_key {
  * under a size of DEV_BSIZE to guarantee consistency when writing.
  */
 struct slab_hdr {
-#define SLAB_VERSION 4
+#define SLAB_VERSION 5
 	union {
 		struct {
 			/*
