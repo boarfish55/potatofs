@@ -149,10 +149,10 @@ slab_unclaim(struct oslab *b)
 	struct mgr_msg  m;
 	struct timespec tp = {1, 0};
 
-	if (b->fd == -1) {
-		xlog(LOG_ERR, NULL, "%s: fd is -1 on slab sk=%lu/%ld",
-		    __func__, b->sk.ino, b->sk.base);
-		fs_error_set();
+	/*
+	 * Slab was never claimed from mgr.
+	 */
+	if (b->pending) {
 		LK_LOCK_DESTROY(&b->lock);
 		free(b);
 		return;
@@ -196,9 +196,7 @@ slab_unclaim(struct oslab *b)
 		} else if (memcmp(&m.v.unclaim.key, &b->sk,
 		    sizeof(struct slab_key))) {
 			/* We close the fd here to avoid deadlocks. */
-			if (close(b->fd) == -1)
-				xlog_strerror(LOG_ERR, errno,
-				    "%s: close(b->fd)", __func__);
+			close_x(b->fd, __func__);
 			xlog(LOG_ERR, NULL,
 			    "%s: bad manager response for unclaim; "
 			    "ino: expected=%lu, received=%lu"
@@ -228,19 +226,29 @@ static void *
 slab_purge(void *unused)
 {
 	struct oslab    *b, *b2;
-	struct timespec  now, t = {1, 0};
-	int              i;
+	struct timespec  now, t = {1, 0}, last = {0, 0};
 	struct statvfs   stv;
 	int              purge, do_shutdown = 0;
+	rlim_t           max_open;
+
+	MTX_LOCK(&owned_slabs.lock);
+	max_open = owned_slabs.max_open;
+	MTX_UNLOCK(&owned_slabs.lock);
+
+	if (clock_gettime(CLOCK_MONOTONIC, &last) == -1) {
+		fs_error_set();
+		xlog_strerror(LOG_ERR, errno,
+		    "%s: failed to get current time", __func__);
+	}
 
 	while (!do_shutdown) {
-		for (i = 0; i < 10 && !do_shutdown; i++) {
-			nanosleep(&t, NULL);
-			MTX_LOCK(&owned_slabs.lock);
-			if (owned_slabs.do_shutdown)
-				do_shutdown = 1;
-			MTX_UNLOCK(&owned_slabs.lock);
-		}
+		nanosleep(&t, NULL);
+
+		MTX_LOCK(&owned_slabs.lock);
+		if (owned_slabs.do_shutdown)
+			do_shutdown = 1;
+		MTX_UNLOCK(&owned_slabs.lock);
+
 		if (do_shutdown)
 			break;
 
@@ -255,8 +263,9 @@ slab_purge(void *unused)
 		if (statvfs(fs_config.data_dir, &stv) == -1) {
 			xlog_strerror(LOG_ERR, errno, "%s: statvfs", __func__);
 		} else {
-			if (stv.f_bfree < stv.f_blocks *
-			    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
+			if ((stv.f_bfree < stv.f_blocks * (100 -
+			    fs_config.unclaim_purge_threshold_pct) / 100) ||
+			    counter_get(COUNTER_N_OPEN_SLABS) >= max_open)
 				/*
 				 * Purge more aggressively if we're are getting
 				 * tight on space.
@@ -264,9 +273,21 @@ slab_purge(void *unused)
 				purge = 1;
 		}
 
+		/*
+		 * Purging is slow and holds the owned_slabs lock. Don't
+		 * do it too often unless we're getting close to our slab
+		 * limit.
+		 */
+		if (!purge && now.tv_sec - last.tv_sec < 30)
+			continue;
+
 		MTX_LOCK(&owned_slabs.lock);
 		b = TAILQ_FIRST(&owned_slabs.lru_head);
 		while (b != NULL) {
+			if (owned_slabs.do_shutdown) {
+				do_shutdown = 1;
+				break;
+			}
 			if (!purge && (now.tv_sec <
 			    (b->open_since.tv_sec + owned_slabs.max_age)))
 				break;
@@ -285,6 +306,7 @@ slab_purge(void *unused)
 			b = b2;
 		}
 		MTX_UNLOCK(&owned_slabs.lock);
+		memcpy(&last, &now, sizeof(last));
 	}
 	return NULL;
 }
@@ -765,11 +787,10 @@ slab_claim(const struct slab_key *sk, struct oslab *b, struct xerr *e)
 	}
 
 	b->pending = 0;
-	close(mgr);
+	close_x(mgr, __func__);
 	return 0;
 fail:
-	if (close(mgr) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close(mgr)", __func__);
+	close_x(mgr, __func__);
 	return -1;
 }
 
@@ -892,9 +913,6 @@ error_retry:
 		 */
 		MTX_LOCK(&owned_slabs.lock);
 		if (--b->refcnt == 0) {
-			xlog_dbg(XLOG_SLAB, "%s: unclaiming slab "
-			    "ino=%lu, base=%lu", __func__,
-			    sk->ino, sk->base);
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 			if (!b->sk.ino)
 				TAILQ_REMOVE(&owned_slabs.itbl_head, b,

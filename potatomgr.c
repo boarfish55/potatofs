@@ -1980,6 +1980,7 @@ worker(int lsock)
 	int            c;
 	int            r;
 	pid_t          pid;
+	struct pollfd  fds;
 
 	if ((pid = fork()) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
@@ -2004,6 +2005,14 @@ worker(int lsock)
 	}
 
 	while (!shutdown_requested()) {
+		fds.fd = lsock;
+		fds.events = POLLIN;
+		if ((r = poll(&fds, 1, 1000)) <= 0) {
+			if (r == -1 && errno != EINTR)
+				xlog_strerror(LOG_ERR, errno,
+				    "%s: accept", __func__);
+			continue;
+		}
 		if ((c = accept(lsock, NULL, 0)) == -1) {
 			switch (errno) {
 			case EINTR:
@@ -2113,7 +2122,7 @@ mgr_start()
 	struct group       *gr;
 	char               *unpriv_user = MGR_DEFAULT_UNPRIV_USER;
 	char               *unpriv_group = MGR_DEFAULT_UNPRIV_GROUP;
-	int                 lsock;
+	int                 lsock, lsock_flags;
 	struct sockaddr_un  saddr;
 	int                 n;
 	int                 wait_for_workers = 0;
@@ -2238,6 +2247,14 @@ mgr_start()
 	unlink(fs_config.mgr_sock_path);
 
 	if (fcntl(lsock, F_SETFD, FD_CLOEXEC) == -1) {
+		xlog_strerror(LOG_ERR, errno, "fcntl");
+		exit(1);
+	}
+	if ((lsock_flags = fcntl(lsock, F_GETFL, 0)) == -1) {
+		xlog_strerror(LOG_ERR, errno, "fcntl");
+		exit(1);
+	}
+	if (fcntl(lsock, F_SETFL, lsock_flags | O_NONBLOCK) == -1) {
 		xlog_strerror(LOG_ERR, errno, "fcntl");
 		exit(1);
 	}

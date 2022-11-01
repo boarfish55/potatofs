@@ -120,15 +120,11 @@ Maybe one day we can add journaling or soft updates.
 Inode struct is 4K. The reasoning behind this is that since we expect the
 backend to be *really* slow, we want to get the most of our fetching slabs.
 With the default values, inode tables can store 2048 inodes, and their first
-~4K of data is stored directly in the inode, meaning small directories and
+~3.5K of data is stored directly in the inode, meaning small directories and
 small files require no further download from the backend. This should make
 directory listing and things like 'head' or 'file', or 'grep' on small text
 files to proceed quickly enough. Doing a bit of stats on my own home
 directory, a large majority of files are under 4K in size.
-
-Directory entries are currently a fixed size, with 255 bytes reserved for
-file names. This is not ideal, and someday I might go back and handle
-variable-sized records for filenames.
 
 
 KNOWN ISSUES
