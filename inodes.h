@@ -131,6 +131,13 @@ struct oinode {
 	 */
 	struct oslab        *itbl;
 
+	/*
+	 * For directory inodes, it may be necessary to keep all the slabs
+	 * loaded for the duration of a file operation. Make that a linked
+	 * list.
+	 */
+	// TODO: struct oslab        *slabs;
+
 	uint32_t             oflags;
 #define INODE_OSYNC  0x00000001
 #define INODE_ORO    0x00000002

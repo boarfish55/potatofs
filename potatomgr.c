@@ -54,6 +54,7 @@ struct mgr_shared {
 	uint64_t counters[COUNTER_LAST];
 	uint64_t mgr_counters[MGR_COUNTER_LAST];
 	int      shutdown_requested;
+	int      offline;
 };
 
 struct fs_usage {
@@ -184,7 +185,7 @@ fail:
 static int
 mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
     char *stdout, size_t stdout_len, char *stderr, size_t stderr_len,
-    struct xerr *e)
+    int timeout_seconds, struct xerr *e)
 {
 	pid_t            pid, wpid;
 	int              p_in[2];
@@ -292,7 +293,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 		}
 
 		if ((poll_r = poll(fds, nfds,
-		    BACKEND_TIMEOUT_SECONDS * 1000)) == -1) {
+		    timeout_seconds * 1000)) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "poll");
 			close(p_in[1]);
 			close(p_out[0]);
@@ -328,7 +329,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 			*wstatus = 137;
 			return XERRF(e, XLOG_APP, XLOG_BETIMEOUT,
 			    "command timed out after %d seconds; aborting",
-			    BACKEND_TIMEOUT_SECONDS);
+			    timeout_seconds);
 		}
 
 		while (nfds-- > 0) {
@@ -654,7 +655,8 @@ backend_get(const char *local_path, const char *backend_name,
 		    "incoming JSON too long");
 
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
-	    sizeof(stdout), stderr, sizeof(stderr), e) == -1)
+	    sizeof(stdout), stderr, sizeof(stderr),
+	    BACKEND_GET_TIMEOUT_SECONDS, e) == -1)
 		return -1;
 
 	if (WEXITSTATUS(wstatus) > 2) {
@@ -746,7 +748,8 @@ backend_put(const char *local_path, const char *backend_name,
 		    "outgoing JSON too long");
 
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
-	    sizeof(stdout), stderr, sizeof(stderr), e) == -1)
+	    sizeof(stdout), stderr, sizeof(stderr),
+	    BACKEND_PUT_TIMEOUT_SECONDS, e) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (WEXITSTATUS(wstatus) > 2)
@@ -1191,7 +1194,6 @@ new_slab_again:
 	}
 
 get_again:
-	// TODO: Eventually bubble up this error all the way to the fs
 	in_bytes = 0;
 	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
@@ -1202,18 +1204,16 @@ get_again:
 			xlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
 			    "but backend_get() claims it doesn't exist; "
 			    "retrying", __func__, name);
-			sleep(5);
-			goto get_again;
+		} else if (xerr_is(e, XLOG_APP, XLOG_BUSY)) {
+			xlog(LOG_ERR, e, __func__);
+		} else if (xerr_is(e, XLOG_APP, XLOG_BETIMEOUT)) {
+			xlog(LOG_ERR, e,
+			    "%s: backend script timed out", __func__);
 		} else if (xerr_is(e, XLOG_APP, XLOG_BEERROR)) {
-			xlog(LOG_ERR, e, "%s: backend script failed, "
-			    "will retry", __func__);
-			sleep(5);
-			goto get_again;
+			xlog(LOG_ERR, e, "%s: backend script failed", __func__);
 		} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
 			xlog(LOG_ERR, NULL, "%s: ran out of space during "
-			    "backend_get(); retrying", __func__);
-			sleep(1);
-			goto get_again;
+			    "backend_get()", __func__);
 		}
 		goto fail_close_dst;
 	}
@@ -1453,7 +1453,7 @@ bg_df()
 	}
 
 	if (mgr_spawn(args, &wstatus, NULL, 0, stdout, sizeof(stdout),
-	    stderr, sizeof(stderr), &e) == -1) {
+	    stderr, sizeof(stderr), BACKEND_DF_TIMEOUT_SECONDS, &e) == -1) {
 		xlog(LOG_ERR, &e, __func__);
 		return;
 	}
@@ -1843,6 +1843,68 @@ client_scrub(int c, struct mgr_msg *m, struct xerr *e)
 }
 
 static int
+client_flush(int c, struct mgr_msg *m, struct xerr *e)
+{
+	bg_flush();
+	m->m = MGR_MSG_FLUSH_OK;
+	if (mgr_send(c, -1, m, xerrz(e)) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int
+client_offline(int c, struct mgr_msg *m, struct xerr *e)
+{
+	if (m->m == MGR_MSG_OFFLINE) {
+		if (mgr_shared_lock() == -1) {
+			m->m = MGR_MSG_OFFLINE_ERR;
+			XERRF(&m->v.err, XLOG_ERRNO, errno,
+			    "set offline status");
+		} else {
+			m->m = MGR_MSG_OFFLINE_OK;
+			mgr_shared->offline = 1;
+			mgr_shared_unlock();
+		}
+	} else {
+		if (mgr_shared_lock() == -1) {
+			m->m = MGR_MSG_ONLINE_ERR;
+			XERRF(&m->v.err, XLOG_ERRNO, errno,
+			    "set online status");
+		} else {
+			m->m = MGR_MSG_ONLINE_OK;
+			mgr_shared->offline = 0;
+			mgr_shared_unlock();
+		}
+	}
+	if (mgr_send(c, -1, m, xerrz(e)) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int
+client_get_offline(int c, struct mgr_msg *m, struct xerr *e)
+{
+	if (mgr_shared_lock() == -1) {
+		m->m = MGR_MSG_GET_OFFLINE_ERR;
+		XERRF(&m->v.err, XLOG_ERRNO, errno,
+		    "get offline status");
+	} else {
+		m->m = MGR_MSG_GET_OFFLINE_OK;
+		m->v.get_offline.offline = mgr_shared->offline;
+		mgr_shared_unlock();
+	}
+	if (mgr_send(c, -1, m, xerrz(e)) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int
 purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 {
 	int                fd;
@@ -2016,6 +2078,7 @@ worker(int lsock)
 		if ((c = accept(lsock, NULL, 0)) == -1) {
 			switch (errno) {
 			case EINTR:
+			case EAGAIN:
 				continue;
 			case EMFILE:
 				xlog_strerror(LOG_ERR, errno,
@@ -2093,6 +2156,16 @@ worker(int lsock)
 			case MGR_MSG_SCRUB:
 				client_scrub(c, &m, xerrz(&e));
 				break;
+			case MGR_MSG_FLUSH:
+				client_flush(c, &m, xerrz(&e));
+				break;
+			case MGR_MSG_ONLINE:
+			case MGR_MSG_OFFLINE:
+				client_offline(c, &m, xerrz(&e));
+				break;
+			case MGR_MSG_GET_OFFLINE:
+				client_get_offline(c, &m, xerrz(&e));
+				break;
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
 				    __func__, m.m);
@@ -2114,7 +2187,7 @@ worker(int lsock)
 }
 
 int
-mgr_start()
+mgr_start(int workers, int bgworkers)
 {
 	struct              sigaction act;
 	char                pid_line[32];
@@ -2303,25 +2376,30 @@ mgr_start()
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
-	for (n = 0; n < fs_config.workers; n++)
-		if (worker(lsock) == 0)
-			wait_for_workers++;
-
 	if (bgworker("df", &bg_df, 60) == 0)
 		wait_for_workers++;
+
+	if (workers < 1)
+		workers = 1;
+	for (n = 0; n < workers; n++)
+		if (worker(lsock) == 0)
+			wait_for_workers++;
 
 	if (fs_config.scrubber_interval) {
 		if (bgworker("scrubber", &scrub,
 		    fs_config.scrubber_interval) == 0)
 			wait_for_workers++;
 	}
+
 	if (fs_config.purger_interval) {
 		if (bgworker("purge", &bg_purge,
 		    fs_config.purger_interval) == 0)
 			wait_for_workers++;
 	}
 
-	for (n = 0; n < fs_config.bgworkers; n++) {
+	if (bgworkers < 0)
+		bgworkers = 0;
+	for (n = 0; n < bgworkers; n++) {
 		if (bgworker("flush", &bg_flush, 5) == 0)
 			wait_for_workers++;
 	}

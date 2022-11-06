@@ -129,16 +129,13 @@ directory, a large majority of files are under 4K in size.
 
 KNOWN ISSUES
 ============
-
-* If the backend were to become unavailable (or the transport, i.e. Internet),
-  most likely I/O operations would stall in 'D' state, with no way to
-  recover until the backend is available again. Error handling in these
-  situations is questionable at best and needs to be reviewed. We can't
-  properly interrupt I/O ops in flight at this time.
 * When potatoctl fsck errors out, it may not always shutdown the mgr.
 
 TODO
 ====
+* Add a potatoctl backup command, which does an online backup of the
+  slab db, uploads it to the backend, as well as the stats fs_info file.
+  See: https://www.sqlite.org/backup.html
 * On install, we should have mount.potatofs and fsck.potatofs binaries,
   even if only symlinked.
 * Memory-bound our stuff. open() is allowed to return ENOMEM, so we can

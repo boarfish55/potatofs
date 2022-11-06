@@ -24,6 +24,7 @@
 char mnt[PATH_MAX] = "";
 char path[PATH_MAX] = "";
 int  verbose = 0;
+const char *backend_data_path;
 
 /*
  * The following file names have matching hashes (fnv1a32) for their
@@ -2836,6 +2837,128 @@ test_claim_from_backend()
 	return success();
 }
 
+struct test_status *
+test_backend_timeout_interrupt()
+{
+	char            *p = makepath("backend_timeout");
+	char             sleep_file[PATH_MAX];
+	char             path[PATH_MAX];
+	char             out_name[NAME_MAX];
+	char             out_path[PATH_MAX];
+	char             buf[BUFSIZ];
+	char             msg[LINE_MAX];
+	int              i, fd, wstatus;
+	ssize_t          r;
+	struct stat      st;
+	struct slab_key  sk;
+	struct xerr      e = XLOG_ERR_INITIALIZER;
+	pid_t            pid;
+
+	for (i = 0; i < sizeof(buf); i++)
+		buf[i] = 'a';
+	if ((fd = open(p, O_CREAT|O_RDWR, 0600)) == -1)
+		return ERR("", errno);
+	while (i < slab_get_max_size()) {
+		if ((r = write(fd, buf, sizeof(buf))) == -1)
+			return ERR("", errno);
+		i += r;
+	}
+	if (fstat(fd, &st) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	if (slab_path(path, sizeof(path),
+	    slab_key(&sk, st.st_ino, 0), 0, &e) == -1) {
+		xerr_print(&e);
+		return ERR("failed to get slab path", 0);
+	}
+	if (slab_path(out_name, sizeof(out_name),
+	    slab_key(&sk, st.st_ino, 0), 1, &e) == -1) {
+		xerr_print(&e);
+		return ERR("failed to get slab name", 0);
+	}
+	if (snprintf(out_path, sizeof(out_path), "%s/%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR, out_name) >= sizeof(out_path))
+		return ERR("outgoing slab name too long", errno);
+
+	/*
+	 * Make sure both the slab and the outgoing slab are gone.
+	 */
+	if (errno != ENOENT)
+		return ERR("access() failed for outgoing slab with reason "
+		    "other than ENOENT", errno);
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return ERR("", errno);
+	/* Wait for the fs/mgr to release the claim on the slab. */
+	if (flock(fd, LOCK_EX) == -1)
+		return ERR("", errno);
+	if (unlink(path) == -1)
+		return ERR("", errno);
+	close(fd);
+	if (access(path, F_OK) != -1)
+		return ERR("slab is present, but should have been unlinked", 0);
+	if (errno != ENOENT)
+		return ERR("failed to access() slab for "
+		    "reason other than ENOENT", errno);
+	for (i = 0; access(out_path, F_OK) == 0; i++) {
+		if (i > 10)
+			return ERR("outgoing slab still present; "
+			    "is bg_flush running?", 0);
+		sleep(1);
+	}
+
+	/*
+	 * Make our test backend script timeout for longer than the mgr
+	 * will allow.
+	 */
+	if (snprintf(sleep_file, sizeof(sleep_file), "%s/sleep",
+	    backend_data_path) >= sizeof(sleep_file))
+		return ERR("sleep_file too long", errno);
+	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
+		return ERR("", errno);
+	snprintf(buf, sizeof(buf), "%d\n", BACKEND_GET_TIMEOUT_SECONDS * 2);
+	if ((r = write(fd, buf, strlen(buf))) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	/*
+	 * The intent is to make sure the process can be interrupted
+	 * instead of being stuck forever. If the process is properly
+	 * terminated with a signal, we're happy.
+	 */
+	if ((pid = fork()) == -1) {
+		return ERR("", errno);
+	} else if (pid == 0) {
+		if ((fd = open(p, O_RDONLY)) == -1)
+			err(1, "open");
+		/* Reclaim, which at this point should timeout. */
+		if (read(fd, buf, sizeof(struct inode)) == -1)
+			err(1, "read");
+		close(fd);
+		exit(0);
+	}
+
+	sleep(BACKEND_GET_TIMEOUT_SECONDS + 1);
+	if (kill(pid, SIGINT) == -1)
+		return ERR("", errno);
+
+	while (wait(&wstatus) == -1) {
+		if (errno == EINTR)
+			continue;
+		return ERR("", errno);
+	}
+
+	if (!WIFSIGNALED(wstatus) || WTERMSIG(wstatus) != 2) {
+		snprintf(msg, sizeof(msg),
+		    "did not die due to (SIGINT); wstatus=%d", wstatus);
+		return ERR(msg, 0);
+	}
+
+	/* Remove the artificially long sleep. */
+	unlink(sleep_file);
+	return success();
+}
+
 struct potatofs_test {
 	char                description[256];
 	struct test_status *(*fn)();
@@ -3046,6 +3169,10 @@ struct potatofs_test {
 		&test_claim_from_backend
 	},
 	{
+		"timeout from backend during claim",
+		&test_backend_timeout_interrupt
+	},
+	{
 		"test readdir on v2 dirs at maximum hash tree depth",
 		&test_readdir_max_v2_dir_depth
 	},
@@ -3097,6 +3224,11 @@ main(int argc, char **argv)
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
+
+	if (getenv("BACKEND_DATA_PATH"))
+		backend_data_path = getenv("BACKEND_DATA_PATH");
+	else
+		errx(1, "no BACKEND_DATA_PATH set");
 
 	while ((opt = getopt(argc, argv, "hdc:")) != -1) {
 		switch (opt) {

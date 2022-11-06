@@ -67,7 +67,6 @@ do_df() {
 
 	total=$((`echo $df_out | cut -d' ' -f 2` * 1024))
 	used=$((`echo $df_out | cut -d' ' -f 3` * 1024))
-	sleep 1
 	echo "{\"status\": \"OK\", \"used_bytes\": $used, \"total_bytes\": $total}"
 }
 
@@ -87,7 +86,9 @@ do_get() {
 		return 1
 	fi
 	sz=$(stat -c %s "$BACKEND_DATA_PATH/$slab")
-	sleep 5
+	if [ -r "$BACKEND_DATA_PATH/sleep" ]; then
+		sleep `cat $BACKEND_DATA_PATH/sleep`
+	fi
 	cp "$BACKEND_DATA_PATH/$slab" "$local_path"
 	if [ $? -ne 0 ]; then
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to get slab: $slab\"}"

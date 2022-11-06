@@ -218,6 +218,10 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 	return 0;
 }
 
+// TODO: this should be made part of inode_load, with some flags like
+// INODE_ALLOC... Because in the end, immediately after doing inode_make()
+// we always end up loading it. There should be a pending flag like for
+// slabs.
 int
 inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
     struct inode *dst, struct xerr *e)

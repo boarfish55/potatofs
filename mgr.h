@@ -66,6 +66,21 @@ struct mgr_msg {
 		MGR_MSG_SCRUB,
 		MGR_MSG_SCRUB_OK,
 
+		MGR_MSG_FLUSH,
+		MGR_MSG_FLUSH_OK,
+
+		MGR_MSG_ONLINE,
+		MGR_MSG_ONLINE_OK,
+		MGR_MSG_ONLINE_ERR,
+
+		MGR_MSG_OFFLINE,
+		MGR_MSG_OFFLINE_OK,
+		MGR_MSG_OFFLINE_ERR,
+
+		MGR_MSG_GET_OFFLINE,
+		MGR_MSG_GET_OFFLINE_OK,
+		MGR_MSG_GET_OFFLINE_ERR,
+
 		MGR_MSG_CLAIM_NEXT_ITBL,
 		MGR_MSG_CLAIM_NEXT_ITBL_OK,
 		MGR_MSG_CLAIM_NEXT_ITBL_END,
@@ -112,6 +127,10 @@ struct mgr_msg {
 			uint64_t c[COUNTER_LAST];
 			uint64_t mgr_c[MGR_COUNTER_LAST];
 		} rcv_counters;
+
+		struct {
+			int offline;
+		} get_offline;
 
 		struct {
 			time_t grace_period;

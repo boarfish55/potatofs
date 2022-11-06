@@ -20,6 +20,6 @@
 #ifndef POTATOMGR_H
 #define POTATOMGR_H
 
-int mgr_start();
+int mgr_start(int, int);
 
 #endif

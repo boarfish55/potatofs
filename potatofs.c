@@ -49,6 +49,48 @@ enum {
 	OPT_NOATIME
 };
 
+static int
+fs_offline()
+{
+	int             mgr;
+	struct mgr_msg  m;
+	struct xerr     e;
+	struct timespec tp = {1, 0};
+
+	for (;;) {
+		if ((mgr = mgr_connect(1, xerrz(&e))) == -1)
+			goto fail;
+
+		m.m = MGR_MSG_GET_OFFLINE;
+		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			close(mgr);
+			goto fail;
+		}
+
+		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			close(mgr);
+			goto fail;
+		}
+
+		close(mgr);
+
+		if (m.m == MGR_MSG_GET_OFFLINE_ERR) {
+			memcpy(&e, &m.v.err, sizeof(e));
+		} else if (m.m != MGR_MSG_GET_OFFLINE_OK) {
+			XERRF(&e, XLOG_APP, XLOG_INVAL,
+			    "%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
+		}
+		return m.v.get_offline.offline;
+fail:
+		xlog(LOG_ERR, &e, __func__);
+		nanosleep(&tp, NULL);
+	}
+
+	/* Never reached. */
+	return -1;
+}
+
 #define FS_OPT(t, p, v) { t, offsetof(struct fs_config, p), v }
 static struct fuse_opt fs_opts[] = {
 	FUSE_OPT_KEY("-h", OPT_HELP),
@@ -242,7 +284,28 @@ fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 	}
 }
 
-// TODO: implement interrupt (INTERRUPT)
+static int
+fs_retry(fuse_req_t req, struct xerr *e)
+{
+	if (!xerr_is(e, XLOG_APP, XLOG_BUSY) &&
+	    !xerr_is(e, XLOG_APP, XLOG_NOSLAB) &&
+	    !xerr_is(e, XLOG_APP, XLOG_BEERROR) &&
+	    !xerr_is(e, XLOG_APP, XLOG_BETIMEOUT))
+		return 0;
+
+	if (fuse_req_interrupted(req)) {
+		/*
+		 * As per FUSE docs, send an EINTR back if
+		 * the request was interrupted.
+		 */
+		XERRF(e, XLOG_FS, EINTR, "interrupted");
+		return 0;
+	} else if (fs_offline()) {
+		XERRF(e, XLOG_FS, ENOMEDIUM, "backend if offline");
+		return 0;
+	}
+	return 1;
+}
 
 static void
 fs_set_time(struct oinode *oi, uint32_t what)
@@ -285,8 +348,10 @@ fs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	counter_incr(COUNTER_FS_GETATTR);
 
 	bzero(&st, sizeof(st));
-
+again:
 	if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS) {
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		} else {
@@ -357,9 +422,12 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	if (to_set & (FUSE_SET_ATTR_MTIME_NOW))
 		memcpy(&st.st_mtim, &tp, sizeof(st.st_mtim));
 
+again:
 	/* Because looking up by open file is faster */
 	if (fi == NULL) {
 		if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
+			if (fs_retry(req, &e))
+				goto again;
 			if (e.sp == XLOG_FS) {
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, e.code));
@@ -510,8 +578,10 @@ fs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_OPENDIR);
-
+again:
 	if ((of = openfile_alloc(ino, 0, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -558,7 +628,7 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	counter_incr(COUNTER_FS_READDIR);
 
 	oi = openfile_inode((struct open_file *)fi->fh);
-
+again:
 	for (;;) {
 		inode_lock(oi, LK_LOCK_RD);
 		r = di_readdir(oi, dirs, off,
@@ -566,6 +636,8 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		inode_unlock(oi);
 
 		if (r == -1) {
+			if (fs_retry(req, &e))
+				goto again;
 			if (e.sp == XLOG_FS)
 				FUSE_REPLY(&r_sent,
 				    fuse_reply_err(req, e.code));
@@ -578,7 +650,10 @@ fs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		for (i = 0; i < r; i++) {
 			bzero(&st, sizeof(st));
 
-			if ((de_oi = inode_load(dirs[i].inode, 0, xerrz(&e))) == NULL) {
+			if ((de_oi = inode_load(dirs[i].inode, 0,
+			    xerrz(&e))) == NULL) {
+				if (fs_retry(req, &e))
+					goto again;
 				if (xerr_is(&e, XLOG_FS, ENOENT))
 					continue;
 				if (e.sp == XLOG_FS)
@@ -660,8 +735,10 @@ fs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
 	int               r_sent = 0;
 
 	counter_incr(COUNTER_FS_OPEN);
-
+again:
 	if ((of = openfile_alloc(ino, fi->flags, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -698,11 +775,17 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 		return;
 	}
 
+again:
 	inode_lock(oi, LK_LOCK_RD);
-	if (inode_splice_begin_read(&si, oi, off, size, &e) == -1) {
+	if (inode_splice_begin_read(&si, oi, off, size, xerrz(&e)) == -1) {
 		inode_unlock(oi);
-		FS_ERR(&r_sent, req, &e);
+		if (fs_retry(req, &e))
+			goto again;
 		free(bv);
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		return;
 	}
 
@@ -779,10 +862,13 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	 * Initiating a splice'd write to an inode doesn't actually
 	 * require a write lock. We only load the slabs and their fd.
 	 */
+again:
 	inode_lock(oi, LK_LOCK_RD);
 	if (inode_splice_begin_write(&si, oi, off,
 	    fuse_buf_size(bufv), xerrz(&e)) == -1) {
 		inode_unlock(oi);
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -913,7 +999,10 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	LK_RDLOCK(&fs_tree_lock);
 	counter_incr(COUNTER_FS_LOOKUP);
 
+parent_again:
 	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto parent_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -932,8 +1021,10 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	xerrz(&e);
 	if (r_sent)
 		goto end;
-
+again:
 	if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -949,7 +1040,6 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	entry.entry_timeout = fs_config.entry_timeouts;
 	inode_stat(oi, &entry.attr);
 	inode_nlookup(oi, 1);
-
 end:
 	if (oi) {
 		inode_unlock(oi);
@@ -992,8 +1082,10 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	}
 
 	LK_RDLOCK(&fs_tree_lock);
-
-	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
+parent_again:
+	if ((parent_oi = inode_load(parent, 0, xerrz(&e))) == NULL) {
+		if (fs_retry(req, &e))
+			goto parent_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1002,18 +1094,21 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	}
 	inode_lock(parent_oi, LK_LOCK_RW);
 
-	if (di_lookup(parent_oi, &de, name, &e) == -1) {
+	if (di_lookup(parent_oi, &de, name, xerrz(&e)) == -1) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
 	}
-
-	if ((oi = inode_load(de.inode, 0, &e)) == NULL) {
-		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
+again:
+	if ((oi = inode_load(de.inode, 0, xerrz(&e))) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto end;
 	}
 	inode_lock(oi, LK_LOCK_RW);
@@ -1030,7 +1125,7 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 		goto end;
 	} else {
 		/* Finally, see if we have any files in this dir */
-		switch (di_isempty(oi, &e)) {
+		switch (di_isempty(oi, xerrz(&e))) {
 		case 0:
 			FUSE_REPLY(&r_sent,
 			    fuse_reply_err(req, ENOTEMPTY));
@@ -1039,17 +1134,15 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 			break;
 		default:
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
 			goto end;
 		}
 	}
 
-	if ((di_unlink(parent_oi, &de, &e)) == -1) {
+	if ((di_unlink(parent_oi, &de, xerrz(&e))) == -1) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
 	}
 
@@ -1065,24 +1158,22 @@ fs_rmnod(fuse_req_t req, fuse_ino_t parent, const char *name, int is_rmdir)
 	} else {
 		inode_nlink(oi, -1);
 	}
-	if (inode_flush(parent_oi, 0, &e) == -1)
+	if (inode_flush(parent_oi, 0, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 	if (inode_flush(oi, 0, &e) == -1)
 		FS_ERR(&r_sent, req, &e);
 end:
 	if (oi) {
 		inode_unlock(oi);
-		if (inode_unload(oi, &e) == -1) {
+		if (inode_unload(oi, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
 	}
 
 	fs_set_time(parent_oi, INODE_ATTR_MTIME);
 
 	inode_unlock(parent_oi);
 
-	if (inode_unload(parent_oi, &e) == -1)
+	if (inode_unload(parent_oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 	else
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
@@ -1269,11 +1360,16 @@ fs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 		counter_incr(COUNTER_FS_MKNOD);
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
-
+again:
+	// TODO: there are multiple ways make_inode can fail with
+	// different cleanup that needs to happen. This may work in some
+	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    rdev, &inode, NULL, 0, &e);
 	if (status == -1) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1307,11 +1403,16 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	counter_incr(COUNTER_FS_CREATE);
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
-
+make_again:
+	// TODO: there are multiple ways make_inode can fail with
+	// different cleanup that needs to happen. This may work in some
+	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    0, &inode, NULL, 0, &e);
 	if (status == -1) {
+		if (fs_retry(req, &e))
+			goto make_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1325,13 +1426,13 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	entry.attr_timeout = fs_config.entry_timeouts;
 	entry.entry_timeout = fs_config.entry_timeouts;
 	inode_cp_stat(&entry.attr, &inode);
-
+open_again:
 	if ((of = openfile_alloc(inode.v.f.inode, fi->flags, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto open_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
-			FS_ERR(&r_sent, req, &e);
-		if (inode_nlink_ino(inode.v.f.inode, -1, &e) == -1)
 			FS_ERR(&r_sent, req, &e);
 		goto unlock;
 	}
@@ -1353,8 +1454,10 @@ fs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode,
 
 	counter_incr(COUNTER_FS_FALLOCATE);
 	if (FS_RO_ON_ERR(req)) return;
-
+again:
 	if ((oi = inode_load(ino, 0, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1453,8 +1556,10 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	new_de.inode = ino;
 	strlcpy(new_de.name, newname, sizeof(new_de.name));
 	new_de.name[sizeof(new_de.name) - 1] = '\0';
-
+parent_again:
 	if ((parent_oi = inode_load(newparent, 0, &e)) == NULL) {
+		if (fs_retry(req, &e))
+			goto parent_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1462,25 +1567,24 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 		goto unlock;
 	}
 	inode_lock(parent_oi, LK_LOCK_RW);
-
-	if ((oi = inode_load(ino, 0, &e)) == NULL) {
+again:
+	if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		goto end;
 	}
 	inode_lock(oi, LK_LOCK_RW);
 
 	if (inode_isdir(oi)) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EPERM));
-		xerrz(&e);
 		goto end;
 	}
 	if (inode_nlink(oi, 0) >= FS_LINK_MAX) {
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, EMLINK));
-		xerrz(&e);
 		goto end;
 	}
 
@@ -1494,26 +1598,23 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	fs_set_time(oi, INODE_ATTR_CTIME);
 	inode_stat(oi, &entry.attr);
 
-	if (di_mkdirent(parent_oi, &new_de, 0, &e) == -1) {
+	if (di_mkdirent(parent_oi, &new_de, 0, xerrz(&e)) == -1) {
 		FS_ERR(&r_sent, req, &e);
-		xerrz(&e);
 		inode_nlink(oi, -1);
 		inode_nlookup(oi, -1);
 	}
-	if (inode_flush(oi, 0, &e) == -1)
+	if (inode_flush(oi, 0, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 end:
 	if (oi) {
 		inode_unlock(oi);
-		if (inode_unload(oi, &e) == -1) {
+		if (inode_unload(oi, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
-		}
 	}
 
 	fs_set_time(parent_oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
 	inode_unlock(parent_oi);
-	if (inode_unload(parent_oi, &e) == -1)
+	if (inode_unload(parent_oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 
 	FUSE_REPLY(&r_sent, fuse_reply_entry(req, &entry));
@@ -1540,11 +1641,16 @@ fs_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
 	}
 
 	LK_RDLOCK(&fs_tree_lock);
-
+again:
+	// TODO: there are multiple ways make_inode can fail with
+	// different cleanup that needs to happen. This may work in some
+	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, 0777 | S_IFLNK, fuse_req_ctx(req)->umask,
 	    0, &inode, link, strlen(link), &e);
 	if (status == -1) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1575,8 +1681,10 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 
 	counter_incr(COUNTER_FS_READLINK);
 	LK_RDLOCK(&fs_tree_lock);
-
-	if ((oi = inode_load(ino, 0, &e)) == NULL) {
+again:
+	if ((oi = inode_load(ino, 0, xerrz(&e))) == NULL) {
+		if (fs_retry(req, &e))
+			goto again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
@@ -1587,12 +1695,11 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 	inode_lock(oi, LK_LOCK_RD);
 	for (offset = 0; offset < (FS_PATH_MAX - 1); offset += r) {
 		r = inode_read(oi, offset, link + offset,
-		    FS_PATH_MAX - offset - 1, &e);
+		    FS_PATH_MAX - offset - 1, xerrz(&e));
 		if (r == 0) {
 			break;
 		} else if (r == -1) {
 			FS_ERR(&r_sent, req, &e);
-			xerrz(&e);
 			break;
 		} else if (offset >= FS_PATH_MAX) {
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, ENAMETOOLONG));
@@ -1610,7 +1717,7 @@ fs_readlink(fuse_req_t req, fuse_ino_t ino)
 		inode_unlock(oi);
 	}
 
-	if (inode_unload(oi, &e) == -1)
+	if (inode_unload(oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 
 	FUSE_REPLY(&r_sent, fuse_reply_readlink(req, link));
@@ -1631,7 +1738,6 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	ino_t             p;
 
 	LK_WRLOCK(&fs_tree_lock);
-
 	if ((old_doi = inode_load(oldparent, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
@@ -1639,7 +1745,6 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			FS_ERR(&r_sent, req, &e);
 		goto unlock;
 	}
-
 	if ((new_doi = inode_load(newparent, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
@@ -1702,8 +1807,15 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			FS_ERR(&r_sent, req, &e);
 			goto end;
 		}
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
-		FS_ERR(&r_sent, req, &e);
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto end;
 	}
 
@@ -1762,7 +1874,11 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 
 		for (p = oldparent; p != FS_ROOT_INODE; oldparent_depth++) {
 			if ((p_oi = inode_load(p, 0, xerrz(&e))) == NULL) {
-				FS_ERR(&r_sent, req, &e);
+				if (e.sp == XLOG_FS)
+					FUSE_REPLY(&r_sent,
+					    fuse_reply_err(req, e.code));
+				else
+					FS_ERR(&r_sent, req, &e);
 				goto end;
 			}
 			if ((p = di_parent(p_oi, xerrz(&e))) == -1)
@@ -1829,7 +1945,10 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	 */
 	if (di_mkdirent(new_doi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
-		FS_ERR(&r_sent, req, &e);
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
 	}
 	fs_set_time(new_doi, INODE_ATTR_MTIME);
@@ -1864,7 +1983,13 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	 * parent's mtime.
 	 */
 	if (di_unlink(old_doi, &de, xerrz(&e)) == -1) {
-		FS_ERR(&r_sent, req, &e);
+		// TODO: I think we need to ensure all slabs for a
+		// directory are local with refcnt > 0 for the entire
+		// duration of the directory operation...
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
 	}
 	fs_set_time(old_doi, INODE_ATTR_MTIME);
@@ -1971,8 +2096,15 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			FS_ERR(&r_sent, req, &e);
 			goto end;
 		}
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
-		FS_ERR(&r_sent, req, &e);
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto end;
 	}
 
@@ -2065,7 +2197,10 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	 */
 	if (di_mkdirent(d_oi, &new_de, 1, xerrz(&e)) == -1) {
 		inode_nlink(oi, -1);
-		FS_ERR(&r_sent, req, &e);
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
 		goto unlock_inodes;
 	}
 
@@ -2085,8 +2220,12 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	 * Remove the old entry from the parent and update its
 	 * mtime.
 	 */
-	if (di_unlink(d_oi, &de, xerrz(&e)) == -1)
-		FS_ERR(&r_sent, req, &e);
+	if (di_unlink(d_oi, &de, xerrz(&e)) == -1) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+	}
 	fs_set_time(d_oi, INODE_ATTR_MTIME);
 	if (new_oi != NULL && inode_isdir(new_oi))
 		inode_nlink(d_oi, -1);
@@ -2167,7 +2306,7 @@ main(int argc, char **argv)
 
 	config_read();
 
-	if (mgr_start() == -1)
+	if (mgr_start(fs_config.workers, fs_config.bgworkers) == -1)
 		err(1, "mgr_start");
 
 	bzero(&act, sizeof(act));

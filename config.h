@@ -54,11 +54,18 @@
 #define FS_ROOT_INODE 1
 
 /*
- * Hard deadline for all backend operations. If it is expected that reads
- * or writes to the backend might take longer than this value, it should
- * be increased.
+ * Hard deadline for all backend operations. If it is expected that calls
+ * to the backend might take longer than those values, the relevant timeouts
+ * must be increased.
+ *
+ * If we receive an INTERRUPT from FUSE, we could be blocked for as long
+ * as the duration of the GET timeout before sending back EINTR. With no
+ * interrupt from FUSE, the GET operation will be retried indefinitely.
+ * TODO: make those configurable
  */
-#define BACKEND_TIMEOUT_SECONDS 30
+#define BACKEND_GET_TIMEOUT_SECONDS 15
+#define BACKEND_PUT_TIMEOUT_SECONDS 60
+#define BACKEND_DF_TIMEOUT_SECONDS  30
 
 /*
  * When unclaiming a slab, if the local cache utilization is over this
