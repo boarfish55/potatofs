@@ -86,6 +86,11 @@ struct inode {
 #define INODE_ATTR_CTIME (1 << 6)
 };
 
+struct oinode_slab {
+	struct oslab             *b;
+	SPLAY_ENTRY(oinode_slab)  entry;
+};
+
 struct oinode {
 	/* refcnt and entry are protected by the open_inodes lock. */
 	SPLAY_ENTRY(oinode)  entry;
@@ -131,16 +136,18 @@ struct oinode {
 	 */
 	struct oslab        *itbl;
 
+	uint32_t             oflags;
+#define INODE_OSYNC    0x00000001
+#define INODE_ORO      0x00000002
+#define INODE_NOCREATE 0x00000004
+#define INODE_CLAIMALL 0x00000008
+
 	/*
 	 * For directory inodes, it may be necessary to keep all the slabs
 	 * loaded for the duration of a file operation. Make that a linked
 	 * list.
 	 */
-	// TODO: struct oslab        *slabs;
-
-	uint32_t             oflags;
-#define INODE_OSYNC  0x00000001
-#define INODE_ORO    0x00000002
+	SPLAY_HEAD(oinode_slab_tree, oinode_slab) slabs;
 };
 
 struct inode_splice_buf {
@@ -174,7 +181,6 @@ char *inode_data(struct inode *);
  * Only acquires slab locks. The inode isn't actually loaded at any point.
  * Only the inode table bitmap is updated.
  */
-int inode_make(ino_t, uid_t, gid_t, mode_t, struct inode *, struct xerr *);
 int inode_dealloc(ino_t, struct xerr *);
 
 /* The inode lock is public, as opposed to the bytes_lock. */
@@ -186,6 +192,8 @@ void inode_unlock(struct oinode *);
  * as we keep track of how many times it is referenced. Note that
  * inode_unload() will call inode_flush() when the refcnt is 0.
  */
+struct oinode *inode_create(ino_t, uint32_t, uid_t, gid_t, mode_t,
+                   struct xerr *);
 struct oinode *inode_load(ino_t, uint32_t, struct xerr *);
 int            inode_unload(struct oinode *, struct xerr *);
 

@@ -43,6 +43,23 @@ static struct oinodes {
         PTHREAD_MUTEX_INITIALIZER
 };
 
+static int
+oinode_slab_cmp(struct oinode_slab *b1, struct oinode_slab *b2)
+{
+        if (b1->b->sk.ino < b2->b->sk.ino)
+                return -1;
+        if (b1->b->sk.ino > b2->b->sk.ino)
+                return 1;
+        if (b1->b->sk.base < b2->b->sk.base)
+                return -1;
+        if (b1->b->sk.base > b2->b->sk.base)
+                return 1;
+        return 0;
+}
+
+SPLAY_PROTOTYPE(oinode_slab_tree, oinode_slab, entry, oinode_slab_cmp);
+SPLAY_GENERATE(oinode_slab_tree, oinode_slab, entry, oinode_slab_cmp);
+
 static char *slab_zeroes;
 
 static int
@@ -76,6 +93,12 @@ slab_at(struct oinode *oi, off_t offset, uint32_t oflags, struct xerr *e)
 	    oflags, xerrz(e))) == NULL) {
 		XERR_PREPENDFN(e);
 		return NULL;
+	}
+
+	if (oi->oflags & INODE_CLAIMALL) {
+		// TODO: create oi_b here... ignore SPLAY_INSERT errors,
+		// means a collision, which means we already have it.
+		// SPLAY_INSERT(oinode_slab_tree, &oi->slabs, oi_b)
 	}
 
 	return b;
@@ -218,56 +241,25 @@ inode_incr_size(struct oinode *oi, off_t offset, off_t written,
 	return 0;
 }
 
-// TODO: this should be made part of inode_load, with some flags like
-// INODE_ALLOC... Because in the end, immediately after doing inode_make()
-// we always end up loading it. There should be a pending flag like for
-// slabs.
-int
-inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
-    struct inode *dst, struct xerr *e)
+static int
+inode_make(struct oslab *b, ino_t ino, uid_t uid, gid_t gid, mode_t mode,
+    struct inode *inode, struct xerr *e)
 {
 	struct timespec  tp;
-	struct inode     inode;
-	struct oslab    *b;
 	ssize_t          r, w;
-	struct xerr      e_close_tbl;
-	struct slab_key  sk;
-
-	/*
-	 * If ino == 0 (that is, the caller expects us to pick an inode),
-	 * we call alloc_inode(). Otherwise, just load the exact
-	 * inode number and fill it up, if it's available.
-	 */
-	if (ino == 0) {
-		b = alloc_inode(&ino, xerrz(e));
-	} else {
-		b = slab_load_itbl(slab_key(&sk, 0, ino), xerrz(e));
-		slab_lock(b, LK_LOCK_RW);
-	}
-
-	if (b == NULL) {
-		XERR_PREPENDFN(e);
-		return -1;
-	}
-
-	if (!slab_itbl_is_free(b, ino)) {
-		XERRF(e, XLOG_FS, EEXIST,
-		    "inode already allocated: %lu", ino);
-		goto fail;
-	}
 
 	/*
 	 * We read previously allocated inode data here, if any,
 	 * so we can increment the generation.
 	 */
-	r = slab_read(b, &inode,
+	r = slab_read(b, inode,
 	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
-	    sizeof(inode), xerrz(e));
+	    sizeof(struct inode), xerrz(e));
 	if (r == 0)
-		bzero(&inode, sizeof(inode));
-	else if (r < sizeof(inode)) {
-		XERRF(e, XLOG_APP, XLOG_IO, "short read for inode: %lu", ino);
-		goto fail;
+		bzero(inode, sizeof(struct inode));
+	else if (r < sizeof(struct inode)) {
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "short read for inode: %lu", ino);
 	}
 
 	/*
@@ -276,58 +268,38 @@ inode_make(ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 	 * It is already set to zero at inode table creation, so we can just
 	 * increment it.
 	 */
-	inode.v.f.generation++;
-	inode.v.f.inode = ino;
-	inode.v.f.mode = mode;
-	inode.v.f.nlink = 0;
-	inode.v.f.uid = uid;
-	inode.v.f.gid = gid;
-	inode.v.f.rdev = 0;
-	inode.v.f.dev = 0;
-	inode.v.f.size = 0;
-	inode.v.f.blocks = 0;
+	inode->v.f.generation++;
+	inode->v.f.inode = ino;
+	inode->v.f.mode = mode;
+	inode->v.f.nlink = 0;
+	inode->v.f.uid = uid;
+	inode->v.f.gid = gid;
+	inode->v.f.rdev = 0;
+	inode->v.f.dev = 0;
+	inode->v.f.size = 0;
+	inode->v.f.blocks = 0;
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-		goto fail;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &tp);
+	memcpy(&inode->v.f.atime, &tp, sizeof(inode->v.f.atime));
+	memcpy(&inode->v.f.ctime, &tp, sizeof(inode->v.f.ctime));
+	memcpy(&inode->v.f.mtime, &tp, sizeof(inode->v.f.mtime));
 
-	memcpy(&inode.v.f.atime, &tp, sizeof(inode.v.f.atime));
-	memcpy(&inode.v.f.ctime, &tp, sizeof(inode.v.f.ctime));
-	memcpy(&inode.v.f.mtime, &tp, sizeof(inode.v.f.mtime));
-
-	if ((w = slab_write(b, &inode,
+	if ((w = slab_write(b, inode,
 	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
 	    sizeof(struct inode), xerrz(e))) == -1)
-		goto fail;
-
+		return XERR_PREPENDFN(e);
 	if (w < sizeof(struct inode)) {
-		XERRF(e, XLOG_APP, XLOG_IO,
-		    "short write while saving inode %lu", ino);
 		// TODO: corrupted at this point; maybe move to lost+found?
-		goto fail;
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "short write while saving inode %lu", ino);
 	}
 
 	slab_itbl_alloc(b, ino);
 
 	if (slab_write_hdr(b, xerrz(e)) == -1)
-		goto fail;
-
-	slab_unlock(b);
-	if (slab_forget(b, xerrz(e)) == -1)
-		return -1;
-
-	if (dst != NULL)
-		memcpy(dst, &inode, sizeof(struct inode));
+		return XERR_PREPENDFN(e);
 
 	return 0;
-fail:
-	slab_unlock(b);
-	if (slab_forget(b, xerrz(&e_close_tbl)) == -1) {
-		fs_error_set();
-		xlog(LOG_ERR, &e_close_tbl, __func__);
-	}
-	return -1;
 }
 
 void
@@ -611,99 +583,176 @@ inode_isdir(struct oinode *oi)
 struct oinode *
 inode_load(ino_t ino, uint32_t oflags, struct xerr *e)
 {
-	int              r;
-	struct oinode   *oi;
-	struct oinode    needle;
-	struct oslab    *b = NULL;
-	struct xerr      e_close_itbl;
-	struct slab_key  sk;
+	return inode_create(ino, oflags | INODE_NOCREATE, 0, 0, 0, e);
+}
 
-	/* 
-	 * Need exclusive in case we need to load from disk and insert
-	 * into the splay_tree. Otherwise there could be a race of who
-	 * tries to insert in the tree after two or more threads find out
-	 * the inode isn't loaded yet.
-	 */
-	MTX_LOCK(&open_inodes.lock);
+struct oinode *
+inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
+    struct xerr *e)
+{
+	int                 r;
+	struct oinode      *oi = NULL;
+	struct oinode       needle;
+	struct oslab       *b = NULL;
+	struct xerr         e_close_itbl;
+	struct slab_key     sk;
+	off_t               offset;
+	struct oinode_slab *oi_b;
 
-	bzero(&needle, sizeof(needle));
-	needle.ino.v.f.inode = ino;
-	if ((oi = SPLAY_FIND(ino_tree, &open_inodes.head, &needle)) != NULL) {
-		oi->refcnt++;
-		xlog_dbg(XLOG_INODE, "%s: found inode in-memory: "
-		    "inode %lu refcnt %llu nlookup %lu",
-		    __func__, ino, oi->refcnt, oi->nlookup);
-		MTX_UNLOCK(&open_inodes.lock);
-		return oi;
-	}
-
-	if ((b = slab_load_itbl(slab_key(&sk, 0, ino), xerrz(e))) == NULL) {
-		XERR_PREPENDFN(e);
-		goto end;
-	}
-	slab_lock(b, LK_LOCK_RD);
-
-	if (slab_itbl_is_free(b, ino)) {
-		XERRF(e, XLOG_FS, ENOENT,
-		    "no such inode allocated: %lu", ino);
-		goto fail_close_itbl;
+	if (ino > 0) {
+		bzero(&needle, sizeof(needle));
+		needle.ino.v.f.inode = ino;
+		MTX_LOCK(&open_inodes.lock);
+		oi = SPLAY_FIND(ino_tree, &open_inodes.head, &needle);
+		if (oi != NULL) {
+			oi->refcnt++;
+			xlog_dbg(XLOG_INODE, "%s: found inode in-memory: "
+			    "inode %lu refcnt %llu nlookup %lu",
+			    __func__, ino, oi->refcnt, oi->nlookup);
+			MTX_UNLOCK(&open_inodes.lock);
+			return oi;
+		}
+	} else {
+		if (oflags & INODE_NOCREATE) {
+			XERRF(e, XLOG_FS, EINVAL,
+			    "inode 0 was specified with INODE_NOCREATE");
+			return NULL;
+		}
+		MTX_LOCK(&open_inodes.lock);
 	}
 
 	if ((oi = malloc(sizeof(struct oinode))) == NULL) {
+		MTX_UNLOCK(&open_inodes.lock);
 		XERRF(e, XLOG_ERRNO, errno, "malloc");
-		goto fail_close_itbl;
+		return NULL;
 	}
 	bzero(oi, sizeof(struct oinode));
 
-	if (LK_LOCK_INIT(&oi->lock, xerrz(e)) == -1)
-		goto fail_free_oi;
-	if (LK_LOCK_INIT(&oi->bytes_lock, xerrz(e)) == -1)
-		goto fail_destroy_lock;
-	oi->refcnt = 1;
-	oi->oflags = oflags;
-	oi->itbl = b;
-	r = slab_read(b, &oi->ino,
-	    (ino - b->hdr.v.f.key.base) * sizeof(struct inode),
-	    sizeof(struct inode), xerrz(e));
-	if (r == -1) {
-		goto fail_destroy_bytes_lock;
-	} else if (r < sizeof(struct inode)) {
-		XERRF(e, XLOG_APP, XLOG_IO,
-		    "short read while reading inode %lu", ino);
-		goto fail_destroy_bytes_lock;
+	if (ino == 0) {
+		if ((oi->itbl = alloc_inode(&ino, xerrz(e))) == NULL) {
+			XERR_PREPENDFN(e);
+			goto fail_free_oi;
+		}
+		/*
+		 * alloc_inode already claims a write lock.
+		 */
+		if (inode_make(oi->itbl, ino, uid, gid, mode, &oi->ino,
+		    xerrz(e)) == -1) {
+			XERR_PREPENDFN(e);
+			goto fail_close_itbl;
+		}
+	} else {
+		oi->itbl = slab_load_itbl(slab_key(&sk, 0, ino), xerrz(e));
+		if (oi->itbl == NULL) {
+			XERR_PREPENDFN(e);
+			goto fail_free_oi;
+		}
+		if (oflags & INODE_NOCREATE) {
+			slab_lock(oi->itbl, LK_LOCK_RD);
+			if (slab_itbl_is_free(oi->itbl, ino)) {
+				XERRF(e, XLOG_FS, ENOENT,
+				    "no such inode allocated: %lu", ino);
+				goto fail_close_itbl;
+			}
+			r = slab_read(oi->itbl, &oi->ino,
+			    (ino - oi->itbl->hdr.v.f.key.base) *
+			    sizeof(struct inode), sizeof(struct inode),
+			    xerrz(e));
+			if (r == -1) {
+				goto fail_close_itbl;
+			} else if (r < sizeof(struct inode)) {
+				XERRF(e, XLOG_APP, XLOG_IO,
+				    "short read while reading inode %lu", ino);
+				goto fail_close_itbl;
+			}
+		} else {
+			slab_lock(oi->itbl, LK_LOCK_RW);
+			if (!slab_itbl_is_free(b, ino)) {
+				XERRF(e, XLOG_FS, EEXIST,
+				    "inode already allocated: %lu", ino);
+				goto fail_close_itbl;
+			}
+			if (inode_make(b, ino, uid, gid, mode, &oi->ino,
+			    xerrz(e)) == -1) {
+				XERR_PREPENDFN(e);
+				goto fail_close_itbl;
+			}
+		}
 	}
 
 	if (oi->ino.v.f.mode & S_IFDIR)
-		oi->oflags |= INODE_OSYNC;
+		oi->oflags |= INODE_OSYNC|INODE_CLAIMALL;
+
+	if (LK_LOCK_INIT(&oi->lock, xerrz(e)) == -1)
+		goto fail_close_itbl;
+	if (LK_LOCK_INIT(&oi->bytes_lock, xerrz(e)) == -1)
+		goto fail_destroy_lock;
+	SPLAY_INIT(&oi->slabs);
+	oi->refcnt = 1;
+	oi->oflags = oflags;
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
 		XERRF(e, XLOG_APP, XLOG_IO, "inode already loaded %lu", ino);
 		goto fail_destroy_bytes_lock;
 	}
 
+	counter_incr(COUNTER_N_OPEN_INODES);
+
+	slab_unlock(oi->itbl);
+
+	MTX_UNLOCK(&open_inodes.lock);
+
+	if (oflags & INODE_CLAIMALL) {
+		LK_WRLOCK(&oi->lock);
+		LK_RDLOCK(&oi->bytes_lock);
+
+		if (oi->ino.v.f.size > INODE_INLINE_BYTES) {
+			for (offset = 0; offset < oi->ino.v.f.size;
+			    offset += slab_get_max_size()) {
+				b = slab_at(oi, offset, OSLAB_NOCREATE,
+				    xerrz(e));
+				if (b == NULL) {
+					if (xerr_is(e, XLOG_APP, XLOG_NOSLAB))
+						continue;
+					goto fail_remove_inode;
+				}
+			}
+			oi_b = malloc(sizeof(struct oinode_slab));
+			if (oi_b == NULL) {
+				XERRF(e, XLOG_ERRNO, errno, "malloc");
+				goto fail_remove_inode;
+			}
+			oi_b->b = b;
+			if (SPLAY_INSERT(oinode_slab_tree, &oi->slabs,
+			    oi_b) != NULL) {
+				// TODO: collision
+			}
+		}
+		LK_UNLOCK(&oi->bytes_lock);
+		LK_UNLOCK(&oi->lock);
+	}
+
 	xlog_dbg(XLOG_INODE, "%s: loaded inode %lu refcnt %llu nlookup %lu "
 	    "nlink %ld", __func__, ino, oi->refcnt, oi->nlookup,
 	    oi->ino.v.f.nlink);
 
-	counter_incr(COUNTER_N_OPEN_INODES);
-
-	slab_unlock(b);
-
-	goto end;
+	return oi;
+fail_remove_inode:
+	// TODO: must cleanup slab tree
+	LK_UNLOCK(&oi->bytes_lock);
+	LK_UNLOCK(&oi->lock);
 fail_destroy_bytes_lock:
 	LK_LOCK_DESTROY(&oi->bytes_lock);
 fail_destroy_lock:
 	LK_LOCK_DESTROY(&oi->lock);
+fail_close_itbl:
+	slab_unlock(oi->itbl);
+	if (slab_forget(oi->itbl, xerrz(&e_close_itbl)) == -1)
+		xlog(LOG_ERR, &e_close_itbl, __func__);
 fail_free_oi:
 	free(oi);
-	oi = NULL;
-fail_close_itbl:
-	slab_unlock(b);
-	if (slab_forget(b, xerrz(&e_close_itbl)) == -1)
-		xlog(LOG_ERR, &e_close_itbl, __func__);
-end:
 	MTX_UNLOCK(&open_inodes.lock);
-	return oi;
+	return NULL;
 }
 
 /*
@@ -721,6 +770,9 @@ end:
 int
 inode_unload(struct oinode *oi, struct xerr *e)
 {
+	struct oinode_slab *oi_b, *next;
+	struct xerr         e_close_itbl;
+
 	LK_WRLOCK(&oi->lock);
 
 	MTX_LOCK(&open_inodes.lock);
@@ -755,6 +807,18 @@ inode_unload(struct oinode *oi, struct xerr *e)
 				MTX_UNLOCK(&open_inodes.lock);
 				XERR_PREPENDFN(e);
 				goto end;
+			}
+
+			for (oi_b = SPLAY_MIN(oinode_slab_tree, &oi->slabs);
+			    oi_b != NULL; oi_b = next) {
+				next = SPLAY_NEXT(oinode_slab_tree,
+				    &oi->slabs, oi_b);
+				SPLAY_REMOVE(oinode_slab_tree,
+				    &oi->slabs, oi_b);
+				if (slab_forget(oi_b->b,
+				    xerrz(&e_close_itbl)) == -1)
+					xlog(LOG_ERR, &e_close_itbl, __func__);
+				free(oi_b);
 			}
 			LK_UNLOCK(&oi->lock);
 
@@ -843,10 +907,10 @@ inode_sync(struct oinode *oi, struct xerr *e)
 int
 inode_flush(struct oinode *oi, uint8_t flags, struct xerr *e)
 {
-	ssize_t          w;
-	off_t            sz_off;
-	ino_t            ino = oi->ino.v.f.inode;
-	struct xerr      e_close_itbl;
+	ssize_t     w;
+	off_t       sz_off;
+	ino_t       ino = oi->ino.v.f.inode;
+	struct xerr e_close_itbl;
 
 	xlog_dbg(XLOG_INODE, "%s: ino=%lu (%p); flags=%u",
 	    __func__, ino, oi, flags);

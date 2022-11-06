@@ -543,10 +543,9 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 			goto fail;
 
 		xerrz(&e);
-		if (inode_make(FS_ROOT_INODE, c->uid, c->gid,
-		    S_IFDIR|0755, NULL, &e) == -1)
-			goto fail;
-		if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL)
+
+		if ((oi = inode_create(FS_ROOT_INODE, 0,
+		    c->uid, c->gid, S_IFDIR|0755, xerrz(&e))) == NULL)
 			goto fail;
 		inode_lock(oi, LK_LOCK_RW);
 		inode_nlink(oi, 2);
@@ -1238,11 +1237,9 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 		return XERRF(e, XLOG_FS, ENAMETOOLONG,
 		    "file name too long");
 
-	if ((inode_make(0, uid, gid, (mode & ~(mode & mask)), inode, e)) == -1)
+	if ((oi = inode_create(0, 0, uid, gid,
+	    (mode & ~(mode & mask)), e)) == NULL)
 		return XERR_PREPENDFN(e);
-
-	if ((oi = inode_load(inode->v.f.inode, 0, e)) == NULL)
-		goto dealloc;
 
 	inode_lock(oi, LK_LOCK_RW);
 	inode_nlink(oi, 1);
@@ -1983,9 +1980,6 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 	 * parent's mtime.
 	 */
 	if (di_unlink(old_doi, &de, xerrz(&e)) == -1) {
-		// TODO: I think we need to ensure all slabs for a
-		// directory are local with refcnt > 0 for the entire
-		// duration of the directory operation...
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
