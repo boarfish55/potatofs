@@ -86,11 +86,6 @@ struct inode {
 #define INODE_ATTR_CTIME (1 << 6)
 };
 
-struct oinode_slab {
-	struct oslab             *b;
-	SPLAY_ENTRY(oinode_slab)  entry;
-};
-
 struct oinode {
 	/* refcnt and entry are protected by the open_inodes lock. */
 	SPLAY_ENTRY(oinode)  entry;
@@ -140,14 +135,6 @@ struct oinode {
 #define INODE_OSYNC    0x00000001
 #define INODE_ORO      0x00000002
 #define INODE_NOCREATE 0x00000004
-#define INODE_CLAIMALL 0x00000008
-
-	/*
-	 * For directory inodes, it may be necessary to keep all the slabs
-	 * loaded for the duration of a file operation. Make that a linked
-	 * list.
-	 */
-	SPLAY_HEAD(oinode_slab_tree, oinode_slab) slabs;
 };
 
 struct inode_splice_buf {
