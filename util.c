@@ -265,6 +265,15 @@ close_x(int fd, const char *fn)
 		xlog_strerror(LOG_ERR, errno, "%s: close_x", fn);
 }
 
+void
+clock_gettime_x(clockid_t clockid, struct timespec *tp)
+{
+	if (clock_gettime(clockid, tp) == -1) {
+		xlog_strerror(LOG_CRIT, errno, "clock_gettime");
+		abort();
+	}
+}
+
 /*
  * If wait_seconds is 0, don't set LOCK_NB. We behave like plain open() + flock().
  * If wait_seconds is >0, we will sleep for a maximum of this many seconds in

@@ -831,17 +831,11 @@ error_retry:
 		if ((b = malloc(sizeof(struct oslab))) == NULL) {
 			MTX_UNLOCK(&owned_slabs.lock);
 			xlog_strerror(LOG_ERR, errno, "%s: malloc", __func__);
-			goto error_retry;
+			return NULL;
 		}
 		bzero(b, sizeof(struct oslab));
 
-		if (clock_gettime(CLOCK_MONOTONIC, &b->open_since) == -1) {
-			MTX_UNLOCK(&owned_slabs.lock);
-			free(b);
-			xlog_strerror(LOG_ERR, errno, "%s: clock_gettime",
-			    __func__);
-			goto error_retry;
-		}
+		clock_gettime_x(CLOCK_MONOTONIC, &b->open_since);
 
 		memcpy(&b->sk, sk, sizeof(struct slab_key));
 		b->oflags = oflags;
