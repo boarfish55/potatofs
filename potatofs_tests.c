@@ -21,10 +21,10 @@
 #include "slabdb.h"
 #include "mgr.h"
 
-char mnt[PATH_MAX] = "";
-char path[PATH_MAX] = "";
-int  verbose = 0;
-const char *backend_data_path;
+char        mnt[PATH_MAX] = "";
+char        path[PATH_MAX] = "";
+int         verbose = 0;
+char        sleep_file[PATH_MAX];
 
 /*
  * The following file names have matching hashes (fnv1a32) for their
@@ -2781,6 +2781,17 @@ test_claim_from_backend()
 		    "reason other than ENOENT", errno);
 
 	/*
+	 * Make our test backend script timeout for longer than the mgr
+	 * will allow.
+	 */
+	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
+		return ERR("", errno);
+	snprintf(buf, sizeof(buf), "%d\n", BACKEND_GET_TIMEOUT_SECONDS / 2);
+	if ((r = write(fd, buf, strlen(buf))) == -1)
+		return ERR("", errno);
+	close(fd);
+
+	/*
 	 * Try to read the same pending slab concurrently 4 times. This will
 	 * trigger the pending slab codepath which is hard enough to test.
 	 * Since we have a sleep in the backend get code, all children should
@@ -2794,7 +2805,7 @@ test_claim_from_backend()
 		if (pid > 0)
 			continue;
 
-		if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
+		if (clock_gettime(CLOCK_MONOTONIC, &tp) == -1)
 			err(1, "clock_gettime");
 
 		/* Then reclaim, hopefully from the actual backend this time. */
@@ -2810,7 +2821,7 @@ test_claim_from_backend()
 			err(1, "pwrite");
 		close(fd);
 
-		if (clock_gettime(CLOCK_REALTIME, &tp2) == -1)
+		if (clock_gettime(CLOCK_MONOTONIC, &tp2) == -1)
 			err(1, "clock_gettime");
 
 		if (tp2.tv_sec - tp.tv_sec < 1)
@@ -2834,6 +2845,7 @@ test_claim_from_backend()
 	if (access(path, F_OK) == -1)
 		return ERR("", errno);
 
+	unlink(sleep_file);
 	return success();
 }
 
@@ -2841,7 +2853,6 @@ struct test_status *
 test_backend_timeout_interrupt()
 {
 	char            *p = makepath("backend_timeout");
-	char             sleep_file[PATH_MAX];
 	char             path[PATH_MAX];
 	char             out_name[NAME_MAX];
 	char             out_path[PATH_MAX];
@@ -2911,9 +2922,6 @@ test_backend_timeout_interrupt()
 	 * Make our test backend script timeout for longer than the mgr
 	 * will allow.
 	 */
-	if (snprintf(sleep_file, sizeof(sleep_file), "%s/sleep",
-	    backend_data_path) >= sizeof(sleep_file))
-		return ERR("sleep_file too long", errno);
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
 	snprintf(buf, sizeof(buf), "%d\n", BACKEND_GET_TIMEOUT_SECONDS * 2);
@@ -3225,9 +3233,11 @@ main(int argc, char **argv)
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
-	if (getenv("BACKEND_DATA_PATH"))
-		backend_data_path = getenv("BACKEND_DATA_PATH");
-	else
+	if (getenv("BACKEND_DATA_PATH")) {
+		if (snprintf(sleep_file, sizeof(sleep_file), "%s/sleep",
+		    getenv("BACKEND_DATA_PATH")) >= sizeof(sleep_file))
+			errx(1, "sleep_file too long");
+	} else
 		errx(1, "no BACKEND_DATA_PATH set");
 
 	while ((opt = getopt(argc, argv, "hdc:")) != -1) {

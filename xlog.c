@@ -218,21 +218,22 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 
 	if (e->sp == XLOG_ERRNO && e->code != 0) {
 		if (fmt) {
-			syslog(priority, "[sp=%d, code=%d]: %s: %s: %s",
-			    e->sp, e->code, msg, e->msg,
+			syslog(priority, "[thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s: %s",
+			    pthread_self(), e->sp, e->code, msg, e->msg,
 			    strerror_l(e->code, log_locale));
 		} else {
-			syslog(priority, "[sp=%d, code=%d]: %s: %s",
-			    e->sp, e->code, e->msg, strerror_l(e->code,
-			    log_locale));
+			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
+			    pthread_self(), e->sp, e->code, e->msg,
+			    strerror_l(e->code, log_locale));
 		}
 	} else {
 		if (fmt) {
-			syslog(priority, "[sp=%d, code=%d]: %s: %s",
-			    e->sp, e->code, msg, e->msg);
+			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
+			    pthread_self(), e->sp, e->code, msg, e->msg);
 		} else {
-			syslog(priority, "[sp=%d, code=%d]: %s",
-			    e->sp, e->code, e->msg);
+			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s",
+			    pthread_self(), e->sp, e->code, e->msg);
 		}
 	}
 }

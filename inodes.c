@@ -110,8 +110,13 @@ alloc_inode(ino_t *inode, struct xerr *e)
 		slab_lock(b, LK_LOCK_RW);
 		ino = slab_itbl_find_unallocated(b);
 		if (ino > 0) {
-			if (inode != NULL)
+			if (inode != NULL) {
+				xlog_dbg(XLOG_INODE,
+				    "%s: found unallocated inode %lu in itbl "
+				    "base=%ld",
+				    __func__, ino, sk.base);
 				*inode = ino;
+			}
 			return b;
 		}
 		slab_unlock(b);
@@ -138,8 +143,12 @@ alloc_inode(ino_t *inode, struct xerr *e)
 		slab_lock(b, LK_LOCK_RW);
 		ino = slab_itbl_find_unallocated(b);
 		if (ino > 0) {
-			if (inode != NULL)
+			if (inode != NULL) {
+				xlog_dbg(XLOG_INODE,
+				    "%s: found unallocated inode %lu, from "
+				    "unloaded slabs", __func__, ino);
 				*inode = ino;
+			}
 			return b;
 		}
 		slab_unlock(b);
@@ -151,7 +160,7 @@ alloc_inode(ino_t *inode, struct xerr *e)
 	}
 
 	XERRF(e, XLOG_FS, ENOSPC, "unable to locate free "
-	    "inode; we looped up to base %lu", i);
+	    "inode; we looped up to base %ld", i);
 	return NULL;
 }
 
@@ -270,6 +279,8 @@ inode_make(struct oslab *b, ino_t ino, uid_t uid, gid_t gid, mode_t mode,
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "short write while saving inode %lu", ino);
 	}
+	xlog_dbg(XLOG_INODE, "%s: wrote struct inode %lu", __func__,
+	    inode->v.f.inode);
 
 	slab_itbl_alloc(b, ino);
 
@@ -570,7 +581,6 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 	int                 r;
 	struct oinode      *oi = NULL;
 	struct oinode       needle;
-	struct oslab       *b = NULL;
 	struct xerr         e_close_itbl;
 	struct slab_key     sk;
 
@@ -587,6 +597,9 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 			MTX_UNLOCK(&open_inodes.lock);
 			return oi;
 		}
+		xlog_dbg(XLOG_INODE, "%s: inode %lu not in-memory, loading%s",
+		    __func__, ino,
+		    (oflags & INODE_NOCREATE) ? " no-create" : "");
 	} else {
 		if (oflags & INODE_NOCREATE) {
 			XERRF(e, XLOG_FS, EINVAL,
@@ -642,12 +655,12 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 			}
 		} else {
 			slab_lock(oi->itbl, LK_LOCK_RW);
-			if (!slab_itbl_is_free(b, ino)) {
+			if (!slab_itbl_is_free(oi->itbl, ino)) {
 				XERRF(e, XLOG_FS, EEXIST,
 				    "inode already allocated: %lu", ino);
 				goto fail_close_itbl;
 			}
-			if (inode_make(b, ino, uid, gid, mode, &oi->ino,
+			if (inode_make(oi->itbl, ino, uid, gid, mode, &oi->ino,
 			    xerrz(e)) == -1) {
 				XERR_PREPENDFN(e);
 				goto fail_close_itbl;
@@ -666,7 +679,9 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 	oi->oflags = oflags;
 
 	if (SPLAY_INSERT(ino_tree, &open_inodes.head, oi) != NULL) {
-		XERRF(e, XLOG_APP, XLOG_IO, "inode already loaded %lu", ino);
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "inode %lu already loaded (requested=%lu)",
+		    oi->ino.v.f.inode, ino);
 		goto fail_destroy_bytes_lock;
 	}
 
@@ -721,14 +736,20 @@ inode_unload(struct oinode *oi, struct xerr *e)
 		oi->refcnt--;
 	xlog_dbg(XLOG_INODE, "%s: inode %lu refcnt %llu",
 	    __func__, oi->ino.v.f.inode, oi->refcnt);
-	MTX_UNLOCK(&open_inodes.lock);
 
 	if (oi->nlookup == 0) {
 		if (oi->ino.v.f.nlink == 0) {
-			xlog_dbg(XLOG_INODE, "%s: inode %lu: deallocating",
+			xlog_dbg(XLOG_INODE, "%s: inode %lu has nlink=0, "
+			    "nlookup=0: deallocating",
 			    __func__, oi->ino.v.f.inode);
-			if (inode_dealloc(oi->ino.v.f.inode, xerrz(e)) == -1)
-				xlog(LOG_ERR, e, __func__);
+
+			slab_lock(oi->itbl, LK_LOCK_RW);
+			slab_itbl_dealloc(oi->itbl, inode_ino(oi));
+			if (slab_write_hdr(oi->itbl, xerrz(e)) == -1)
+				xlog(LOG_ERR, e, "%s: slab_write_hdr",
+				    __func__);
+			slab_unlock(oi->itbl);
+
 			/*
 			 * Truncate all file data, and we keep the slab header
 			 * to update the slow backend in the background.
@@ -737,28 +758,33 @@ inode_unload(struct oinode *oi, struct xerr *e)
 				xlog(LOG_ERR, e, __func__);
 		}
 
-		MTX_LOCK(&open_inodes.lock);
 		if (oi->refcnt == 0) {
 			if (inode_flush(oi, INODE_FLUSH_RELEASE,
 			    xerrz(e)) == -1) {
-				MTX_UNLOCK(&open_inodes.lock);
 				XERR_PREPENDFN(e);
 				goto end;
 			}
 			LK_UNLOCK(&oi->lock);
 
-			SPLAY_REMOVE(ino_tree, &open_inodes.head, oi);
+			xlog_dbg(XLOG_INODE, "%s: inode %lu has refcnt=0, "
+			    "removing from ino_tree",
+			    __func__, oi->ino.v.f.inode);
+			if (SPLAY_REMOVE(ino_tree,
+			    &open_inodes.head, oi) == NULL) {
+				xlog(LOG_ERR, NULL, "%s: inode %lu was "
+				    "not found in ino_tree",
+				    __func__, oi->ino.v.f.inode);
+			}
 			LK_LOCK_DESTROY(&oi->lock);
 			LK_LOCK_DESTROY(&oi->bytes_lock);
 			free(oi);
-			oi = NULL;
 			counter_decr(COUNTER_N_OPEN_INODES);
 			MTX_UNLOCK(&open_inodes.lock);
 			return 0;
 		}
-		MTX_UNLOCK(&open_inodes.lock);
 	}
 end:
+	MTX_UNLOCK(&open_inodes.lock);
 	LK_UNLOCK(&oi->lock);
 	return xerr_fail(e);
 }
@@ -934,8 +960,12 @@ inode_shutdown()
 			    "deallocating now", __func__, oi->ino.v.f.inode,
 			    oi->nlookup);
 
-			if (inode_dealloc(inode_ino(oi), xerrz(&e)) == -1)
-				xlog(LOG_ERR, &e, __func__);
+			slab_lock(oi->itbl, LK_LOCK_RW);
+			slab_itbl_dealloc(oi->itbl, inode_ino(oi));
+			if (slab_write_hdr(oi->itbl, xerrz(&e)) == -1)
+				xlog(LOG_ERR, &e, "%s: slab_write_hdr",
+				    __func__);
+			slab_unlock(oi->itbl);
 			/*
 			 * Truncate all file data, and we keep the slab header
 			 * to update the slow backend in the background.

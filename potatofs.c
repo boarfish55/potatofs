@@ -61,6 +61,7 @@ fs_offline()
 		if ((mgr = mgr_connect(1, xerrz(&e))) == -1)
 			goto fail;
 
+		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_GET_OFFLINE;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			close(mgr);
@@ -541,8 +542,6 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL) {
 		if (!xerr_is(&e, XLOG_FS, ENOENT))
 			goto fail;
-
-		xerrz(&e);
 
 		if ((oi = inode_create(FS_ROOT_INODE, 0,
 		    c->uid, c->gid, S_IFDIR|0755, xerrz(&e))) == NULL)
@@ -1804,10 +1803,6 @@ fs_rename_crossdir(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			FS_ERR(&r_sent, req, &e);
 			goto end;
 		}
-		if (e.sp == XLOG_FS)
-			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
-		else
-			FS_ERR(&r_sent, req, &e);
 	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
@@ -2090,10 +2085,6 @@ fs_rename_local(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 			FS_ERR(&r_sent, req, &e);
 			goto end;
 		}
-		if (e.sp == XLOG_FS)
-			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
-		else
-			FS_ERR(&r_sent, req, &e);
 	} else if ((new_oi = inode_load(new_de.inode, 0, xerrz(&e))) == NULL) {
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));

@@ -60,7 +60,7 @@ done
 echo ""
 
 echo "*** Running tests ***"
-./potatofs_tests -c "$conf" "$mountpoint" $@
+./potatofs_tests -c "$conf" "$mountpoint" "$@"
 st=$?
 echo ""
 

@@ -106,7 +106,7 @@ struct oinode {
 
 	/*
 	 * The bytes_dirty field is set to 1 when either the size or blocks
-	 * fields, or * inline inode data is modified. It doesn't care about
+	 * fields, or inline inode data is modified. It doesn't care about
 	 * modified slabs.
 	 *
 	 * It is necessary to have different locks & dirty flags for
