@@ -145,24 +145,9 @@ TODO
   example:
   - Leaving an unreferenced directory with nlink 1.
   - nlink count on a directory based on how many child directories there are.
-* All the fuse fs_ functions will need to handle backend timeouts gracefully
-  and bubble up a nicer error to processes. They should retry the operations
-  but check for interrupt in-between with fuse_req_interrupted(req).
-  Claim errors that we could loop until interrupt:
-  - XLOG_APP, XLOG_BEERROR (Internet?)
-  - XLOG_APP, XLOG_BETIMEOUT (Internet?)
-  - XLOG_ERRNO, ENOSPC (no space on cache, copy_incoming_slab, claim, new slab)
-  - XLOG_APP, XLOG_BUSY (deadlock?; should not happen unless an external program
-    is holding a lock; retryable)
-  - XLOG_APP, XLOG_MISMATCH (eventual consistency)
-  - XLOG_APP, XLOG_NOSLAB (Eventual consistency)
 * Add a test to try out the last possible inode, 2^63
 * Investigate whether it's possible to exploit a race condition in
   unlink/truncate to read previous file data.
-* In low-space conditions, run flush/purge more often to free up space. The
-  problem is that it also clogs up the workers. Maybe we need an separate
-  control socket that's used by non-workers. Would also solve the
-  potatoctl claim vs. fs deadlock.
 * Add a "rm" handler in backend scripts, though mention this will only
   be used by fsck, therefore is optional.
 * Add a "wide" option to top

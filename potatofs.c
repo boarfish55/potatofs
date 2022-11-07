@@ -288,6 +288,8 @@ fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 static int
 fs_retry(fuse_req_t req, struct xerr *e)
 {
+	// TODO: should we also add XLOG_MISMATCH and XLOG_NOSLAB here,
+	// in case we're dealing with eventual consistency?
 	if (!xerr_is(e, XLOG_APP, XLOG_BUSY) &&
 	    !xerr_is(e, XLOG_APP, XLOG_NOSLAB) &&
 	    !xerr_is(e, XLOG_APP, XLOG_BEERROR) &&
