@@ -84,7 +84,7 @@ counter_flush(void *unused)
 			goto fail;
 		}
 fail:
-		close_x(mgr, __func__);
+		CLOSE_X(mgr);
 		for (;;) {
 			if (nanosleep(&t, NULL) == 0)
 				break;

@@ -64,16 +64,16 @@ fs_offline()
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_GET_OFFLINE;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
-			close(mgr);
+			CLOSE_X(mgr);
 			goto fail;
 		}
 
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
-			close(mgr);
+			CLOSE_X(mgr);
 			goto fail;
 		}
 
-		close(mgr);
+		CLOSE_X(mgr);
 
 		if (m.m == MGR_MSG_GET_OFFLINE_ERR) {
 			memcpy(&e, &m.v.err, sizeof(e));
@@ -288,10 +288,9 @@ fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 static int
 fs_retry(fuse_req_t req, struct xerr *e)
 {
-	// TODO: should we also add XLOG_MISMATCH and XLOG_NOSLAB here,
-	// in case we're dealing with eventual consistency?
 	if (!xerr_is(e, XLOG_APP, XLOG_BUSY) &&
 	    !xerr_is(e, XLOG_APP, XLOG_NOSLAB) &&
+	    !xerr_is(e, XLOG_APP, XLOG_MISMATCH) &&
 	    !xerr_is(e, XLOG_APP, XLOG_BEERROR) &&
 	    !xerr_is(e, XLOG_APP, XLOG_BETIMEOUT))
 		return 0;
@@ -498,7 +497,7 @@ fs_destroy(void *unused)
 	LK_UNLOCK(&fs_tree_lock);
 
 	xlog(LOG_DEBUG, NULL, "sending shutdown to potatomgr");
-	if (mgr_send_shutdown(xerrz(&e)) == -1)
+	if (mgr_send_shutdown(fs_config.shutdown_grace_period, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 
 	/*
@@ -770,8 +769,7 @@ fs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (size / slab_get_max_size() + 2)));
 	if (bv == NULL) {
-		XERRF(&e, XLOG_ERRNO, errno, "malloc");
-		FS_ERR(&r_sent, req, &e);
+		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOMEM));
 		return;
 	}
 
@@ -853,8 +851,7 @@ fs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *bufv,
 	bv = malloc(sizeof(struct fuse_bufvec) +
 	    (sizeof(struct fuse_buf) * (sz / slab_get_max_size() + 2)));
 	if (bv == NULL) {
-		XERRF(&e, XLOG_ERRNO, errno, "malloc");
-		FS_ERR(&r_sent, req, &e);
+		FUSE_REPLY(&r_sent, fuse_reply_err(req, ENOMEM));
 		return;
 	}
 
@@ -1000,7 +997,7 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	counter_incr(COUNTER_FS_LOOKUP);
 
 parent_again:
-	if ((parent_oi = inode_load(parent, 0, &e)) == NULL) {
+	if ((parent_oi = inode_load(parent, 0, xerrz(&e))) == NULL) {
 		if (fs_retry(req, &e))
 			goto parent_again;
 		if (e.sp == XLOG_FS)
@@ -1011,14 +1008,16 @@ parent_again:
 	}
 	inode_lock(parent_oi, LK_LOCK_RD);
 
-	if ((status = di_lookup(parent_oi, &de, name, &e)) == -1) {
+lookup_again:
+	if ((status = di_lookup(parent_oi, &de, name, xerrz(&e))) == -1) {
+		if (fs_retry(req, &e))
+			goto lookup_again;
 		if (e.sp == XLOG_FS)
 			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
 		else
 			FS_ERR(&r_sent, req, &e);
 	}
 
-	xerrz(&e);
 	if (r_sent)
 		goto end;
 again:
@@ -1043,7 +1042,7 @@ again:
 end:
 	if (oi) {
 		inode_unlock(oi);
-		if (inode_unload(oi, &e) == -1)
+		if (inode_unload(oi, xerrz(&e)) == -1)
 			FS_ERR(&r_sent, req, &e);
 		else
 			FUSE_REPLY(&r_sent, fuse_reply_entry(req, &entry));
@@ -1299,7 +1298,6 @@ make_inode(ino_t parent, const char *name, uid_t uid, gid_t gid,
 	if (di_mkdirent(parent_oi, &de, 0, xerrz(e)) == -1) {
 		if (is_dir)
 			inode_nlink(parent_oi, -1);
-		fs_error_set();
 		status = -1;
 	}
 
@@ -1359,9 +1357,6 @@ fs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
 again:
-	// TODO: there are multiple ways make_inode can fail with
-	// different cleanup that needs to happen. This may work in some
-	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    rdev, &inode, NULL, 0, &e);
@@ -1402,9 +1397,6 @@ fs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);
 make_again:
-	// TODO: there are multiple ways make_inode can fail with
-	// different cleanup that needs to happen. This may work in some
-	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, mode, fuse_req_ctx(req)->umask,
 	    0, &inode, NULL, 0, &e);
@@ -1640,9 +1632,6 @@ fs_symlink(fuse_req_t req, const char *link, fuse_ino_t parent,
 
 	LK_RDLOCK(&fs_tree_lock);
 again:
-	// TODO: there are multiple ways make_inode can fail with
-	// different cleanup that needs to happen. This may work in some
-	// cases but there are race conditions.
 	status = make_inode(parent, name, fuse_req_ctx(req)->uid,
 	    fuse_req_ctx(req)->gid, 0777 | S_IFLNK, fuse_req_ctx(req)->umask,
 	    0, &inode, link, strlen(link), &e);
@@ -2342,7 +2331,7 @@ main(int argc, char **argv)
 
 	return status ? 1 : 0;
 kill_mgr:
-	if (mgr_send_shutdown(xerrz(&e)) == -1)
+	if (mgr_send_shutdown(0, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 	return 1;
 }

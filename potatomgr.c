@@ -93,15 +93,31 @@ mgr_shared_unlock()
 		xlog_strerror(LOG_CRIT, errno, "sem_post");
 }
 
-static int
+static time_t
 shutdown_requested()
 {
-	int sr;
+	time_t sr;
+
 	if (mgr_shared_lock() == -1)
 		return 0;
 	sr = mgr_shared->shutdown_requested;
 	mgr_shared_unlock();
 	return sr;
+}
+
+static int
+shutdown_now()
+{
+	time_t          sr;
+	struct timespec now;
+
+	if (mgr_shared_lock() == -1)
+		return 0;
+	sr = mgr_shared->shutdown_requested;
+	mgr_shared_unlock();
+
+	clock_gettime_x(CLOCK_REALTIME, &now);
+	return (sr > 0 && now.tv_sec > sr) ? 1 : 0;
 }
 
 static int
@@ -205,52 +221,52 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 		return XERRF(e, XLOG_ERRNO, errno, "pipe");
 
 	if (pipe(p_out) == -1) {
-		close(p_in[0]);
-		close(p_in[1]);
+		CLOSE_X(p_in[0]);
+		CLOSE_X(p_in[1]);
 		return XERRF(e, XLOG_ERRNO, errno, "pipe");
 	}
 
 	if (pipe(p_err) == -1) {
-		close(p_in[0]);
-		close(p_in[1]);
-		close(p_out[0]);
-		close(p_out[1]);
+		CLOSE_X(p_in[0]);
+		CLOSE_X(p_in[1]);
+		CLOSE_X(p_out[0]);
+		CLOSE_X(p_out[1]);
 		return XERRF(e, XLOG_ERRNO, errno, "pipe");
 	}
 
 	if ((pid = fork()) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "fork");
-		close(p_in[0]);
-		close(p_in[1]);
-		close(p_out[0]);
-		close(p_out[1]);
-		close(p_err[0]);
-		close(p_err[1]);
+		CLOSE_X(p_in[0]);
+		CLOSE_X(p_in[1]);
+		CLOSE_X(p_out[0]);
+		CLOSE_X(p_out[1]);
+		CLOSE_X(p_err[0]);
+		CLOSE_X(p_err[1]);
 		return -1;
 	} else if (pid == 0) {
-		close(p_in[1]);
-		close(p_out[0]);
-		close(p_err[0]);
+		CLOSE_X(p_in[1]);
+		CLOSE_X(p_out[0]);
+		CLOSE_X(p_err[0]);
 		if (p_in[0] != STDIN_FILENO) {
 			if (dup2(p_in[0], STDIN_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
 				exit(1);
 			}
-			close(p_in[0]);
+			CLOSE_X(p_in[0]);
 		}
 		if (p_out[1] != STDOUT_FILENO) {
 			if (dup2(p_out[1], STDOUT_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
 				exit(1);
 			}
-			close(p_out[1]);
+			CLOSE_X(p_out[1]);
 		}
 		if (p_err[1] != STDERR_FILENO) {
 			if (dup2(p_err[1], STDERR_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
 				exit(1);
 			}
-			close(p_err[1]);
+			CLOSE_X(p_err[1]);
 		}
 
 		if (chdir("/") == -1) {
@@ -264,9 +280,9 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 		}
 	}
 
-	close(p_in[0]);
-	close(p_out[1]);
-	close(p_err[1]);
+	CLOSE_X(p_in[0]);
+	CLOSE_X(p_out[1]);
+	CLOSE_X(p_err[1]);
 
 	/*
 	 * Make room for \n.
@@ -295,9 +311,9 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 		if ((poll_r = poll(fds, nfds,
 		    timeout_seconds * 1000)) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "poll");
-			close(p_in[1]);
-			close(p_out[0]);
-			close(p_err[0]);
+			CLOSE_X(p_in[1]);
+			CLOSE_X(p_out[0]);
+			CLOSE_X(p_err[0]);
 			return -1;
 		}
 
@@ -306,9 +322,12 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 			    "%s: child %d stalled; killing it now",
 			    __func__, pid);
 			kill(pid, 9);
-			close(p_in[1]);
-			close(p_out[0]);
-			close(p_err[0]);
+			if (p_in[1] != -1)
+				CLOSE_X(p_in[1]);
+			if (p_out[0] != -1)
+				CLOSE_X(p_out[0]);
+			if (p_err[0] != -1)
+				CLOSE_X(p_err[0]);
 			stdout[stdout_r] = '\0';
 			stderr[stderr_r] = '\0';
 			for (i = 1, wpid = 0; i < 4 && wpid == 0; i++) {
@@ -358,12 +377,14 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 					xlog_strerror(LOG_ERR, errno,
 					    "%s: write", __func__);
 					stdin_closed = 1;
-					close(p_in[1]);
+					CLOSE_X(p_in[1]);
+					p_in[1] = -1;
 				} else {
 					stdin_w += r;
 					if (stdin_w == stdin_len) {
 						stdin_closed = 1;
-						close(p_in[1]);
+						CLOSE_X(p_in[1]);
+						p_in[1] = -1;
 					}
 				}
 			} else if (fds[nfds].fd == p_out[0]) {
@@ -373,7 +394,8 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 					stdout_r += r;
 				} else {
 					stdout_closed = 1;
-					close(p_out[0]);
+					CLOSE_X(p_out[0]);
+					p_out[0] = -1;
 				}
 			} else if (fds[nfds].fd == p_err[0]) {
 				r = read(p_err[0], stderr + stderr_r,
@@ -382,7 +404,8 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 					stderr_r += r;
 				} else {
 					stderr_closed = 1;
-					close(p_err[0]);
+					CLOSE_X(p_err[0]);
+					p_err[0] = -1;
 				}
 			}
 			if (r == -1)
@@ -479,12 +502,12 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		goto fail;
 	}
 	memcpy(hdr, &dst_hdr, sizeof(dst_hdr));
-	close(dst_fd);
+	CLOSE_X(dst_fd);
 	return 0;
 fail:
 	if (unlink(dst) == -1)
 		xlog_strerror(LOG_ERR, errno, "%s: unlink dst", __func__);
-	close(dst_fd);
+	CLOSE_X(dst_fd);
 	return -1;
 }
 
@@ -584,7 +607,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	}
 
 end:
-	close(fd);
+	CLOSE_X(fd);
 
 	m->m = MGR_MSG_UNCLAIM_OK;
 	return mgr_send(c, -1, m, e);
@@ -592,7 +615,7 @@ fail:
 	xlog(LOG_ERR, e, NULL);
 	memcpy(&m->v.err, e, sizeof(struct xerr));
 	m->m = MGR_MSG_UNCLAIM_ERR;
-	close(fd);
+	CLOSE_X(fd);
 	return mgr_send(c, -1, m, xerrz(e));
 }
 
@@ -656,8 +679,14 @@ backend_get(const char *local_path, const char *backend_name,
 
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
 	    sizeof(stdout), stderr, sizeof(stderr),
-	    BACKEND_GET_TIMEOUT_SECONDS, e) == -1)
+	    fs_config.backend_get_timeout, e) == -1)
 		return -1;
+
+	if (WIFSIGNALED(wstatus)) {
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
+		    "\"get\" killed by signal %d", WTERMSIG(wstatus));
+		goto fail;
+	}
 
 	if (WEXITSTATUS(wstatus) > 2) {
 		XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -713,13 +742,12 @@ backend_get(const char *local_path, const char *backend_name,
 
 	*in_bytes = json_integer_value(o);
 
-	if (json_object_clear(j) == -1)
-		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
+	json_decref(j);
 
 	return 0;
 fail:
-	if (j != NULL && json_object_clear(j) == -1)
-		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
+	if (j != NULL)
+		json_decref(j);
 	unlink(local_path);
 	return -1;
 }
@@ -749,8 +777,12 @@ backend_put(const char *local_path, const char *backend_name,
 
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
 	    sizeof(stdout), stderr, sizeof(stderr),
-	    BACKEND_PUT_TIMEOUT_SECONDS, e) == -1)
+	    fs_config.backend_put_timeout, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
+
+	if (WIFSIGNALED(wstatus))
+		return XERRF(e, XLOG_APP, XLOG_BEERROR,
+		    "\"put\" killed by signal %d", WTERMSIG(wstatus));
 
 	if (WEXITSTATUS(wstatus) > 2)
 		return XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -762,9 +794,8 @@ backend_put(const char *local_path, const char *backend_name,
 		return XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" reported bad invocation (exit 2)");
 
-	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
+	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL)
 		return XERRF(e, XLOG_APP, XLOG_BEERROR, "%s", jerr.text);
-	}
 
 	if ((o = json_object_get(j, "status")) == NULL) {
 		XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -774,32 +805,33 @@ backend_put(const char *local_path, const char *backend_name,
 
 	if (strcmp(json_string_value(o), "OK") != 0) {
 		if ((o = json_object_get(j, "msg")) == NULL) {
-			return XERRF(e, XLOG_APP, XLOG_BEERROR,
+			XERRF(e, XLOG_APP, XLOG_BEERROR,
 			    "\"msg\" missing from JSON");
+			goto fail;
 		}
 		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" failed: %s", json_string_value(o));
 		goto fail;
 	}
 
-	if (WEXITSTATUS(wstatus) == 1)
-		return XERRF(e, XLOG_APP, XLOG_BEERROR,
+	if (WEXITSTATUS(wstatus) == 1) {
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
 		    "\"put\" exit 1; no message available");
+		goto fail;
+	}
 
 	if ((o = json_object_get(j, "out_bytes")) == NULL) {
-		XERRF(e, XLOG_APP, XLOG_BEERROR, "\"in_bytes\" missing from JSON");
+		XERRF(e, XLOG_APP, XLOG_BEERROR,
+		    "\"in_bytes\" missing from JSON");
 		goto fail;
 	}
 
 	*out_bytes = json_integer_value(o);
 
-	if (json_object_clear(j) == -1)
-		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
-
+	json_decref(j);
 	return 0;
 fail:
-	if (json_object_clear(j) == -1)
-		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
+	json_decref(j);
 	return -1;
 }
 
@@ -888,9 +920,8 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 write_hdr_again:
 	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 		if (errno == ENOSPC) {
-			// TODO: don't try this indefinitely
-			xlog(LOG_ERR, NULL, "%s: ran out of space during; "
-			    "retrying", __func__);
+			xlog(LOG_ERR, NULL, "%s: ran out of space; retrying",
+			    __func__);
 			sleep(1);
 			goto write_hdr_again;
 		}
@@ -937,40 +968,32 @@ copy_again:
 }
 
 /*
- * TODO: clearly define errors
- *
  * Errors:
- *   XLOG_APP   / XLOG_IO: statvfs() failed, I/O error, consensus issue
- *   XLOG_APP   / XLOG_INVAL: from slab_key_valid()
- *   XLOG_APP   / XLOG_MISMATCH: unexpected revision/CRC/version on slabs
- *                  or fs_info structure
- *   XLOG_APP   / XLOG_BUSY: Those should be sent back to the user and
- *                  converted to EAGAIN?
- *                  - DB lock could not be acquired
- *                  - Contention / deadlock avoided for a slab
- *                  - Backend keeps reporting the slab does not exist
- *                    (but the DB does, meaning we're dealing with possible
- *                    eventual consistency); this is converted to XLOG_BUSY
- *                    from XLOG_NOSLAB at backend_get()
- *   XLOG_APP   / XLOG_BEERROR: Backend script fails, possibly due to timeout.
- *   XLOG_APP   / XLOG_BETIMEOUT: Backend script failed to return within
- *                    set timeout.
- *   XLOG_FS&APP/ XLOG_NOSPC: Those should be exposed as ENOSPC to the user.
- *                  - Out of space on the backend; this should be reported
- *                    back to the user.
- *                  - Out of space on the cache partition even after waiting
- *                    a bit.
- *   XLOG_APP   / XLOG_NAMETOOLONG: a slab's name expanded to a value that is
- *                too long.
- *   XLOG_ERRNO / multiple:
- *                  - from clock_gettime()
- *                  - from open_wflock()
- *                  - from read_x() on fs_info structure
- *                  - from write_x() on slab header writes
- *                  - from fsync() after new slab creation
- *                  - from fstat() on new slab creation
- *                  - from sendmsg() on mgr reply
- *   XLOG_DB    / multiple: from slabdb_*()
+ *   XLOG_APP / XLOG_IO:
+ *       statvfs() failed, I/O error, consensus issue
+ *   XLOG_APP / XLOG_INVAL:
+ *       from slab_key_valid()
+ *   XLOG_APP / XLOG_MISMATCH:
+ *       unexpected revision/CRC/version on a slab or on the fs_info structure
+ *   XLOG_APP / XLOG_BUSY:
+ *       DB lock could not be acquired or contention for a slab, and
+ *       possibly an flock() deadlock.
+ *   XLOG_APP / XLOG_BEERROR:
+ *       Backend script encountered an error.
+ *   XLOG_APP / XLOG_BETIMEOUT:
+ *       Backend script failed to return within set timeout.
+ *   XLOG_APP / XLOG_NAMETOOLONG:
+ *       a slab's name expanded to a value that is too long.
+ *   XLOG_DB:
+ *       from slabdb_*()
+ *   XLOG_ERRNO:
+ *       - from clock_gettime()
+ *       - from open_wflock()
+ *       - from read_x() on fs_info structure
+ *       - from write_x() on slab header writes
+ *       - from fsync() after new slab creation
+ *       - from fstat() on new slab creation
+ *       - from sendmsg() on mgr reply
  */
 static int
 claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
@@ -1000,7 +1023,6 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 			xlog(LOG_WARNING, NULL, "%s: free space is below "
 			    "%lu%%, blocking on claim()",
 			    __func__, fs_config.unclaim_purge_threshold_pct);
-			// TODO: return XLOG_ERRNO / ENOSPC
 			sleep(1);
 			continue;
 		}
@@ -1106,7 +1128,6 @@ new_slab_again:
 				    "slab sk=%lu/%ld; retrying",
 				    hdr.v.f.key.ino, hdr.v.f.key.base);
 				sleep(1);
-				// TODO: return XLOG_ERRNO / ENOSPC
 				goto new_slab_again;
 			}
 			XERRF(e, XLOG_ERRNO, errno,
@@ -1140,18 +1161,12 @@ new_slab_again:
 		 */
 		if (check_slab_header(&hdr, v.header_crc, v.revision, e) == 0) {
 			goto end;
-
-		/*
-		 * Wrong rev/header_crc is fine, just proceed
-		 * with retrieving.
-		 * TODO: that's the only possible error.
-		 */
 		} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
 			goto fail_close_dst;
 
 		/*
-		 * Still log it though, since this means we're dealing with a
-		 * previous fs crash.
+		 * Wrong rev/header_crc is fine, just proceed with retrieving.
+		 * This could mean we're dealing with a previous fs crash.
 		 */
 		xlog(LOG_CRIT, e,
 		    "%s: possibly dealing with a past fs crash", __func__);
@@ -1173,15 +1188,14 @@ new_slab_again:
 	    LOCK_SH, flock_timeout)) != -1) {
 		xlog_dbg(XLOG_MGR, "found slab in outgoing at %s", out_path);
 		if (copy_incoming_slab(*dst_fd, outgoing_fd, v.header_crc,
-		    v.revision, e) == 0) {
-			close(outgoing_fd);
+		    v.revision, xerrz(e)) == 0) {
+			CLOSE_X(outgoing_fd);
 			goto end;
 		}
 		xlog(LOG_WARNING, e, "%s: fetching slab %s from backend even "
 		    "though it was found in outgoing", __func__, name);
-		xerrz(e);
+		CLOSE_X(outgoing_fd);
 	}
-	close(outgoing_fd);
 
 	/*
 	 * At this point we need to pull it from the backend.
@@ -1199,13 +1213,12 @@ get_again:
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual
-			 * consistentcy? Or the backend actually lost data.
+			 * consistentcy issues or the backend actually
+			 * lost data.
 			 */
 			xlog(LOG_ERR, NULL, "%s: slab %s expected on backend, "
-			    "but backend_get() claims it doesn't exist; "
-			    "retrying", __func__, name);
-		} else if (xerr_is(e, XLOG_APP, XLOG_BUSY)) {
-			xlog(LOG_ERR, e, __func__);
+			    "but backend_get() claims it doesn't exist",
+			    __func__, name);
 		} else if (xerr_is(e, XLOG_APP, XLOG_BETIMEOUT)) {
 			xlog(LOG_ERR, e,
 			    "%s: backend script timed out", __func__);
@@ -1214,6 +1227,7 @@ get_again:
 		} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
 			xlog(LOG_ERR, NULL, "%s: ran out of space during "
 			    "backend_get()", __func__);
+			goto get_again;
 		}
 		goto fail_close_dst;
 	}
@@ -1231,20 +1245,12 @@ get_again:
 	}
 	if (copy_incoming_slab(*dst_fd, incoming_fd, v.header_crc,
 	    v.revision, e) == -1) {
-		close(incoming_fd);
-		// TODO: Eventually bubble up this error all the way to the fs
-		// Eventual consistency?
-		if (xerr_is(e, XLOG_APP, XLOG_MISMATCH)) {
-			xlog(LOG_ERR, e, "%s: retrying", __func__);
-			sleep(5);
-			goto get_again;
-		}
+		CLOSE_X(incoming_fd);
 		goto fail_close_dst;
 	}
 
 	unlink(in_path);
-	close(incoming_fd);
-
+	CLOSE_X(incoming_fd);
 end:
 	if (!(oflags & OSLAB_EPHEMERAL)) {
 		/*
@@ -1313,7 +1319,7 @@ end:
 	return 0;
 fail_close_dst:
 	unlink(dst);
-	close(*dst_fd);
+	CLOSE_X(*dst_fd);
 	return -1;
 }
 
@@ -1339,12 +1345,12 @@ client_claim(int c, struct mgr_msg *m, struct xerr *e)
 
 	if (mgr_send(c, dst_fd, m, xerrz(e)) == -1) {
 		if (dst_fd != -1)
-			close(dst_fd);
+			CLOSE_X(dst_fd);
 		xlog(LOG_ERR, e, __func__);
 		return -1;
 	}
 	if (dst_fd != -1)
-		close(dst_fd);
+		CLOSE_X(dst_fd);
 	return 0;
 }
 
@@ -1384,12 +1390,15 @@ fail:
 }
 
 static int
-set_shutdown_requested()
+set_shutdown_requested(time_t grace_period)
 {
+	struct timespec now;
+
 	if (mgr_shared_lock() == -1) {
 		return -1;
 	} else {
-		mgr_shared->shutdown_requested = 1;
+		clock_gettime_x(CLOCK_REALTIME, &now);
+		mgr_shared->shutdown_requested = now.tv_sec + grace_period;
 		mgr_shared_unlock();
 	}
 	return 0;
@@ -1398,12 +1407,15 @@ set_shutdown_requested()
 static int
 do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 {
-	if (set_shutdown_requested() == -1) {
+	if (set_shutdown_requested(m->v.shutdown.grace_period) == -1) {
 		XERRF(&m->v.err, XLOG_ERRNO, errno, "set_shutdown_requested");
 		m->m = MGR_MSG_SHUTDOWN_ERR;
 	} else {
 		m->m = MGR_MSG_SHUTDOWN_OK;
 	}
+
+	xlog(LOG_NOTICE, NULL, "shutdown requested; grace period %u",
+	    m->v.shutdown.grace_period);
 
 	if (mgr_send(c, -1, m, xerrz(e)) == -1)
 		return -1;
@@ -1453,7 +1465,7 @@ bg_df()
 	}
 
 	if (mgr_spawn(args, &wstatus, NULL, 0, stdout, sizeof(stdout),
-	    stderr, sizeof(stderr), BACKEND_DF_TIMEOUT_SECONDS, &e) == -1) {
+	    stderr, sizeof(stderr), fs_config.backend_df_timeout, &e) == -1) {
 		xlog(LOG_ERR, &e, __func__);
 		return;
 	}
@@ -1493,16 +1505,12 @@ bg_df()
 	    (count * slab_inode_max());
 	fs_info.stats.f_favail = fs_info.stats.f_ffree;
 
-	if (clock_gettime(CLOCK_REALTIME, &fs_info.stats_last_update) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		goto clear;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &fs_info.stats_last_update);
 
 	if (fs_info_write(&fs_info, &e) == -1)
 		xlog(LOG_ERR, &e, __func__);
 clear:
-	if (json_object_clear(j) == -1)
-		xlog(LOG_ERR, NULL, "%s: failed to clear JSON", __func__);
+	json_decref(j);
 }
 
 static int
@@ -1517,12 +1525,12 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	if ((pid = fork()) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
-		set_shutdown_requested();
+		set_shutdown_requested(0);
 		return -1;
 	} else if (pid > 0)
 		return 0;
 
-	close(pid_fd);
+	CLOSE_X(pid_fd);
 
 	bzero(title, sizeof(title));
 	snprintf(title, sizeof(title), "%s-%s", MGR_PROGNAME, name);
@@ -1540,9 +1548,9 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		exit(1);
 	}
 
-	while (!shutdown_requested()) {
+	while (!shutdown_now()) {
 		fn();
-		for (i = 0; i < interval_secs && !shutdown_requested(); i++) {
+		for (i = 0; i < interval_secs && !shutdown_now(); i++) {
 			do {
 				if ((r = nanosleep(&tp, &rem)) == -1) {
 					tp.tv_sec = rem.tv_sec;
@@ -1550,7 +1558,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 					xlog_strerror(LOG_NOTICE, errno,
 					    "%s: nanosleep", __func__);
 				}
-			} while(r != 0 && !shutdown_requested());
+			} while(r != 0 && !shutdown_now());
 		}
 	}
 	slabdb_shutdown();
@@ -1565,7 +1573,7 @@ bg_flush()
 	struct dirent   *de;
 	size_t           out_bytes;
 	int              fd;
-	struct xerr      e = XLOG_ERR_INITIALIZER;
+	struct xerr      e;
 	struct slab_key  sk;
 
 	if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
@@ -1604,17 +1612,17 @@ bg_flush()
 			continue;
 		}
 
-		if (slab_parse_path(path, &sk, &e) == -1) {
+		if (slab_parse_path(path, &sk, xerrz(&e)) == -1) {
 			xlog(LOG_ERR, &e, "%s", __func__);
 			continue;
 		}
 
 		out_bytes = 0;
 		if (backend_put(path, basename(path), &out_bytes,
-		    &sk, &e) == -1) {
+		    &sk, xerrz(&e)) == -1) {
 			xlog(LOG_ERR, &e, "%s: failed but will retry",
 			    __func__);
-			close(fd);
+			CLOSE_X(fd);
 			continue;
 		}
 		mgr_counter_add(MGR_COUNTER_BACKEND_OUT_BYTES, out_bytes);
@@ -1626,16 +1634,9 @@ bg_flush()
 			xlog_strerror(LOG_ERR, errno, "%s: unlink %s",
 			    __func__, path);
 
-		if (close(fd) == -1)
-			xlog_strerror(LOG_ERR, errno, "%s: close %s",
-			    __func__, path);
+		CLOSE_X(fd);
 
-		// TODO: Maybe don't try to sync every single slab
-		// if we have shutdown_requested. We don't want to hold
-		// the user hostage forever. Though this should be
-		// configurable. We should use the grace_period sent by
-		// potatoctl.
-		if (shutdown_requested())
+		if (shutdown_now())
 			break;
 	}
 fail:
@@ -1745,7 +1746,7 @@ scrub_local_slab(const char *path)
 		}
 	}
 end:
-	close(fd);
+	CLOSE_X(fd);
 }
 
 static int
@@ -1820,7 +1821,7 @@ scrub()
 				set_fs_error();
 				continue;
 			}
-			close(fd);
+			CLOSE_X(fd);
 		}
 	}
 
@@ -1932,7 +1933,7 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 	}
 
 	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
-		close(fd);
+		CLOSE_X(fd);
 		xlog_strerror(LOG_ERR, errno,
 		    "%s: short read on slab header", __func__);
 		set_fs_error();
@@ -1940,12 +1941,12 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 	}
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
-		close(fd);
+		CLOSE_X(fd);
 		return 0;
 	}
 
 	if (fstat(fd, &st) == -1) {
-		close(fd);
+		CLOSE_X(fd);
 		xlog_strerror(LOG_ERR, errno, "%s: fstat", __func__);
 		set_fs_error();
 		return 0;
@@ -1958,13 +1959,13 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 
 	if (slabdb_put_nolock(sk, &pv, &e) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
-		close(fd);
+		CLOSE_X(fd);
 		return 0;
 	}
 
 	if (unlink(path) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s", __func__);
-		close(fd);
+		CLOSE_X(fd);
 		return 0;
 	} else {
 		xlog(LOG_INFO, NULL, "%s: purged slab %s "
@@ -1974,7 +1975,7 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 		fs_usage->used_blocks -= st.st_blocks;
 	}
 
-	close(fd);
+	CLOSE_X(fd);
 
 	if (fs_usage->used_blocks <
 	    fs_usage->stv.f_blocks * fs_config.purge_threshold_pct / 100) {
@@ -2046,12 +2047,12 @@ worker(int lsock)
 
 	if ((pid = fork()) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
-		set_shutdown_requested();
+		set_shutdown_requested(0);
 		return -1;
 	} else if (pid > 0)
 		return 0;
 
-	close(pid_fd);
+	CLOSE_X(pid_fd);
 
 	if (xlog_init(MGR_PROGNAME "-worker", fs_config.dbg, 0) == -1) {
 		xlog(LOG_ERR, NULL, "failed to initialize logging in worker");
@@ -2094,7 +2095,7 @@ worker(int lsock)
 
 		if (fcntl(c, F_SETFD, FD_CLOEXEC) == -1) {
 			xlog_strerror(LOG_ERR, errno, "fcntl");
-			close(c);
+			CLOSE_X(c);
 			continue;
 		}
 
@@ -2102,7 +2103,7 @@ worker(int lsock)
 		    sizeof(socket_timeout)) == -1) {
 			xlog(LOG_ERR, &e, "%s", __func__);
 			xerrz(&e);
-			close(c);
+			CLOSE_X(c);
 			continue;
 		}
 
@@ -2114,7 +2115,7 @@ worker(int lsock)
 				else if (!xerr_is(&e, XLOG_APP, XLOG_EOF))
 					xlog(LOG_ERR, &e, __func__);
 				xerrz(&e);
-				close(c);
+				CLOSE_X(c);
 				break;
 			}
 
@@ -2169,19 +2170,19 @@ worker(int lsock)
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
 				    __func__, m.m);
-				close(c);
+				CLOSE_X(c);
 				break;
 			}
 			if (xerr_fail(&e)) {
 				xlog(LOG_ERR, &e, __func__);
 				if (e.sp == XLOG_ERRNO) {
-					close(c);
+					CLOSE_X(c);
 					break;
 				}
 			}
 		}
 	}
-	close(lsock);
+	CLOSE_X(lsock);
 	slabdb_shutdown();
 	exit(0);
 }
@@ -2221,10 +2222,10 @@ mgr_start(int workers, int bgworkers)
 	}
 
 	if ((pid = fork()) == -1) {
-		close(pid_fd);
+		CLOSE_X(pid_fd);
 		return -1;
 	} else if (pid != 0) {
-		close(pid_fd);
+		CLOSE_X(pid_fd);
 		return 0;
 	}
 
@@ -2237,7 +2238,7 @@ mgr_start(int workers, int bgworkers)
 	dup2(null_fd, STDOUT_FILENO);
 	dup2(null_fd, STDERR_FILENO);
 	if (null_fd > 2)
-		close(null_fd);
+		CLOSE_X(null_fd);
 
 	if (xlog_init(MGR_PROGNAME, fs_config.dbg, 0) == -1)
 		err(1, "xlog_init");
@@ -2430,7 +2431,7 @@ mgr_start(int workers, int bgworkers)
 			exit(1);
 		}
 	}
-	close(pid_fd);
+	CLOSE_X(pid_fd);
 
 	xlog(LOG_INFO, NULL, "exiting");
 	exit(0);

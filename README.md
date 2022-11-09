@@ -102,6 +102,28 @@ Then mount it:
 $ mount /mnt/potatofs
 ```
 
+Client applications may receive some unexpected errno codes in case of error,
+specific to how potatofs operates:
+
+* EIO for any unrecoverable error dealing with data corruption
+* ENOMEDIUM for all retryable errors, such as if the backend script times out,
+  fails or if some flock() contention on local slabs. Note that ENOMEDIUM
+  is only ever returned if the user requested that the FS be put in "offline"
+  mode. By default we try to ensure data integrity by retrying those operations
+  forever. But if a user expects things to be stalled for a long time
+  (e.g. no network), setting offline mode can let potatofs return this error
+  while trying to preserve data integrity. Note that this failure mode is
+  not well tested.
+* EINTR, similar to ENOMEDIUM, is returned when SIGINT is sent to a process
+  that is stuck retrying "retryable" operations. This relies on FUSE
+  properly sending an INTERRUPT for all blocked file operations from the
+  signaled process.
+* ENOMEM for some operations that need heap memory to perform their task.
+  While this is to be normally expected from open() for example, some other
+  calls such as write() would normally never return ENOMEM. But here it can.
+  This is however unlikely to happen unless we were dealing with a very, very
+  large amount of inodes open in memory.
+
 
 DESIGN NOTES
 ============
@@ -133,14 +155,20 @@ KNOWN ISSUES
 
 TODO
 ====
+* Retryable failures are not well tested or even supported is many
+  dirinode operations. Need to review the failure path in each of the
+  fs_* functions. What may be best is to wrap each such function
+  into another one that handles retries and cancelations. This may need
+  to be done alongside the ops queue refactor described below. At the moment,
+  most read-only operations should be safe, though this is not thoroughly
+  verified.
+* Refactor fuse ops handling as a queue so we can implement nice things
+  like interrupting in flight operations, or journaling/soft updates.
 * Add a potatoctl backup command, which does an online backup of the
   slab db, uploads it to the backend, as well as the stats fs_info file.
   See: https://www.sqlite.org/backup.html
 * On install, we should have mount.potatofs and fsck.potatofs binaries,
   even if only symlinked.
-* Memory-bound our stuff. open() is allowed to return ENOMEM, so we can
-  actually cap how many open inodes we have at once. We should return
-  ENOMEM as XLOG_FS.
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
   - Leaving an unreferenced directory with nlink 1.
@@ -159,5 +187,3 @@ TODO
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
 * Some format strings have the wrong conversion for tv_nsec, should be "l".
-* Refactor de fuse ops handling as a queue so we can implement nice things
-  like interrupting in flight operations, or journaling/soft updates.

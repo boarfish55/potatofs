@@ -611,7 +611,7 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 
 	if ((oi = malloc(sizeof(struct oinode))) == NULL) {
 		MTX_UNLOCK(&open_inodes.lock);
-		XERRF(e, XLOG_ERRNO, errno, "malloc");
+		XERRF(e, XLOG_FS, errno, "malloc");
 		return NULL;
 	}
 	bzero(oi, sizeof(struct oinode));
@@ -1172,7 +1172,7 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 	si->v = calloc(count / slab_get_max_size() + 2,
 	    sizeof(struct inode_splice_buf));
 	if (si->v == NULL)
-		return XERRF(e, XLOG_ERRNO, errno, "calloc");
+		return XERRF(e, XLOG_FS, errno, "calloc");
 
 	if (offset < INODE_INLINE_BYTES) {
 		if (count > INODE_INLINE_BYTES - offset)
@@ -1261,7 +1261,7 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 	si->v = calloc(count / slab_get_max_size() + 2,
 	    sizeof(struct inode_splice_buf));
 	if (si->v == NULL)
-		return XERRF(e, XLOG_ERRNO, errno, "calloc");
+		return XERRF(e, XLOG_FS, errno, "calloc");
 
 	if (offset < INODE_INLINE_BYTES) {
 		if (count > INODE_INLINE_BYTES - offset)

@@ -146,7 +146,7 @@ int  mgr_recv(int, int *, struct mgr_msg *, struct xerr *);
 int  mgr_send(int, int, struct mgr_msg *, struct xerr *);
 
 /* Helpers */
-int  mgr_send_shutdown(struct xerr *);
+int  mgr_send_shutdown(time_t, struct xerr *);
 int  mgr_fs_info(struct fs_info *, struct xerr *);
 
 #endif

@@ -30,19 +30,19 @@ again:
 	m.m = MGR_MSG_SET_FS_ERROR;
 	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, __func__);
-		close(mgr);
+		CLOSE_X(mgr);
 		nanosleep(&tp, NULL);
 		goto again;
 	}
 
 	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, __func__);
-		close(mgr);
+		CLOSE_X(mgr);
 		nanosleep(&tp, NULL);
 		goto again;
 	}
 
-	close(mgr);
+	CLOSE_X(mgr);
 
 	if (m.m == MGR_MSG_SET_FS_ERROR_ERR) {
 		xlog(LOG_ERR, &m.v.err, "%s: mgr_recv", __func__);

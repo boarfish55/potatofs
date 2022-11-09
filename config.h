@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.0.1-alpha"
+#define VERSION      "2.2.0"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -61,11 +61,10 @@
  * If we receive an INTERRUPT from FUSE, we could be blocked for as long
  * as the duration of the GET timeout before sending back EINTR. With no
  * interrupt from FUSE, the GET operation will be retried indefinitely.
- * TODO: make those configurable
  */
-#define BACKEND_GET_TIMEOUT_SECONDS 15
-#define BACKEND_PUT_TIMEOUT_SECONDS 60
-#define BACKEND_DF_TIMEOUT_SECONDS  30
+#define DEFAULT_BACKEND_GET_TIMEOUT 15
+#define DEFAULT_BACKEND_PUT_TIMEOUT 60
+#define DEFAULT_BACKEND_DF_TIMEOUT  30
 
 /*
  * When unclaiming a slab, if the local cache utilization is over this
@@ -88,18 +87,12 @@
 #define FS_BLOCK_SIZE 4096
 
 /*
- * Upper/lower bounds on the configured slab size. Must a power of two and
- * no larger than 64 megabytes. Other values might work but require
- * reviewing some of the math in the other structures. Among things to
- * consider:
- *   - The inode table header, which contains a bitmap of all blocks
- *     in a slab, has to fit in the 'data' space left in the slab header,
- *     which is sizeof(struct slab_hdr), minus header field sizes.
- *   - ...
+ * Must be a power of two between SLAB_SIZE_FLOOR and SLAB_SIZE_CEIL
+ * inclusively. We assume 8MB to be reasonble size when uploading and
+ * downloading from the backend, resulting in a wait of a few seconds at
+ * most.
  */
-#define SLAB_SIZE_FLOOR         1048576
-#define SLAB_SIZE_CEIL          (1048576 * 64)
-#define SLAB_SIZE_DEFAULT       (1048576 * 8)
+#define SLAB_SIZE_DEFAULT (1024 * 1024 * 8)
 
 /*
  * After the max age is reached, slabs are closed to give a chance
@@ -136,6 +129,10 @@ struct fs_config {
 	int       scrubber_interval;
 	uint32_t  unclaim_purge_threshold_pct;
 	uint32_t  purge_threshold_pct;
+	uint32_t  backend_get_timeout;
+	uint32_t  backend_put_timeout;
+	uint32_t  backend_df_timeout;
+	time_t    shutdown_grace_period;
 };
 
 extern struct fs_config fs_config;

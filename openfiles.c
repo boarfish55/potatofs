@@ -38,11 +38,14 @@ openfile_alloc(ino_t ino, int flags, struct xerr *e)
 	uint32_t          oflags = 0;
 
 	if ((of = malloc(sizeof(struct open_file))) == NULL) {
-		XERRF(e, XLOG_ERRNO, errno, "malloc");
+		XERRF(e, XLOG_FS, errno, "malloc");
 		return NULL;
 	}
 	if (LK_LOCK_INIT(&of->lock, xerrz(e)) == -1) {
-		XERR_PREPENDFN(e);
+		if (xerr_is(e, XLOG_ERRNO, ENOMEM))
+			XERRF(e, XLOG_FS, ENOMEM, "LK_LOCK_INIT");
+		else
+			XERR_PREPENDFN(e);
 		return NULL;
 	}
 

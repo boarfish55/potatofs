@@ -156,7 +156,7 @@ usage()
 	    "           top   [delay]\n"
 	    "           counters\n"
 	    "           status\n"
-	    "           shutdown\n"   // TODO: add grace_period arg
+	    "           shutdown [grace period seconds]\n"
 	    "           set_clean\n"
 	    "           scrub\n"
 	    "           flush\n"
@@ -754,7 +754,7 @@ do_flush(int argc, char **argv)
 
 	close(mgr);
 end:
-	if (mgr_send_shutdown(xerrz(&e)) == -1) {
+	if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		return 1;
 	}
@@ -1070,7 +1070,7 @@ end:
 	printf("Scan result: %s\n",
 	    (stats.errors) ? "errors" : "clean");
 
-	if (mgr_send_shutdown(xerrz(&e)) == -1)
+	if (mgr_send_shutdown(0, xerrz(&e)) == -1)
 		xerr_print(&e);
 	return (stats.errors) ? 1 : 0;
 }
@@ -1167,8 +1167,11 @@ int
 do_shutdown(int argc, char **argv)
 {
 	struct xerr e;
+	time_t      grace_seconds;
 
-	if (mgr_send_shutdown(xerrz(&e)) == -1) {
+	if (argc >= 1)
+		grace_seconds = strtoul(argv[0], NULL, 10);
+	if (mgr_send_shutdown(grace_seconds, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		return 1;
 	}

@@ -113,7 +113,7 @@ end:
 	if (dst_info != NULL)
 		memcpy(dst_info, &fs_info, sizeof(fs_info));
 	if (fd > 0)
-		close(fd);
+		CLOSE_X(fd);
 	return xerr_fail(e);
 }
 
@@ -156,7 +156,7 @@ fs_info_read(struct fs_info *fs_info, struct xerr *e)
 	}
 end:
 	if (fd > 0)
-		close(fd);
+		CLOSE_X(fd);
 	return xerr_fail(e);
 }
 
@@ -187,7 +187,7 @@ fs_info_write(const struct fs_info *fs_info, struct xerr *e)
 	}
 end:
 	if (fd > 0)
-		close(fd);
+		CLOSE_X(fd);
 
 	return xerr_fail(e);
 }
@@ -208,11 +208,11 @@ fs_info_inspect(struct fs_info *fs, struct xerr *e)
 		return XERRF(e, XLOG_ERRNO, errno, "open_wflock()");
 
 	if ((r = read(fd, fs, sizeof(struct fs_info))) == -1) {
-		close(fd);
+		CLOSE_X(fd);
 		return XERRF(e, XLOG_ERRNO, errno, "failed to read fs_info");
 	}
 
-	close(fd);
+	CLOSE_X(fd);
 
 	if (r < sizeof(struct fs_info))
 		return XERRF(e, XLOG_ERRNO, XLOG_IO,

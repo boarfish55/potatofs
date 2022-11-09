@@ -137,8 +137,14 @@ lk_init(rwlk *lock, const char *lockname, const char *file,
 	xlog_dbg(XLOG_LOCK, "initializing lock %p (%s) at %s:%d",
 	    lock, lockname, file, line);
 
-	if ((r = pthread_rwlockattr_init(&a)) != 0)
-		return XERRF(e, XLOG_ERRNO, r, "pthread_rwlockattr_init");
+	if ((r = pthread_rwlockattr_init(&a)) != 0) {
+		if (r == ENOMEM)
+			return XERRF(e, XLOG_FS, ENOMEM,
+			    "pthread_rwlockattr_init");
+		else
+			return XERRF(e, XLOG_ERRNO, r,
+			    "pthread_rwlockattr_init");
+	}
 
 	if ((r = pthread_rwlockattr_setpshared(&a,
 	    PTHREAD_PROCESS_SHARED)) != 0)
@@ -146,8 +152,12 @@ lk_init(rwlk *lock, const char *lockname, const char *file,
 		    "failed to set attribute PTHREAD_PROCESS_SHARED "
 		    "while initializing lock");
 
-	if ((r = pthread_rwlock_init(lock, &a)) != 0)
-		return XERRF(e, XLOG_ERRNO, r, "pthread_rwlock_init");
+	if ((r = pthread_rwlock_init(lock, &a)) != 0) {
+		if (r == ENOMEM)
+			return XERRF(e, XLOG_FS, ENOMEM, "pthread_rwlock_init");
+		else
+			return XERRF(e, XLOG_ERRNO, r, "pthread_rwlock_init");
+	}
 
 	return 0;
 }
@@ -259,10 +269,11 @@ mkdir_x(const char *path, mode_t mode)
 }
 
 void
-close_x(int fd, const char *fn)
+close_x(int fd, const char *fd_name, const char *fn, int line)
 {
 	if (close(fd) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close_x", fn);
+		xlog_strerror(LOG_ERR, errno, "%s:%d: close(%s)",
+		    fn, line, fd_name);
 }
 
 void
@@ -303,10 +314,10 @@ open_wflock(const char *path, int flags, mode_t mode, int lk,
 				memcpy(&req, &tp, sizeof(req));
 				while (nanosleep(&req, &rem) == -1)
 					memcpy(&req, &rem, sizeof(req));
-				close(fd);
+				CLOSE_X(fd);
 				continue;
 			}
-			close(fd);
+			CLOSE_X(fd);
 			return -1;
 		}
 		break;

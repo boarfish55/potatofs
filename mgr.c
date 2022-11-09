@@ -75,9 +75,7 @@ mgr_connect(int retry, struct xerr *e)
 		return mgr;
 fail:
 		if (mgr != -1)
-			if (close(mgr) == -1)
-				xlog_strerror(LOG_ERR, errno,
-				    "%s: close", __func__);
+			CLOSE_X(mgr);
 		if (!retry)
 			break;
 		nanosleep(&tp, NULL);
@@ -178,7 +176,7 @@ again:
 }
 
 int
-mgr_send_shutdown(struct xerr *e)
+mgr_send_shutdown(time_t grace_period, struct xerr *e)
 {
 	int            mgr;
 	struct mgr_msg m;
@@ -188,25 +186,19 @@ mgr_send_shutdown(struct xerr *e)
 
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_SHUTDOWN;
-	// TODO: unused at the moment
-	m.v.shutdown.grace_period = 0;
+	m.v.shutdown.grace_period = grace_period;
 
 	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
-		if (close(mgr) == -1)
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: close(mgr)", __func__);
+		CLOSE_X(mgr);
 		return XERR_PREPENDFN(e);
 	}
 
 	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
-		if (close(mgr) == -1)
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: close(mgr)", __func__);
+		CLOSE_X(mgr);
 		return XERR_PREPENDFN(e);
 	}
 
-	if (close(mgr) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close(mgr)", __func__);
+	CLOSE_X(mgr);
 
 	if (m.m == MGR_MSG_SHUTDOWN_ERR) {
 		memcpy(e, &m.v.err, sizeof(struct xerr));
@@ -231,21 +223,16 @@ mgr_fs_info(struct fs_info *fs_info, struct xerr *e)
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
-		if (close(mgr) == -1)
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: close(mgr)", __func__);
+		CLOSE_X(mgr);
 		return XERR_PREPENDFN(e);
 	}
 
 	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
-		if (close(mgr) == -1)
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: close(mgr)", __func__);
+		CLOSE_X(mgr);
 		return XERR_PREPENDFN(e);
 	}
 
-	if (close(mgr) == -1)
-		xlog_strerror(LOG_ERR, errno, "%s: close(mgr)", __func__);
+	CLOSE_X(mgr);
 
 	if (m.m == MGR_MSG_INFO_ERR) {
 		memcpy(e, &m.v.err, sizeof(struct xerr));

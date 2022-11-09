@@ -2786,7 +2786,7 @@ test_claim_from_backend()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", BACKEND_GET_TIMEOUT_SECONDS / 2);
+	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout / 2);
 	if ((r = write(fd, buf, strlen(buf))) == -1)
 		return ERR("", errno);
 	close(fd);
@@ -2924,7 +2924,7 @@ test_backend_timeout_interrupt()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", BACKEND_GET_TIMEOUT_SECONDS * 2);
+	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout * 2);
 	if ((r = write(fd, buf, strlen(buf))) == -1)
 		return ERR("", errno);
 	close(fd);
@@ -2946,7 +2946,7 @@ test_backend_timeout_interrupt()
 		exit(0);
 	}
 
-	sleep(BACKEND_GET_TIMEOUT_SECONDS + 1);
+	sleep(fs_config.backend_get_timeout + 1);
 	if (kill(pid, SIGINT) == -1)
 		return ERR("", errno);
 

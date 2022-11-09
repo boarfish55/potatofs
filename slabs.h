@@ -116,6 +116,17 @@ struct slab_hdr {
 #define SLAB_REMOVED 0x00000002
 };
 
+/*
+ * Upper/lower bounds on the configured slab size. Must a power of two and no
+ * larger than 64MB. This is because the data in the padding area of the
+ * slab_hdr is used to store the inode table allocation bitmap. This data area
+ * is ~3.5KB (FS_BLOCK_SIZE - DEV_BSIZE, minus a few other fields) in size
+ * allowing the bitmap to track approximately 28672 inodes. Given that each
+ * inode is 4096 bytes, rounding down to the nearest power of two give us 64MB.
+ */
+#define SLAB_SIZE_FLOOR (1024 * 1024)
+#define SLAB_SIZE_CEIL  (1024 * 1024 * 64)
+
 struct slab_itbl_hdr {
 	/*
 	 * Each bit indicates whether the inode is allocated or not. Because

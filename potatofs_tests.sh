@@ -44,6 +44,10 @@ workers: 1
 bgworkers: 1
 scrubber_interval: 0
 purger_interval: 0
+backend_get_timeout: 5
+backend_put_timeout: 5
+backend_df_timeout: 5
+shutdown_grace_period: 0
 EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"

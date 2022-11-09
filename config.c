@@ -46,7 +46,11 @@ struct fs_config fs_config = {
 	MGR_DEFAULT_PURGER_INTERVAL,   /* purger_interval */
 	MGR_DEFAULT_SCRUBBER_INTERVAL, /* scrubber_interval */
 	DEFAULT_UNCLAIM_PURGE_PCT,     /* unclaim_purge_threshold_pct */
-	DEFAULT_PURGE_PCT              /* purge_threshold_pct */
+	DEFAULT_PURGE_PCT,             /* purge_threshold_pct */
+	DEFAULT_BACKEND_GET_TIMEOUT,   /* backend_get_timeout */
+	DEFAULT_BACKEND_PUT_TIMEOUT,   /* backend_put_timeout */
+	DEFAULT_BACKEND_DF_TIMEOUT,    /* backend_df_timeout */
+	0                              /* shutdown_grace_period */
 };
 
 void
@@ -118,35 +122,35 @@ config_read()
 				warnx("noatime must be 'yes' or 'no'");
 		} else if (strcmp(p, "slab_max_age") == 0) {
 			if ((fs_config.slab_max_age =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "slab_max_age");
 		} else if (strcmp(p, "unclaim_purge_threshold_pct") == 0) {
 			if ((fs_config.unclaim_purge_threshold_pct =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "unclaim_purge_threshold_pct");
 		} else if (strcmp(p, "purge_threshold_pct") == 0) {
 			if ((fs_config.purge_threshold_pct =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "purge_threshold_pct");
 		} else if (strcmp(p, "workers") == 0) {
 			if ((fs_config.workers =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "workers");
 		} else if (strcmp(p, "bgworkers") == 0) {
 			if ((fs_config.bgworkers =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "bgworkers");
 		} else if (strcmp(p, "purger_interval") == 0) {
 			if ((fs_config.purger_interval =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "purger_interval");
 		} else if (strcmp(p, "scrubber_interval") == 0) {
 			if ((fs_config.scrubber_interval =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "scrubber_interval");
 		} else if (strcmp(p, "max_open_slabs") == 0) {
 			if ((fs_config.max_open_slabs =
-			    strtol(v, NULL, 10)) == LONG_MAX)
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "max_open_slabs");
 		} else if (strcmp(p, "unpriv_user") == 0) {
 			strlcpy(fs_config.unpriv_user, v,
@@ -154,6 +158,22 @@ config_read()
 		} else if (strcmp(p, "unpriv_group") == 0) {
 			strlcpy(fs_config.unpriv_group, v,
 			    sizeof(fs_config.unpriv_group));
+		} else if (strcmp(p, "backend_get_timeout") == 0) {
+			if ((fs_config.backend_get_timeout =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "backend_get_timeout");
+		} else if (strcmp(p, "backend_put_timeout") == 0) {
+			if ((fs_config.backend_put_timeout =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "backend_put_timeout");
+		} else if (strcmp(p, "backend_df_timeout") == 0) {
+			if ((fs_config.backend_df_timeout =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "backend_df_timeout");
+		} else if (strcmp(p, "shutdown_grace_period") == 0) {
+			if ((fs_config.shutdown_grace_period =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "shutdown_grace_period");
 		} else {
 			warnx("unknown parameter: %s", p);
 			continue;

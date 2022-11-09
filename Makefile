@@ -13,9 +13,6 @@ SRCS = slabs.c inodes.c dirinodes.c openfiles.c xlog.c util.c \
 	potatomgr.c slabdb.c
 OBJS = $(SRCS:.c=.o)
 
-FAKEFS_SRCS = dirinodes.c xlog.c fake_fs.c
-FAKEFS_OBJS = $(FAKEFS_SRCS:.c=.o)
-
 CTLSRCS = potatoctl.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c util.c \
 	fs_error.c fs_info.c counters.c mgr.c config.c slabdb.c potatomgr.c
 CTLOBJS = $(CTLSRCS:.c=.o)
@@ -24,13 +21,10 @@ TESTSRCS = potatofs_tests.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c \
 	util.c fs_error.c fs_info.c counters.c mgr.c config.c slabdb.c
 TESTOBJS = $(TESTSRCS:.c=.o)
 
-all: potatofs potatoctl potatofs_tests fake_fs
+all: potatofs potatoctl potatofs_tests
 
 potatofs: $(OBJS)
 	$(CC) -o potatofs $(OBJS) $(LDFLAGS)
-
-fake_fs: $(FAKEFS_OBJS)
-	$(CC) -o fake_fs $(FAKEFS_OBJS) $(LDFLAGS)
 
 potatoctl: $(CTLOBJS)
 	$(CC) -o potatoctl $(CTLOBJS) $(LDFLAGS)
