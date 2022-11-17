@@ -1,0 +1,21 @@
+s3_endpoint = "some.s3.endpoint"
+s3_bucket = "some_bucket"
+s3_region = "us-east-1"
+
+# S3 credentials
+access_key_id = "some id"
+secret_access_key = "some key"
+access_token = "some token"
+
+# Unix socket path to communicate with the background child that keeps
+# our S3 session active.
+socket_path = "/var/potatofs_test/.backend_s3.sock"
+
+# Because this backend has infinite capacity, put a cap to it so we can
+# correctly compute how much capacity our filesystem has.
+# Here is 1TB.
+backend_bytes = 1099511627776
+
+# Timeout for S3 operations. Needs to be a bit longer than the
+# potatofs backend timeout so we can properly receive the signal.
+backend_timeout_seconds = 15

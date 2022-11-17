@@ -274,6 +274,12 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 			exit(1);
 		}
 
+		if (setenv("POTATOFS_BACKEND_CONFIG",
+		    fs_config.mgr_exec_config, 1) == -1) {
+			XERRF(e, XLOG_ERRNO, errno, "chdir");
+			exit(1);
+		}
+
 		if (execv(argv[0], argv) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "execv: %s", argv[0]);
 			exit(1);

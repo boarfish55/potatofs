@@ -34,10 +34,10 @@ There are a few major goals PotatoFS is trying to achieve:
 Non-goals:
 
   1) Portability. Though I would like this to work on all BSDs, there is
-     a dependency on low-level FUSE, which not all BSDs support. We
-     currently don't care about endianness. On-disk format is
-     platform-dependent. Maybe one day we'll care and do all the
-     byte-swapping, though it's unsure how that would affect performance.
+     a dependency on low-level FUSE, which not all BSDs support.
+     On-disk format is architecture-dependent. We'll likely never attempt
+     to stick to a specific endianness to have a specific filesystem
+     instance usable by machines of a different architecture.
 
   2) Disaster recovery. PotatoFS may not sync local slabs to the high-latency
      backend on a frequent basis. Therefore, local storage should still be
@@ -48,10 +48,8 @@ Non-goals:
      consistent state).
 
   3) Find a cool unique name. Finding a free 5-letter acronym ending in
-     "-FS" is next to impossible these days:
-
-     So meet PotatoFS. Potatoes are nourishing and can easily complement
-     a wide variety of dishes.
+     "-FS" is next to impossible these days. So meet PotatoFS. Potatoes are
+     nourishing and can easily complement a wide variety of dishes.
 
 
 Author: Pascal Lalonde <plalonde@overnet.ca>
@@ -107,12 +105,12 @@ specific to how potatofs operates:
 
 * EIO for any unrecoverable error dealing with data corruption
 * ENOMEDIUM for all retryable errors, such as if the backend script times out,
-  fails or if some flock() contention on local slabs. Note that ENOMEDIUM
-  is only ever returned if the user requested that the FS be put in "offline"
-  mode. By default we try to ensure data integrity by retrying those operations
-  forever. But if a user expects things to be stalled for a long time
-  (e.g. no network), setting offline mode can let potatofs return this error
-  while trying to preserve data integrity. Note that this failure mode is
+  fails or if some flock() contention happens on local slabs. Note that
+  ENOMEDIUM is only ever returned if the user requested that the FS be put in
+  "offline" mode. By default we try to ensure data integrity by retrying those
+  operations forever. But if a user expects things to be stalled for a long
+  time (e.g. no network), setting offline mode can let potatofs return this
+  error while trying to preserve data integrity. Note that this failure mode is
   not well tested.
 * EINTR, similar to ENOMEDIUM, is returned when SIGINT is sent to a process
   that is stuck retrying "retryable" operations. This relies on FUSE
@@ -120,15 +118,15 @@ specific to how potatofs operates:
   signaled process.
 * ENOMEM for some operations that need heap memory to perform their task.
   While this is to be normally expected from open() for example, some other
-  calls such as write() would normally never return ENOMEM. But here it can.
-  This is however unlikely to happen unless we were dealing with a very, very
+  calls such as write() would normally never return ENOMEM. But here they can.
+  This is however unlikely to happen unless we are dealing with a very, very
   large amount of inodes open in memory.
 
 
 DESIGN NOTES
 ============
-We should be able to use FUSE multithreading and splicing, however no
-writeback since we plan on allowing multiple writers, eventually.
+We use FUSE multithreading and splicing, however no writeback since we plan on
+allowing multiple writers, eventually.
 See: https://marc.info/?l=fuse-devel&m=150640983731277&w=2
 
 	"This mode assumes that all changes to the filesystem go through the

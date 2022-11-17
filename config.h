@@ -121,6 +121,7 @@ struct fs_config {
 	char      mgr_sock_path[PATH_MAX];
 	char      pidfile_path[PATH_MAX];
 	char      mgr_exec[PATH_MAX];
+	char      mgr_exec_config[PATH_MAX];
 	char      unpriv_user[32];
 	char      unpriv_group[32];
 	int       workers;

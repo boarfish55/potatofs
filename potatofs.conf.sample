@@ -14,8 +14,11 @@ data_dir: /var/potatofs/data
 #pidfile_path: /var/potatofs/potatomgr.pid
 
 # The backend script. See the mgr.pl.sample for a proof-of-concept
-# implementation.
+# implementation. If the script requires a configuration file, it's path
+# can be indicated in "backend_config", which will be accessible to the
+# backend in the POTATOFS_BACKEND_CONFIG environment variable.
 backend: /usr/local/bin/backend.sh
+backend_config: /usr/local/etc/backend.conf
 
 # See config.h for explanations
 slab_max_age: 300

@@ -39,6 +39,7 @@ struct fs_config fs_config = {
 	MGR_DEFAULT_SOCKET_PATH,       /* manager socket path */
 	MGR_DEFAULT_PIDFILE_PATH,      /* PID file path of manager */
 	MGR_DEFAULT_BACKEND_EXEC,      /* manager backend executable */
+	"",                            /* manager backend executable config */
 	MGR_DEFAULT_UNPRIV_USER,       /* unpriv_user */
 	MGR_DEFAULT_UNPRIV_GROUP,      /* unpriv_group */
 	MGR_DEFAULT_WORKERS,           /* workers */
@@ -106,6 +107,9 @@ config_read()
 		} else if (strcmp(p, "backend") == 0) {
 			strlcpy(fs_config.mgr_exec, v,
 			    sizeof(fs_config.mgr_exec));
+		} else if (strcmp(p, "backend_config") == 0) {
+			strlcpy(fs_config.mgr_exec_config, v,
+			    sizeof(fs_config.mgr_exec_config));
 		} else if (strcmp(p, "slab_size") == 0) {
 			if ((fs_config.slab_size = strtoul(v, NULL, 10))
 			    == ULONG_MAX)
