@@ -206,17 +206,17 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 
 		buf := make([]byte, 4096)
 		for {
-			n, err := out.Body.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				sendErrResponse(c, "S3 GET: Read: %v", err)
-				return
-			}
+			n, readErr := out.Body.Read(buf)
 			n, err = syscall.Write(fd, buf[:n])
 			if err != nil {
 				sendErrResponse(c, "S3 GET: Write: %v", err)
+				return
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
+				sendErrResponse(c, "S3 GET: Read: %v", readErr)
 				return
 			}
 		}
@@ -228,6 +228,7 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			return
 		}
 
+		logger.Infof("getting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgGetResponse{
 			Status:  "OK",
 			InBytes: st.Size,
@@ -245,6 +246,7 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			return
 		}
 
+		// TODO: Add encryption and compression
 		_, err = s3c.PutObjectWithContext(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(config.S3Bucket),
 			Key:    aws.String(msg.Args.BackendName),
@@ -258,6 +260,7 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			}
 			return
 		}
+		logger.Infof("putting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgPutResponse{
 			Status:   "OK",
 			OutBytes: st.Size(),
