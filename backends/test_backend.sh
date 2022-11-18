@@ -24,6 +24,11 @@ if [ ! -d "$BACKEND_DATA_PATH" ]; then
 	BACKEND_DATA_PATH="/dev/shm/potatofs_backend"
 fi
 
+if [ -z "POTATOFS_BACKEND_CONFIG" ]; then
+	echo '{"status": "ERR", "msg": "POTATOFS_BACKEND_CONFIG is not set"}'
+	exit 2
+fi
+
 usage() {
 	echo "Usage: $(basename $0) -h <command>"
 	echo ""

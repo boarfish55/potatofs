@@ -5,7 +5,6 @@ s3_region = "us-east-1"
 # S3 credentials
 access_key_id = "some id"
 secret_access_key = "some key"
-access_token = "some token"
 
 # Unix socket path to communicate with the background child that keeps
 # our S3 session active.

@@ -28,6 +28,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -53,7 +54,6 @@ type Config struct {
 	S3Region              string `toml:"s3_region"`
 	AccessKeyID           string `toml:"access_key_id"`
 	SecretAccessKey       string `toml:"secret_access_key"`
-	AccessToken           string `toml:"access_token"`
 	SocketPath            string `toml:"socket_path"`
 	BackendBytes          uint64 `toml:"backend_bytes"`
 	BackendTimeoutSeconds int64  `toml:"backend_timeout_seconds"`
@@ -103,8 +103,31 @@ type MgrMsgErrResponse struct {
 	Msg    string `json:"msg"`
 }
 
-func handleClient(ctx context.Context, c net.Conn, s3c *s3.S3) {
+func sendErrResponse(c net.Conn, format string, v ...interface{}) {
+	enc := json.NewEncoder(c)
+	resp := &MgrMsgErrResponse{
+		Status: "ERR",
+		Msg:    fmt.Sprintf(format, v...),
+	}
+	logger.Errf(resp.Msg)
+	if err := enc.Encode(resp); err != nil {
+		logger.Errf("sendErrResponse: %v", err)
+	}
+}
+
+func handleClient(c net.Conn, s3c *s3.S3) {
 	var msg MgrMsg
+
+	ctx := context.Background()
+
+	var cancelFn func()
+	if config.BackendTimeoutSeconds > 0 {
+		ctx, cancelFn = context.WithTimeout(ctx, time.Duration(config.BackendTimeoutSeconds)*time.Second)
+	}
+
+	if cancelFn != nil {
+		defer cancelFn()
+	}
 
 	defer c.Close()
 	dec := json.NewDecoder(c)
@@ -118,25 +141,108 @@ func handleClient(ctx context.Context, c net.Conn, s3c *s3.S3) {
 	var resp interface{}
 	switch msg.Command {
 	case "df":
+		var used_bytes uint64
+		var ctoken *string
+		for {
+			out, err := s3c.ListObjectsV2WithContext(ctx, &s3.ListObjectsV2Input{
+				Bucket:            aws.String(config.S3Bucket),
+				MaxKeys:           aws.Int64(2),
+				ContinuationToken: ctoken,
+			})
+			if err != nil {
+				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
+					sendErrResponse(c, "df canceled: %v", err)
+				} else {
+					sendErrResponse(c, "df failed: %v", err)
+				}
+				return
+			}
+
+			for _, o := range out.Contents {
+				if o.Size != nil {
+					used_bytes += uint64(*o.Size)
+				}
+			}
+			if out.IsTruncated != nil && *out.IsTruncated {
+				ctoken = out.NextContinuationToken
+			} else {
+				break
+			}
+		}
+
 		resp = MgrMsgDfResponse{
 			Status:     "OK",
-			UsedBytes:  0,
+			UsedBytes:  used_bytes,
 			TotalBytes: config.BackendBytes,
 		}
 	case "get":
-		resp = MgrMsgErrResponse{
-			Status: "ERR",
-			Msg:    "unknown command " + msg.Command,
+		// We use the syscall file interface here because we want to use
+		// Flock(). This will be important once we start doing things
+		// like "predictive" downloading.
+		fd, err := syscall.Open(msg.Args.LocalPath, syscall.O_RDWR|syscall.O_CREAT, 0600)
+		if err != nil {
+			sendErrResponse(c, "failed to open file: %q, %v", msg.Args.LocalPath, err)
+			return
+		}
+		defer syscall.Close(fd)
+
+		err = syscall.Flock(fd, syscall.LOCK_EX)
+		if err != nil {
+			sendErrResponse(c, "failed to flock file: %q, %v", msg.Args.LocalPath, err)
+			return
+		}
+
+		out, err := s3c.GetObjectWithContext(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(config.S3Bucket),
+			Key:    aws.String(msg.Args.BackendName),
+		})
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
+				sendErrResponse(c, "download canceled for %q: %v", msg.Args.LocalPath, err)
+			} else {
+				sendErrResponse(c, "download failed for %q: %v", msg.Args.LocalPath, err)
+			}
+			return
+		}
+
+		buf := make([]byte, 4096)
+		for {
+			n, err := out.Body.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				sendErrResponse(c, "S3 GET: Read: %v", err)
+				return
+			}
+			n, err = syscall.Write(fd, buf[:n])
+			if err != nil {
+				sendErrResponse(c, "S3 GET: Write: %v", err)
+				return
+			}
+		}
+
+		var st syscall.Stat_t
+		err = syscall.Fstat(fd, &st)
+		if err != nil {
+			sendErrResponse(c, "failed to stat file: %q, %v", msg.Args.LocalPath, err)
+			return
+		}
+
+		resp = MgrMsgGetResponse{
+			Status:  "OK",
+			InBytes: st.Size,
 		}
 	case "put":
 		f, err := os.Open(msg.Args.LocalPath)
 		if err != nil {
-			logger.Errf("failed to open file: %q, %v", msg.Args.LocalPath, err)
+			sendErrResponse(c, "failed to open file: %q, %v", msg.Args.LocalPath, err)
 			return
 		}
+		defer f.Close()
 		st, err := f.Stat()
 		if err != nil {
-			logger.Errf("failed to stat file: %q, %v", msg.Args.LocalPath, err)
+			sendErrResponse(c, "failed to stat file: %q, %v", msg.Args.LocalPath, err)
 			return
 		}
 
@@ -147,10 +253,11 @@ func handleClient(ctx context.Context, c net.Conn, s3c *s3.S3) {
 		})
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
-				logger.Errf("upload canceled for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "upload canceled for %q: %v", msg.Args.LocalPath, err)
 			} else {
-				logger.Errf("upload failed for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "upload failed for %q: %v", msg.Args.LocalPath, err)
 			}
+			return
 		}
 		resp = MgrMsgPutResponse{
 			Status:   "OK",
@@ -194,7 +301,6 @@ func serve() error {
 		return fmt.Errorf("net.UnixListener: %v", err)
 	}
 	defer l.Close()
-	l.SetDeadline(time.Now().Add(60 * time.Second))
 
 	// See https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html
 
@@ -202,25 +308,15 @@ func serve() error {
 	sess, err := session.NewSession(&aws.Config{
 		Endpoint:    aws.String(config.S3Endpoint),
 		Region:      aws.String(config.S3Region),
-		Credentials: credentials.NewStaticCredentials(config.AccessKeyID, config.SecretAccessKey, config.AccessToken),
+		Credentials: credentials.NewStaticCredentials(config.AccessKeyID, config.SecretAccessKey, ""),
 	})
 	if err != nil {
 		return err
 	}
 
 	s3c := s3.New(sess)
-	ctx := context.Background()
-
-	var cancelFn func()
-	if config.BackendTimeoutSeconds > 0 {
-		ctx, cancelFn = context.WithTimeout(ctx, time.Duration(config.BackendTimeoutSeconds)*time.Second)
-	}
-
-	if cancelFn != nil {
-		defer cancelFn()
-	}
-
 	for {
+		l.SetDeadline(time.Now().Add(60 * time.Second))
 		c, err := l.Accept()
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
@@ -229,7 +325,7 @@ func serve() error {
 			logger.Errf("Accept: %v", err)
 			continue
 		}
-		go handleClient(ctx, c, s3c)
+		go handleClient(c, s3c)
 	}
 	return nil
 }

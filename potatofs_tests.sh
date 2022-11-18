@@ -33,6 +33,7 @@ data_dir: $datapath
 mgr_socket_path: $basepath/potatomgr.sock
 pidfile_path: $basepath/potatomgr.pid
 backend: $basepath/backend
+backend_config: $basepath/backend.conf
 # The purge thread runs every 10 seconds so we can expect them to be
 # unloaded after this much time. Keep this value low to have tests run
 # in a short time.
