@@ -146,7 +146,6 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 		for {
 			out, err := s3c.ListObjectsV2WithContext(ctx, &s3.ListObjectsV2Input{
 				Bucket:            aws.String(config.S3Bucket),
-				MaxKeys:           aws.Int64(2),
 				ContinuationToken: ctoken,
 			})
 			if err != nil {
@@ -302,9 +301,6 @@ func serve() error {
 	}
 	defer l.Close()
 
-	// See https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/configuring-sdk.html
-
-	// See: https://docs.aws.amazon.com/sdk-for-go/api/aws/#Config
 	sess, err := session.NewSession(&aws.Config{
 		Endpoint:    aws.String(config.S3Endpoint),
 		Region:      aws.String(config.S3Region),
