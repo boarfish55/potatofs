@@ -25,3 +25,4 @@ slab_max_age: 300
 unclaim_purge_threshold_pct: 90
 purge_threshold_pct: 60
 noatime: yes
+df_interval: 60

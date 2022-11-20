@@ -46,6 +46,7 @@ struct fs_config fs_config = {
 	MGR_DEFAULT_BGWORKERS,         /* bgworkers */
 	MGR_DEFAULT_PURGER_INTERVAL,   /* purger_interval */
 	MGR_DEFAULT_SCRUBBER_INTERVAL, /* scrubber_interval */
+	MGR_DEFAULT_DF_INTERVAL,       /* df_interval */
 	DEFAULT_UNCLAIM_PURGE_PCT,     /* unclaim_purge_threshold_pct */
 	DEFAULT_PURGE_PCT,             /* purge_threshold_pct */
 	DEFAULT_BACKEND_GET_TIMEOUT,   /* backend_get_timeout */
@@ -152,6 +153,10 @@ config_read()
 			if ((fs_config.scrubber_interval =
 			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "scrubber_interval");
+		} else if (strcmp(p, "df_interval") == 0) {
+			if ((fs_config.df_interval =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "df_interval");
 		} else if (strcmp(p, "max_open_slabs") == 0) {
 			if ((fs_config.max_open_slabs =
 			    strtoul(v, NULL, 10)) == ULONG_MAX)

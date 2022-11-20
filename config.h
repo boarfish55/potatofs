@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.3.0"
+#define VERSION      "2.4.0"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -44,6 +44,7 @@
 #define MGR_DEFAULT_BGWORKERS         1
 #define MGR_DEFAULT_PURGER_INTERVAL   30
 #define MGR_DEFAULT_SCRUBBER_INTERVAL 3600
+#define MGR_DEFAULT_DF_INTERVAL       60
 
 #define ITBL_DIR      "itbl"
 #define ITBL_PREFIX   "i"
@@ -128,6 +129,7 @@ struct fs_config {
 	int       bgworkers;
 	int       purger_interval;
 	int       scrubber_interval;
+	int       df_interval;
 	uint32_t  unclaim_purge_threshold_pct;
 	uint32_t  purge_threshold_pct;
 	uint32_t  backend_get_timeout;

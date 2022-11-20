@@ -2383,7 +2383,7 @@ mgr_start(int workers, int bgworkers)
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 	}
 
-	if (bgworker("df", &bg_df, 60) == 0)
+	if (bgworker("df", &bg_df, fs_config.df_interval) == 0)
 		wait_for_workers++;
 
 	if (workers < 1)
