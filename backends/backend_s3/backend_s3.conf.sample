@@ -17,4 +17,7 @@ backend_bytes = 1099511627776
 
 # Timeout for S3 operations. Needs to be a bit longer than the
 # potatofs backend timeout so we can properly receive the signal.
-backend_timeout_seconds = 15
+backend_timeout_seconds = 65
+
+# Encryption/decryption key path
+backend_secret_key_path = "/var/potatofs_test/secret"

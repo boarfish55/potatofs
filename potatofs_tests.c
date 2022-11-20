@@ -142,14 +142,16 @@ struct test_status
 	enum {
 		OK = 0,
 		FAIL,
-		FLAKED
+		FLAKED,
+		SKIPPED
 	} status;
 } test_status;
 
 const char *status_description[] = {
 	"OK",
 	"FAIL",
-	"FLAKED"
+	"FLAKED",
+	"SKIPPED"
 };
 
 
@@ -157,6 +159,14 @@ struct test_status *
 success()
 {
 	test_status.status = OK;
+	test_status.msg = NULL;
+	return &test_status;
+}
+
+struct test_status *
+skipped()
+{
+	test_status.status = SKIPPED;
 	test_status.msg = NULL;
 	return &test_status;
 }
@@ -2682,6 +2692,9 @@ test_claim_from_backend()
 	int              wstatus, errors;
 	struct timespec  tp, tp2;
 
+	if (!getenv("BACKEND_DATA_PATH"))
+		return skipped();
+
 	for (i = 0; i < sizeof(buf); i++)
 		buf[i] = 'a';
 	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
@@ -2864,6 +2877,9 @@ test_backend_timeout_interrupt()
 	struct slab_key  sk;
 	struct xerr      e = XLOG_ERR_INITIALIZER;
 	pid_t            pid;
+
+	if (!getenv("BACKEND_DATA_PATH"))
+		return skipped();
 
 	for (i = 0; i < sizeof(buf); i++)
 		buf[i] = 'a';
@@ -3237,8 +3253,7 @@ main(int argc, char **argv)
 		if (snprintf(sleep_file, sizeof(sleep_file), "%s/sleep",
 		    getenv("BACKEND_DATA_PATH")) >= sizeof(sleep_file))
 			errx(1, "sleep_file too long");
-	} else
-		errx(1, "no BACKEND_DATA_PATH set");
+	}
 
 	while ((opt = getopt(argc, argv, "hdc:")) != -1) {
 		switch (opt) {
@@ -3299,6 +3314,8 @@ main(int argc, char **argv)
 		free_all_paths();
 		printf("[%s] %s\n", status_description[s->status],
 		    t->description);
+		if (s->msg && (s->status == SKIPPED))
+			continue;
 		if (s->msg && (s->status == FAIL || s->status == FLAKED)) {
 			status = 1;
 			printf("\n%s\n\n", s->msg);

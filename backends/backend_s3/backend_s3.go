@@ -18,17 +18,20 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log/syslog"
 	"net"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -38,6 +41,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"golang.org/x/crypto/nacl/secretbox"
 )
 
 const (
@@ -57,6 +61,7 @@ type Config struct {
 	SocketPath            string `toml:"socket_path"`
 	BackendBytes          uint64 `toml:"backend_bytes"`
 	BackendTimeoutSeconds int64  `toml:"backend_timeout_seconds"`
+	BackendSecretKeyPath  string `toml:"backend_secret_key_path"`
 }
 
 func NewConfig(path string) (Config, error) {
@@ -69,6 +74,110 @@ func NewConfig(path string) (Config, error) {
 
 var config Config
 var logger *Loggy
+var secretKey [32]byte
+
+// S3 gives us a io.ReadCloser on a GET operation.
+func NewGetStream(f io.ReadCloser, inode uint64, base int64) (io.Reader, error) {
+	var nonce [24]byte
+	n, err := f.Read(nonce[:])
+	if err != nil {
+		return nil, err
+	}
+	if n < len(nonce) {
+		return nil, fmt.Errorf("slab is shorter than nonce length of %d bytes", len(nonce))
+	}
+
+	b, err := ioutil.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	data, ok := secretbox.Open(nil, b, &nonce, &secretKey)
+	if !ok {
+		return nil, fmt.Errorf("decryption failed for inode=%d, base=%d", inode, base)
+	}
+
+	var buf bytes.Buffer
+	if _, err := buf.Write(data); err != nil {
+		return nil, err
+	}
+
+	zr, err := zlib.NewReader(&buf)
+	if err != nil {
+		return nil, err
+	}
+	return zr, nil
+}
+
+// Because S3 wants a io.ReadSeeker object in PUT operations, we need
+// to implement Seek(). However this means we have to load the entire slab
+// in memory then encrypt it before letting our S3 client read it if we
+// wish to use CBC mode.
+type PutStream struct {
+	buf    []byte
+	offset int64
+}
+
+func NewPutStream(f *os.File, inode uint64, base int64) (*PutStream, error) {
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	io.Copy(zw, f)
+	zw.Close()
+
+	var nonce [24]byte
+	binary.LittleEndian.PutUint64(nonce[0:], inode)
+	binary.LittleEndian.PutUint64(nonce[8:], uint64(base))
+	binary.LittleEndian.PutUint64(nonce[16:], uint64(time.Now().UnixNano()))
+
+	return &PutStream{
+		buf: secretbox.Seal(nonce[:], b.Bytes(), &nonce, &secretKey),
+	}, nil
+}
+
+func (ps *PutStream) Size() int64 {
+	return int64(len(ps.buf))
+}
+
+func (ps *PutStream) Seek(offset int64, whence int) (n int64, err error) {
+	switch whence {
+	case io.SeekStart:
+		if offset < 0 {
+			return 0, fmt.Errorf("Seek: cannot seek before the start of the buffer")
+		}
+		if offset > int64(len(ps.buf)) {
+			return 0, fmt.Errorf("Seek: cannot seek beyond the end of the buffer")
+		}
+		ps.offset = offset
+	case io.SeekCurrent:
+		if ps.offset+offset > int64(len(ps.buf)) {
+			return 0, fmt.Errorf("Seek: cannot seek beyond the end of the buffer")
+		}
+		if ps.offset+offset < 0 {
+			return 0, fmt.Errorf("Seek: cannot seek before the start of the buffer")
+		}
+		ps.offset += offset
+	case io.SeekEnd:
+		if offset > 0 {
+			return 0, fmt.Errorf("Seek: cannot seek beyond the end of the buffer")
+		}
+		if int64(len(ps.buf))+offset < 0 {
+			return 0, fmt.Errorf("Seek: cannot seek before the start of the buffer")
+		}
+		ps.offset = int64(len(ps.buf)) + offset
+	default:
+		return 0, fmt.Errorf("Seek: whence is invalid")
+	}
+	return ps.offset, nil
+}
+
+func (ps *PutStream) Read(p []byte) (n int, err error) {
+	n = copy(p, ps.buf[ps.offset:])
+	ps.offset += int64(n)
+	if ps.offset == int64(len(ps.buf)) {
+		return n, io.EOF
+	}
+	return n, nil
+}
 
 type MgrMsgArgs struct {
 	BackendName string `json:"backend_name"`
@@ -103,10 +212,10 @@ type MgrMsgErrResponse struct {
 	Msg    string `json:"msg"`
 }
 
-func sendErrResponse(c net.Conn, format string, v ...interface{}) {
+func sendErrResponse(c net.Conn, status string, format string, v ...interface{}) {
 	enc := json.NewEncoder(c)
 	resp := &MgrMsgErrResponse{
-		Status: "ERR",
+		Status: status,
 		Msg:    fmt.Sprintf(format, v...),
 	}
 	logger.Errf(resp.Msg)
@@ -150,9 +259,9 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			})
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
-					sendErrResponse(c, "df canceled: %v", err)
+					sendErrResponse(c, "ERR", "df canceled: %v", err)
 				} else {
-					sendErrResponse(c, "df failed: %v", err)
+					sendErrResponse(c, "ERR", "df failed: %v", err)
 				}
 				return
 			}
@@ -175,21 +284,12 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			TotalBytes: config.BackendBytes,
 		}
 	case "get":
-		// We use the syscall file interface here because we want to use
-		// Flock(). This will be important once we start doing things
-		// like "predictive" downloading.
-		fd, err := syscall.Open(msg.Args.LocalPath, syscall.O_RDWR|syscall.O_CREAT, 0600)
+		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
 		if err != nil {
-			sendErrResponse(c, "failed to open file: %q, %v", msg.Args.LocalPath, err)
+			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)
 			return
 		}
-		defer syscall.Close(fd)
-
-		err = syscall.Flock(fd, syscall.LOCK_EX)
-		if err != nil {
-			sendErrResponse(c, "failed to flock file: %q, %v", msg.Args.LocalPath, err)
-			return
-		}
+		defer f.Close()
 
 		out, err := s3c.GetObjectWithContext(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(config.S3Bucket),
@@ -197,73 +297,62 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 		})
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
-				sendErrResponse(c, "download canceled for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "ERR", "download canceled for %q: %v", msg.Args.LocalPath, err)
+			} else if reqErr, ok := err.(awserr.RequestFailure); ok && reqErr.StatusCode() == 404 {
+				sendErrResponse(c, "ERR_NOSLAB", "download failed for %q: %v", msg.Args.LocalPath, err)
 			} else {
-				sendErrResponse(c, "download failed for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "ERR", "download failed for %q: %v", msg.Args.LocalPath, err)
 			}
 			return
 		}
 
-		buf := make([]byte, 4096)
-		for {
-			n, readErr := out.Body.Read(buf)
-			n, err = syscall.Write(fd, buf[:n])
-			if err != nil {
-				sendErrResponse(c, "S3 GET: Write: %v", err)
-				return
-			}
-			if readErr != nil {
-				if readErr == io.EOF {
-					break
-				}
-				sendErrResponse(c, "S3 GET: Read: %v", readErr)
-				return
-			}
+		gs, err := NewGetStream(out.Body, msg.Args.Inode, msg.Args.Base)
+		if err != nil {
+			sendErrResponse(c, "ERR", "NewGetStream: %v", err)
+			return
 		}
 
-		var st syscall.Stat_t
-		err = syscall.Fstat(fd, &st)
-		if err != nil {
-			sendErrResponse(c, "failed to stat file: %q, %v", msg.Args.LocalPath, err)
+		if _, err := io.Copy(f, gs); err != nil {
+			sendErrResponse(c, "ERR", "io.Copy: %v", err)
 			return
 		}
 
 		logger.Infof("getting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgGetResponse{
 			Status:  "OK",
-			InBytes: st.Size,
+			InBytes: *out.ContentLength,
 		}
 	case "put":
 		f, err := os.Open(msg.Args.LocalPath)
 		if err != nil {
-			sendErrResponse(c, "failed to open file: %q, %v", msg.Args.LocalPath, err)
+			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)
 			return
 		}
 		defer f.Close()
-		st, err := f.Stat()
+
+		ps, err := NewPutStream(f, msg.Args.Inode, msg.Args.Base)
 		if err != nil {
-			sendErrResponse(c, "failed to stat file: %q, %v", msg.Args.LocalPath, err)
+			sendErrResponse(c, "ERR", "NewPutStream: %v", err)
 			return
 		}
 
-		// TODO: Add encryption and compression
 		_, err = s3c.PutObjectWithContext(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(config.S3Bucket),
 			Key:    aws.String(msg.Args.BackendName),
-			Body:   f,
+			Body:   ps,
 		})
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
-				sendErrResponse(c, "upload canceled for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "ERR", "upload canceled for %q: %v", msg.Args.LocalPath, err)
 			} else {
-				sendErrResponse(c, "upload failed for %q: %v", msg.Args.LocalPath, err)
+				sendErrResponse(c, "ERR", "upload failed for %q: %v", msg.Args.LocalPath, err)
 			}
 			return
 		}
 		logger.Infof("putting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgPutResponse{
 			Status:   "OK",
-			OutBytes: st.Size(),
+			OutBytes: ps.Size(),
 		}
 	default:
 		resp = MgrMsgErrResponse{
@@ -291,6 +380,15 @@ func die(code int, format string, v ...interface{}) {
 }
 
 func serve() error {
+	secretKeyBytes, err := ioutil.ReadFile(config.BackendSecretKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to open secret key file: %v", err)
+	}
+	if len(secretKeyBytes) < 32 {
+		return fmt.Errorf("backend secret key is too short; must be 32 bytes at minimum")
+	}
+	copy(secretKey[:], secretKeyBytes)
+
 	os.Remove(config.SocketPath)
 
 	laddr, err := net.ResolveUnixAddr("unix", config.SocketPath)

@@ -65,6 +65,9 @@ Dependencies / license (not including backends):
 - zlib (zlib)
 - libjansson-dev >= 2.9 (Expat)
 
+Recommended:
+- jq (for sample backends)
+
 
 INSTALLATION & USAGE
 ====================
