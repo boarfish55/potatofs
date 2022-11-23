@@ -163,7 +163,7 @@ slab_unclaim(struct oslab *b)
 	 * failed unclaims can always be cleaned up by scrub later.
 	 */
 	for (i = 0; i < 3; i++) {
-		if ((mgr = mgr_connect(0, &e)) == -1) {
+		if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
 			xlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
@@ -173,12 +173,12 @@ slab_unclaim(struct oslab *b)
 		memcpy(&m.v.unclaim.key, &b->sk,
 		    sizeof(struct slab_key));
 
-		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
+		if (mgr_send(mgr, b->fd, &m, xerrz(&e)) == -1) {
 			xlog(LOG_ERR, &e, __func__);
 			goto fail;
 		}
 
-		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
+		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
 			xlog(LOG_ERR, &e, "%s: failed to receive response "
 			    "for unclaim of slab sk=%lu/%lu, but "
 			    "closing it anyway", __func__,

@@ -526,6 +526,9 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	struct statvfs    stv;
 	struct slabdb_val v;
 
+	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld", __func__,
+	    m->v.unclaim.key.ino, m->v.unclaim.key.base);
+
 	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
 		xerr_prepend(e, __func__);
 		goto fail;
@@ -597,7 +600,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	if (purge) {
 		if (slab_path(src, sizeof(src),
 		    &m->v.unclaim.key, 0, e) == -1) {
-			xerr_prepend(e, __func__);
+			XERR_PREPENDFN(e);
 			goto fail;
 		}
 
@@ -664,13 +667,15 @@ static int
 backend_get(const char *local_path, const char *backend_name,
     size_t *in_bytes, struct slab_key *sk, struct xerr *e)
 {
-	char         *args[] = {(char *)fs_config.mgr_exec, "get", NULL};
-	int           wstatus;
-	char          stdout[1024], stderr[1024];
-	json_t       *j = NULL, *o;
-	json_error_t  jerr;
-	size_t        len;
-	char          stdin[LINE_MAX];
+	char            *args[] = {(char *)fs_config.mgr_exec, "get", NULL};
+	int              wstatus;
+	char             stdout[1024], stderr[1024];
+	json_t          *j = NULL, *o;
+	json_error_t     jerr;
+	size_t           len;
+	char             stdin[LINE_MAX];
+	struct timespec  start, end;
+	time_t           delta_ns;
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"backend_name\": \"%s\", "
@@ -683,10 +688,16 @@ backend_get(const char *local_path, const char *backend_name,
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "incoming JSON too long");
 
+	clock_gettime_x(CLOCK_REALTIME, &start);
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
 	    sizeof(stdout), stderr, sizeof(stderr),
 	    fs_config.backend_get_timeout, e) == -1)
 		return -1;
+	clock_gettime_x(CLOCK_REALTIME, &end);
+	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+	    ((start.tv_sec * 1000000000) + start.tv_nsec);
+	xlog(LOG_NOTICE, NULL, "%s: completed in %u.%09u seconds",
+	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	if (WIFSIGNALED(wstatus)) {
 		XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -762,13 +773,15 @@ static int
 backend_put(const char *local_path, const char *backend_name,
     size_t *out_bytes, const struct slab_key *sk, struct xerr *e)
 {
-	char         *args[] = {(char *)fs_config.mgr_exec, "put", NULL};
-	int           wstatus;
-	char          stdout[1024], stderr[1024];
-	json_t       *j, *o;
-	json_error_t  jerr;
-	char          stdin[LINE_MAX];
-	size_t        len;
+	char            *args[] = {(char *)fs_config.mgr_exec, "put", NULL};
+	int              wstatus;
+	char             stdout[1024], stderr[1024];
+	json_t          *j, *o;
+	json_error_t     jerr;
+	char             stdin[LINE_MAX];
+	size_t           len;
+	struct timespec  start, end;
+	time_t           delta_ns;
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"local_path\": \"%s\", "
@@ -781,10 +794,16 @@ backend_put(const char *local_path, const char *backend_name,
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "outgoing JSON too long");
 
+	clock_gettime_x(CLOCK_REALTIME, &start);
 	if (mgr_spawn(args, &wstatus, stdin, len, stdout,
 	    sizeof(stdout), stderr, sizeof(stderr),
 	    fs_config.backend_put_timeout, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
+	clock_gettime_x(CLOCK_REALTIME, &end);
+	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+	    ((start.tv_sec * 1000000000) + start.tv_nsec);
+	xlog(LOG_NOTICE, NULL, "%s: completed in %u.%09u seconds",
+	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	if (WIFSIGNALED(wstatus))
 		return XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -1098,6 +1117,11 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 		else
 			XERRF(e, XLOG_ERRNO, errno,
 			    "open_wflock: slab %s", dst);
+		return -1;
+	}
+	if (fcntl(*dst_fd, F_SETFD, FD_CLOEXEC) == -1) {
+		XERRF(e, XLOG_ERRNO, errno, "fcntl: slab %s", dst);
+		CLOSE_X(*dst_fd);
 		return -1;
 	}
 
@@ -1617,8 +1641,15 @@ bg_flush()
 				    "to open_wflock(): %s", __func__, path);
 			continue;
 		}
+		if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
+			xlog_strerror(LOG_ERR, errno, "%s: fcntl: %s",
+			    __func__, path);
+			CLOSE_X(fd);
+			continue;
+		}
 
 		if (slab_parse_path(path, &sk, xerrz(&e)) == -1) {
+			CLOSE_X(fd);
 			xlog(LOG_ERR, &e, "%s", __func__);
 			continue;
 		}
@@ -2115,11 +2146,12 @@ worker(int lsock)
 
 		for (;;) {
 			if ((r = mgr_recv(c, &fd, &m, xerrz(&e))) == -1) {
-				if (xerr_is(&e, XLOG_ERRNO, EAGAIN))
+				if (xerr_is(&e, XLOG_ERRNO, EAGAIN)) {
 					xlog(LOG_NOTICE, NULL,
 					    "read timeout on socket %d", c);
-				else if (!xerr_is(&e, XLOG_APP, XLOG_EOF))
+				} else if (!xerr_is(&e, XLOG_APP, XLOG_EOF)) {
 					xlog(LOG_ERR, &e, __func__);
+				}
 				xerrz(&e);
 				CLOSE_X(c);
 				break;

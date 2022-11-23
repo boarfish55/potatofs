@@ -225,6 +225,7 @@ func sendErrResponse(c net.Conn, status string, format string, v ...interface{})
 }
 
 func handleClient(c net.Conn, s3c *s3.S3) {
+	start := time.Now()
 	var msg MgrMsg
 
 	ctx := context.Background()
@@ -317,7 +318,6 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			return
 		}
 
-		logger.Infof("getting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgGetResponse{
 			Status:  "OK",
 			InBytes: *out.ContentLength,
@@ -349,7 +349,6 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			}
 			return
 		}
-		logger.Infof("putting inode %d / %d", msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgPutResponse{
 			Status:   "OK",
 			OutBytes: ps.Size(),
@@ -365,6 +364,8 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 	if err := enc.Encode(resp); err != nil {
 		logger.Errf("Encode: %v", err)
 	}
+	elapsed := time.Now().Sub(start)
+	logger.Infof("%s completed in %v seconds", msg.Command, elapsed.Seconds())
 }
 
 func die(code int, format string, v ...interface{}) {
@@ -380,17 +381,6 @@ func die(code int, format string, v ...interface{}) {
 }
 
 func serve() error {
-	secretKeyBytes, err := ioutil.ReadFile(config.BackendSecretKeyPath)
-	if err != nil {
-		return fmt.Errorf("failed to open secret key file: %v", err)
-	}
-	if len(secretKeyBytes) < 32 {
-		return fmt.Errorf("backend secret key is too short; must be 32 bytes at minimum")
-	}
-	copy(secretKey[:], secretKeyBytes)
-
-	os.Remove(config.SocketPath)
-
 	laddr, err := net.ResolveUnixAddr("unix", config.SocketPath)
 	if err != nil {
 		return fmt.Errorf("net.ResolveUnixAddr: %v", err)
@@ -401,6 +391,15 @@ func serve() error {
 		return fmt.Errorf("net.UnixListener: %v", err)
 	}
 	defer l.Close()
+
+	secretKeyBytes, err := ioutil.ReadFile(config.BackendSecretKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to open secret key file: %v", err)
+	}
+	if len(secretKeyBytes) < 32 {
+		return fmt.Errorf("backend secret key is too short; must be 32 bytes at minimum")
+	}
+	copy(secretKey[:], secretKeyBytes)
 
 	sess, err := session.NewSession(&aws.Config{
 		Endpoint:    aws.String(config.S3Endpoint),
