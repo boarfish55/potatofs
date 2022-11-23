@@ -19,8 +19,8 @@
 
 
 # The primary backend will be used to get/df commands, put is sent to all.
-primary_backend="$HOME/.potatofs/backends/backend_cp.sh"
-secondary_backend="$HOME/.potatofs/backends/backend_cp.sh"
+primary_backend="$HOME/.potatofs/backends/backend1.sh"
+secondary_backend="$HOME/.potatofs/backends/backend2.sh"
 
 usage() {
 	echo "Usage: $(basename $0) -h <command>"
