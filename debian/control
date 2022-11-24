@@ -1,0 +1,22 @@
+Source: potatofs
+Section: utils
+Priority: optional
+Maintainer: Pascal Lalonde <plalonde@overnet.ca>
+Build-Depends: debhelper-compat (= 13), pkg-config, libjansson-dev, zlib1g-dev, libsqlite3-dev, libbsd-dev, libfuse-dev, uuid-dev, golang-github-jmespath-go-jmespath-dev, golang-github-aws-aws-sdk-go-dev, golang-golang-x-crypto-dev, golang-github-burntsushi-toml-dev
+Standards-Version: 4.5.1
+Rules-Requires-Root: no
+
+Package: potatofs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, jq, libjansson4 (>= 2.13.1), zlib1g, libbsd0 (>= 0.11.3), libfuse2 (>= 2.9.9), libsqlite3-0 (>= 3.34.1), libuuid (>= 2.36.1)
+Description: FUSE filesystem for high-latency backends
+ PotatoFS is a FUSE filesystem implementation that aims to to store data on
+ high-lacency backends, for instance one of the many cloud storage options.
+ It then uses local, lower-lacenty storage to cache data and perform I/O
+ operations on portions of cached data.
+
+Package: potatofs-backend-s3
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: S3 backend for PotatoFS
+ S3 backend for PotatoFS

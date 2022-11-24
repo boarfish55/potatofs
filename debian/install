@@ -1,0 +1,7 @@
+potatofs /usr/bin
+potatoctl /usr/bin
+backends/backend_cp.sh /usr/share/doc/potatofs/examples/
+backends/backend_scp.sh /usr/share/doc/potatofs/examples/
+backends/backend_gdrive_curl.sh /usr/share/doc/potatofs/examples/
+backends/multi_backend.sh /usr/share/doc/potatofs/examples/
+potatofs.conf.sample /usr/share/doc/potatofs/examples/
