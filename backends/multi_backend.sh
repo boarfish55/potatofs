@@ -57,6 +57,8 @@ if [ "$1" = "-h" ]; then
 fi
 
 do_df() {
+	# It would be best to get the size of both backends and use the
+	# lowest value to be safe.
 	exec $primary_backend df
 }
 

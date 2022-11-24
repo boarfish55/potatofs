@@ -284,6 +284,10 @@ case $cmd in
 		get_token
 		upload_resumable $(get_folder_id)
 		;;
+	make_folder)
+		get_token
+		new_folder "$drive_folder"
+		;;
 	*)
 		usage
 		exit 1

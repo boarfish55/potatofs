@@ -162,7 +162,7 @@ usage()
 	    "           flush\n"
 	    "           online\n"
 	    "           offline\n"
-	    "           fsck  [quiet]\n"
+	    "           fsck  [verbose]\n"
 	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
 	    "\n"
