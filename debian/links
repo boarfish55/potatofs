@@ -1,0 +1,2 @@
+usr/bin/potatofs /usr/sbin/mount.potatofs
+usr/bin/potatofs /usr/sbin/mount.fuse.potatofs
