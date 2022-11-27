@@ -77,9 +77,6 @@ do_get() {
 }
 
 do_put() {
-	primary_output=$(mktemp -t "multi_backend.XXXXXX")
-	secondary_output=$(mktemp -t "multi_backend.XXXXXX")
-
 	tee >($primary_backend put > $primary_output) \
 		>($secondary_backend put > $secondary_output) >/dev/null
 
@@ -111,7 +108,10 @@ case $1 in
 		do_get
 		;;
 	put)
+		primary_output=$(mktemp -t "multi_backend.XXXXXX")
+		secondary_output=$(mktemp -t "multi_backend.XXXXXX")
 		do_put
+		rm -f $primary_output $secondary_output
 		;;
 	*)
 		usage
