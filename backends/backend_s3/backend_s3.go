@@ -49,7 +49,11 @@ const (
 )
 
 var (
-	server = flag.Bool("server", false, "Starts a S3 backend service")
+	server        = flag.Bool("server", false, "Starts a S3 backend service")
+	decrypt       = flag.Bool("decrypt", false, "Decrypt STDIN")
+	encrypt       = flag.Bool("encrypt", false, "Encrypt STDIN")
+	encrypt_inode = flag.Uint64("encrypt_inode", 0, "Inode for encrypt nonce")
+	encrypt_base  = flag.Int64("encrypt_base", 0, "Base for encrypt nonce")
 )
 
 type Config struct {
@@ -77,7 +81,7 @@ var logger *Loggy
 var secretKey [32]byte
 
 // S3 gives us a io.ReadCloser on a GET operation.
-func NewGetStream(f io.ReadCloser, inode uint64, base int64) (io.Reader, error) {
+func NewGetStream(f io.ReadCloser) (io.Reader, error) {
 	var nonce [24]byte
 	n, err := f.Read(nonce[:])
 	if err != nil {
@@ -94,7 +98,7 @@ func NewGetStream(f io.ReadCloser, inode uint64, base int64) (io.Reader, error) 
 
 	data, ok := secretbox.Open(nil, b, &nonce, &secretKey)
 	if !ok {
-		return nil, fmt.Errorf("decryption failed for inode=%d, base=%d", inode, base)
+		return nil, fmt.Errorf("decryption failed")
 	}
 
 	var buf bytes.Buffer
@@ -316,7 +320,7 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			return
 		}
 
-		gs, err := NewGetStream(out.Body, msg.Args.Inode, msg.Args.Base)
+		gs, err := NewGetStream(out.Body)
 		if err != nil {
 			sendErrResponse(c, "ERR", "NewGetStream: %v", err)
 			return
@@ -389,6 +393,18 @@ func die(code int, format string, v ...interface{}) {
 	os.Exit(code)
 }
 
+func loadSecretKey() error {
+	secretKeyBytes, err := ioutil.ReadFile(config.BackendSecretKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to open secret key file: %v", err)
+	}
+	if len(secretKeyBytes) < 32 {
+		return fmt.Errorf("backend secret key is too short; must be 32 bytes at minimum")
+	}
+	copy(secretKey[:], secretKeyBytes)
+	return nil
+}
+
 func serve() error {
 	laddr, err := net.ResolveUnixAddr("unix", config.SocketPath)
 	if err != nil {
@@ -401,14 +417,9 @@ func serve() error {
 	}
 	defer l.Close()
 
-	secretKeyBytes, err := ioutil.ReadFile(config.BackendSecretKeyPath)
-	if err != nil {
-		return fmt.Errorf("failed to open secret key file: %v", err)
+	if err = loadSecretKey(); err != nil {
+		return err
 	}
-	if len(secretKeyBytes) < 32 {
-		return fmt.Errorf("backend secret key is too short; must be 32 bytes at minimum")
-	}
-	copy(secretKey[:], secretKeyBytes)
 
 	sess, err := session.NewSession(&aws.Config{
 		Endpoint:    aws.String(config.S3Endpoint),
@@ -454,6 +465,34 @@ func main() {
 		die(2, "could not initialize logger: %v\n", err)
 	}
 
+	if *encrypt {
+		if err = loadSecretKey(); err != nil {
+			die(2, "%v", err)
+		}
+		s, err := NewPutStream(os.Stdin, *encrypt_inode, *encrypt_base)
+		if err != nil {
+			die(2, "%v", err)
+		}
+		_, err = io.Copy(os.Stdout, s)
+		if err != nil {
+			die(2, "%v", err)
+		}
+		os.Exit(0)
+	}
+	if *decrypt {
+		if err = loadSecretKey(); err != nil {
+			die(2, "%v", err)
+		}
+		s, err := NewGetStream(os.Stdin)
+		if err != nil {
+			die(2, "%v", err)
+		}
+		_, err = io.Copy(os.Stdout, s)
+		if err != nil {
+			die(2, "%v", err)
+		}
+		os.Exit(0)
+	}
 	if *server {
 		if err := serve(); err != nil {
 			logger.Errf("%v", err)
