@@ -52,6 +52,7 @@ struct fs_config fs_config = {
 	DEFAULT_BACKEND_GET_TIMEOUT,   /* backend_get_timeout */
 	DEFAULT_BACKEND_PUT_TIMEOUT,   /* backend_put_timeout */
 	DEFAULT_BACKEND_DF_TIMEOUT,    /* backend_df_timeout */
+	DEFAULT_BACKEND_HINT_TIMEOUT,  /* backend_hint_timeout */
 	0                              /* shutdown_grace_period */
 };
 
@@ -179,6 +180,10 @@ config_read()
 			if ((fs_config.backend_df_timeout =
 			    strtoul(v, NULL, 10)) == ULONG_MAX)
 				err(1, "backend_df_timeout");
+		} else if (strcmp(p, "backend_hint_timeout") == 0) {
+			if ((fs_config.backend_hint_timeout =
+			    strtoul(v, NULL, 10)) == ULONG_MAX)
+				err(1, "backend_hint_timeout");
 		} else if (strcmp(p, "shutdown_grace_period") == 0) {
 			if ((fs_config.shutdown_grace_period =
 			    strtoul(v, NULL, 10)) == ULONG_MAX)

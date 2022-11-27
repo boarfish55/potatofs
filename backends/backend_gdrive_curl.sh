@@ -49,6 +49,12 @@ usage() {
 	echo "            \"used_bytes\": <bytes used on backend>, "
 	echo "            \"total_bytes\": <total backend capacity in bytes>}"
 	echo ""
+	echo "       $(basename $0) hint"
+	echo ""
+	echo "           Output is a JSON string with the following format:"
+	echo ""
+	echo "           {\"status\": \"OK\"}"
+	echo ""
 	echo "       $(basename $0) <get|put>"
 	echo ""
 	echo "           This will read a JSON string from STDIN. It should "
@@ -267,6 +273,18 @@ get_folder_id() {
 	cat $folder_id_path
 }
 
+do_hint() {
+	echo "{\"status\": \"OK\"}"
+
+	read json
+	inode=$(echo $json | jq -r .inode)
+	base=$(echo $json | jq -r .base)
+	if [ ! -z "$inode" -a ! -z "$base" ]; then
+		logger -i -t potatofs-backend -p user.info \
+			"hint: inode $inode / base $base"
+	fi
+}
+
 cmd="$1"
 
 trap "rm -f $tmpfile" EXIT
@@ -275,6 +293,9 @@ case $cmd in
 	df)
 		get_token
 		do_df
+		;;
+	hint)
+		do_hint
 		;;
 	get)
 		get_token

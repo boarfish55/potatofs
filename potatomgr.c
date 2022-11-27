@@ -415,8 +415,9 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 				}
 			}
 			if (r == -1)
-				XERRF(e, XLOG_ERRNO, errno,
-				    "file descriptor %d error", fds[nfds].fd);
+				xlog(LOG_ERR, NULL,
+				    "file descriptor %d did not match any "
+				    "poll flags", fds[nfds].fd);
 		}
 	}
 	stdout[stdout_r] = '\0';
@@ -661,6 +662,89 @@ fail:
 	memcpy(&m->v.err, e, sizeof(struct xerr));
 	m->m = MGR_MSG_TRUNCATE_ERR;
 	return mgr_send(c, -1, m, xerrz(e));
+}
+
+static void
+backend_hint(struct slab_key *sk)
+{
+	char         *args[] = {(char *)fs_config.mgr_exec, "hint", NULL};
+	size_t        len;
+	char          stdin[LINE_MAX], stdout[1024], stderr[1024];
+	struct xerr   e;
+	int           wstatus;
+	json_t       *j, *o;
+	json_error_t  jerr;
+
+	len = snprintf(stdin, sizeof(stdin),
+	    "{\"inode\": %lu, \"base\": %ld}", sk->ino, sk->base);
+
+	if (len >= sizeof(stdin)) {
+		xlog(LOG_ERR, NULL, "%s: incoming JSON too long", __func__);
+		exit(1);
+	}
+
+	if (mgr_spawn(args, &wstatus, stdin, len,
+	    stdout, sizeof(stdout), stderr, sizeof(stderr),
+	    fs_config.backend_hint_timeout, xerrz(&e)) == -1) {
+		xlog(LOG_ERR, &e, __func__);
+		exit(1);
+	}
+
+	if (WIFSIGNALED(wstatus)) {
+		xlog(LOG_ERR, NULL,
+		    "%s: killed by signal %d", __func__, WTERMSIG(wstatus));
+		exit(1);
+	}
+
+	if (WEXITSTATUS(wstatus) > 2) {
+		xlog(LOG_ERR, NULL,
+		    "%s: resulted in an undefined error (exit %d)", __func__,
+		    WTERMSIG(wstatus));
+		exit(1);
+	}
+
+	/* Bad invocation error, there is no JSON to read here. */
+	if (WEXITSTATUS(wstatus) == 2) {
+		xlog(LOG_ERR, NULL,
+		    "%s: reported bad invocation (exit 2)", __func__);
+		exit(1);
+	}
+
+	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
+		xlog(LOG_ERR, NULL, "%s: %s", __func__, jerr.text);
+		exit(1);
+	}
+
+	if ((o = json_object_get(j, "status")) == NULL) {
+		xlog(LOG_ERR, NULL,
+		    "%s: \"status\" missing from backend JSON output",
+		    __func__);
+		exit(1);
+	}
+
+	if (strcmp(json_string_value(o), "OK") != 0) {
+		if ((o = json_object_get(j, "msg")) == NULL) {
+			xlog(LOG_ERR, NULL,
+			    "%s: \"msg\" missing from JSON", __func__);
+			json_decref(j);
+			exit(1);
+		}
+
+		xlog(LOG_ERR, NULL, "%s: failed: %s",
+		    __func__, json_string_value(o));
+		json_decref(j);
+		exit(1);
+	}
+
+	if (WEXITSTATUS(wstatus) == 1) {
+		xlog(LOG_ERR, NULL,
+		    "%s: exit 1; backend produced no error message", __func__);
+		json_decref(j);
+		exit(1);
+	}
+
+	json_decref(j);
+	exit(0);
 }
 
 static int
@@ -1033,6 +1117,7 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	struct statvfs    stv;
 	struct slabdb_val v;
 	struct fs_info    fs_info;
+	pid_t             pid;
 
 	do {
 		if (statvfs(fs_config.data_dir, &stv) == -1)
@@ -1190,6 +1275,20 @@ new_slab_again:
 		 * as an extra sanity check.
 		 */
 		if (check_slab_header(&hdr, v.header_crc, v.revision, e) == 0) {
+			/*
+			 * We don't send hints when the slab is loaded
+			 * with OSLAB_EPHEMERAL. Most times this is used is
+			 * for other operations such as fsck.
+			 */
+			if (!(oflags & OSLAB_EPHEMERAL)) {
+				if ((pid = fork()) == -1) {
+					XERRF(e, XLOG_ERRNO, errno, "fork");
+					goto fail_close_dst;
+				} else if (pid == 0) {
+					CLOSE_X(*dst_fd);
+					backend_hint(sk);
+				}
+			}
 			goto end;
 		} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
 			goto fail_close_dst;
@@ -1201,7 +1300,6 @@ new_slab_again:
 		xlog(LOG_CRIT, e,
 		    "%s: possibly dealing with a past fs crash", __func__);
 		xerrz(e);
-		goto end;
 	}
 
 	/*
@@ -1220,6 +1318,15 @@ new_slab_again:
 		if (copy_incoming_slab(*dst_fd, outgoing_fd, v.header_crc,
 		    v.revision, xerrz(e)) == 0) {
 			CLOSE_X(outgoing_fd);
+			if (!(oflags & OSLAB_EPHEMERAL)) {
+				if ((pid = fork()) == -1) {
+					XERRF(e, XLOG_ERRNO, errno, "fork");
+					goto fail_close_dst;
+				} else if (pid == 0) {
+					CLOSE_X(*dst_fd);
+					backend_hint(sk);
+				}
+			}
 			goto end;
 		}
 		xlog(LOG_WARNING, e, "%s: fetching slab %s from backend even "
@@ -1582,6 +1689,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		fn();
 		for (i = 0; i < interval_secs && !shutdown_now(); i++) {
 			do {
+				while (waitpid(-1, NULL, WNOHANG) > 0);
 				if ((r = nanosleep(&tp, &rem)) == -1) {
 					tp.tv_sec = rem.tv_sec;
 					tp.tv_nsec = rem.tv_nsec;
@@ -2145,6 +2253,7 @@ worker(int lsock)
 		}
 
 		for (;;) {
+			while (waitpid(-1, NULL, WNOHANG) > 0);
 			if ((r = mgr_recv(c, &fd, &m, xerrz(&e))) == -1) {
 				if (xerr_is(&e, XLOG_ERRNO, EAGAIN)) {
 					xlog(LOG_NOTICE, NULL,

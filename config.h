@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.4.2"
+#define VERSION      "2.5.0"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -63,9 +63,10 @@
  * as the duration of the GET timeout before sending back EINTR. With no
  * interrupt from FUSE, the GET operation will be retried indefinitely.
  */
-#define DEFAULT_BACKEND_GET_TIMEOUT 15
-#define DEFAULT_BACKEND_PUT_TIMEOUT 60
-#define DEFAULT_BACKEND_DF_TIMEOUT  30
+#define DEFAULT_BACKEND_GET_TIMEOUT  15
+#define DEFAULT_BACKEND_PUT_TIMEOUT  60
+#define DEFAULT_BACKEND_DF_TIMEOUT   30
+#define DEFAULT_BACKEND_HINT_TIMEOUT 30
 
 /*
  * When unclaiming a slab, if the local cache utilization is over this
@@ -135,6 +136,7 @@ struct fs_config {
 	uint32_t  backend_get_timeout;
 	uint32_t  backend_put_timeout;
 	uint32_t  backend_df_timeout;
+	uint32_t  backend_hint_timeout;
 	time_t    shutdown_grace_period;
 };
 

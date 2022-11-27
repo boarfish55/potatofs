@@ -33,6 +33,12 @@ usage() {
 	echo "            \"used_bytes\": <bytes used on backend>, "
 	echo "            \"total_bytes\": <total backend capacity in bytes>}"
 	echo ""
+	echo "       $(basename $0) hint"
+	echo ""
+	echo "           Output is a JSON string with the following format:"
+	echo ""
+	echo "           {\"status\": \"OK\"}"
+	echo ""
 	echo "       $(basename $0) <get|put>"
 	echo ""
 	echo "           This will read a JSON string from STDIN. It should "
@@ -55,6 +61,10 @@ if [ "$1" = "-h" ]; then
 	usage
 	exit 2
 fi
+
+do_hint() {
+	exec $primary_backend hint
+}
 
 do_df() {
 	# It would be best to get the size of both backends and use the
@@ -93,6 +103,9 @@ do_put() {
 case $1 in
 	df)
 		do_df
+		;;
+	hint)
+		do_hint
 		;;
 	get)
 		do_get

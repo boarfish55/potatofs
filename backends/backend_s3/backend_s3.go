@@ -197,6 +197,10 @@ type MgrMsgDfResponse struct {
 	TotalBytes uint64 `json:"total_bytes"`
 }
 
+type MgrMsgHintResponse struct {
+	Status string `json:"status"`
+}
+
 type MgrMsgGetResponse struct {
 	Status  string `json:"status"`
 	InBytes int64  `json:"in_bytes"`
@@ -283,6 +287,11 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 			Status:     "OK",
 			UsedBytes:  used_bytes,
 			TotalBytes: config.BackendBytes,
+		}
+	case "hint":
+		logger.Infof("slab hint: inode=%d/base=%d", msg.Args.Inode, msg.Args.Base)
+		resp = MgrMsgHintResponse{
+			Status: "OK",
 		}
 	case "get":
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
@@ -481,6 +490,11 @@ func main() {
 	switch msg.Command {
 	case "df":
 		reply = MgrMsgDfResponse{}
+	case "hint":
+		reply = MgrMsgHintResponse{}
+		if err := dec.Decode(&msg.Args); err != nil {
+			die(2, "invalid JSON passed to %q: %v", msg.Command, err)
+		}
 	case "get":
 		reply = MgrMsgGetResponse{}
 		if err := dec.Decode(&msg.Args); err != nil {
