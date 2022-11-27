@@ -378,7 +378,7 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 		logger.Errf("Encode: %v", err)
 	}
 	elapsed := time.Now().Sub(start)
-	logger.Infof("%s completed in %v seconds", msg.Command, elapsed.Seconds())
+	logger.Infof("%s completed in %.6f seconds", msg.Command, elapsed.Seconds())
 }
 
 func die(code int, format string, v ...interface{}) {
