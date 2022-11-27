@@ -1,3 +1,11 @@
+potatofs (2.6.0) unstable; urgency=medium
+
+  * Fix libuuid1 dep
+  * Add -encrypt and -decrypt to backend_s3, allowing to encrypt/decrypt slabs
+    locally for troubleshooting
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 27 Nov 2022 14:13:14 -0500
+
 potatofs (2.5.0) unstable; urgency=medium
 
   * v2.5.0
