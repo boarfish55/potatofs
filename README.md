@@ -1,7 +1,7 @@
 DISCLAIMER
 ==========
-This is a work in progress. Expect poor performance and possible data
-corruption. Do not use to store anything you're not prepared to lose!
+This is a work in progress. Data loss and/or corruption may occur. Do not
+use to store anything you're not prepared to lose!
 
 
 OVERVIEW
@@ -156,7 +156,7 @@ KNOWN ISSUES
 
 TODO
 ====
-* Retryable failures are not well tested or even supported is many
+* Retryable failures are not well tested or even supported in many
   dirinode operations. Need to review the failure path in each of the
   fs_* functions. What may be best is to wrap each such function
   into another one that handles retries and cancelations. This may need
@@ -168,8 +168,6 @@ TODO
 * Add a potatoctl backup command, which does an online backup of the
   slab db, uploads it to the backend, as well as the stats fs_info file.
   See: https://www.sqlite.org/backup.html
-* On install, we should have mount.potatofs and fsck.potatofs binaries,
-  even if only symlinked.
 * fsck doesn't seem to detect all cases of lost directories and files. For
   example:
   - Leaving an unreferenced directory with nlink 1.
@@ -181,9 +179,6 @@ TODO
   be used by fsck, therefore is optional.
 * Add a "wide" option to top
 * fsck should cleanup unreferenced slabs on the backend.
-* Add a way for potatoctl to dump inode fields in JSON, such as to list
-  all entries in a directory, or the size of an inode. Useful to
-  to do manual claims and all.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)
   and off_t (int64_t), blkcnt_t (int64_t).
