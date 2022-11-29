@@ -62,7 +62,7 @@ static void usage();
 static int  load_dir(int, char **, struct inode *, int *);
 static int  write_dir(int, char *, struct inode *);
 static void print_inode(struct inode *, int);
-static void print_slab_hdr(struct slab_hdr *);
+static void print_slab_hdr(struct slab_hdr *, const uint32_t *);
 
 struct subc {
 	char *name;
@@ -642,24 +642,33 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 }
 
 int
-verify_checksum(int fd, struct slab_hdr *hdr, struct xerr *e)
+compute_checksum(int fd, uint32_t *crc, struct xerr *e)
 {
-	uint32_t crc;
 	char     buf[BUFSIZ];
 	ssize_t  r;
 
 	if (lseek(fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
 		return XERRF(e, XLOG_ERRNO, errno, "lseek");
 
-	crc = crc32_z(0L, Z_NULL, 0);
+	*crc = crc32_z(0L, Z_NULL, 0);
 	while ((r = read(fd, buf, sizeof(buf)))) {
 		if (r == -1) {
 			if (errno == EINTR)
 				continue;
 			return XERRF(e, XLOG_ERRNO, errno, "read");
 		}
-		crc = crc32_z(crc, (unsigned char *)buf, r);
+		*crc = crc32_z(*crc, (unsigned char *)buf, r);
 	}
+	return 0;
+}
+
+int
+verify_checksum(int fd, struct slab_hdr *hdr, struct xerr *e)
+{
+	uint32_t crc;
+
+	if (compute_checksum(fd, &crc, e) == -1)
+		return XERR_PREPENDFN(e);
 
 	if (hdr->v.f.checksum != crc)
 		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
@@ -1482,7 +1491,7 @@ slabdb(int argc, char **argv)
 
 	for (entry = head; entry != NULL; entry = entry->next) {
 		uuid_unparse(entry->sv.owner, u);
-		printf("%s: sk=%lu/%lu, rev=%lu, crc=%u, uuid=%s,"
+		printf("%s: sk=%lu/%lu, rev=%lu, header_crc=%u, uuid=%s,"
 		    " last_claimed=%lu.%lu, flags=%u, truncate_offset=%lu\n",
 		    __func__,
 		    entry->sk.ino, entry->sk.base,
@@ -1567,7 +1576,7 @@ claim(int argc, char **argv)
 	if (verify_checksum(b.fd, &b.hdr, xerrz(&e)) == -1)
 		goto fail;
 
-	print_slab_hdr(&b.hdr);
+	print_slab_hdr(&b.hdr, NULL);
 
 	m.m = MGR_MSG_UNCLAIM;
 	memcpy(&m.v.unclaim.key, &b.hdr.v.f.key, sizeof(struct slab_key));
@@ -2143,14 +2152,18 @@ show_dir(int argc, char **argv)
 }
 
 static void
-print_slab_hdr(struct slab_hdr *hdr)
+print_slab_hdr(struct slab_hdr *hdr, const uint32_t *crc)
 {
+	char     crc_str[32] = "";
 	uint32_t header_crc = crc32_z(0L, (Bytef *)hdr,
 	    sizeof(struct slab_hdr));
 
+	if (crc != NULL)
+		snprintf(crc_str, sizeof(crc_str), " (actual: %u)", *crc);
+
 	printf("  hdr (CRC %u):\n", header_crc);
 	printf("    slab_version:    %u\n", hdr->v.f.slab_version);
-	printf("    checksum:        %u\n", hdr->v.f.checksum);
+	printf("    checksum:        %u%s\n", hdr->v.f.checksum, crc_str);
 	printf("    revision:        %lu\n", hdr->v.f.revision);
 	printf("    inode / base:    %lu / %lu%s\n", hdr->v.f.key.ino,
 	    hdr->v.f.key.base, (hdr->v.f.key.ino) ? "" : " (itbl)");
@@ -2209,6 +2222,8 @@ show_slab(int argc, char **argv)
 	ssize_t               r;
 	ino_t                 ino;
 	struct inode          inode;
+	uint32_t              crc;
+	struct xerr           e;
 
 	if (argc < 1) {
 		usage();
@@ -2222,9 +2237,13 @@ show_slab(int argc, char **argv)
 		err(1, "read");
 	if (r < sizeof(b.hdr))
 		errx(1, "%s: short read on itbl header", __func__);
+	if (compute_checksum(fd, &crc, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		exit(1);
+	}
 
 	printf("slab: %s\n", argv[0]);
-	print_slab_hdr(&b.hdr);
+	print_slab_hdr(&b.hdr, &crc);
 
 	if (!b.hdr.v.f.key.ino) {
 		itbl_hdr = (struct slab_itbl_hdr *)b.hdr.v.padding.data;
@@ -2242,6 +2261,8 @@ show_slab(int argc, char **argv)
 		printf("\n\n");
 
 		printf("  inodes:\n");
+		if (lseek(fd, 0, SEEK_SET) == -1)
+			err(1, "lseek");
 		for (ino = b.hdr.v.f.key.base;
 		    ino < b.hdr.v.f.key.base + slab_inode_max(); ino++) {
 			if ((r = read(fd, &inode, sizeof(inode))) == -1)

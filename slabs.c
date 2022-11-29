@@ -916,7 +916,12 @@ error_retry:
 			counter_decr(COUNTER_N_OPEN_SLABS);
 		}
 		MTX_UNLOCK(&owned_slabs.lock);
-		XERR_PREPENDFN(e);
+		if (xerr_is(e, XLOG_APP, XLOG_EOF))
+			XERRF(e, XLOG_APP, XLOG_BUSY,
+			    "EOF from mgr, probably due to socket timeout; "
+			    "this may happen in low space situations where we "
+			    "sleep to allow time for purging, or flock() "
+			    "contention");
 		return NULL;
 	}
 	LK_UNLOCK(&b->lock);
