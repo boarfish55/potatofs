@@ -451,7 +451,7 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "outgoing slab name too long");
 
-	if ((dst_fd = open_wflock(dst, O_CREAT|O_RDWR, 0600,
+	if ((dst_fd = open_wflock(dst, O_CREAT|O_RDWR|O_TRUNC, 0600,
 	    LOCK_EX, flock_timeout)) == -1) {
 		if (errno == EWOULDBLOCK)
 			return XERRF(e, XLOG_APP, XLOG_BUSY,
@@ -527,9 +527,6 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	struct statvfs    stv;
 	struct slabdb_val v;
 
-	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld", __func__,
-	    m->v.unclaim.key.ino, m->v.unclaim.key.base);
-
 	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
 		xerr_prepend(e, __func__);
 		goto fail;
@@ -540,10 +537,16 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		goto fail;
 	}
 
+	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld, revision=%lu, "
+	    "header_crc=%u, crc=%u", __func__,
+	    m->v.unclaim.key.ino, m->v.unclaim.key.base,
+	    hdr.v.f.revision, v.header_crc, hdr.v.f.checksum);
+
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "statvfs");
 		goto fail;
 	}
+
 	if (stv.f_bfree <
 	    stv.f_blocks * (100 - fs_config.unclaim_purge_threshold_pct) / 100)
 		/*
@@ -565,12 +568,13 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 				    m->v.unclaim.key.base);
 				xerrz(e);
 				goto end;
-			} else if (xerr_is(e, XLOG_FS, ENOSPC)) {
+			} else if (xerr_is(e, XLOG_ERRNO, ENOSPC)) {
 				xlog(LOG_WARNING, e, __func__);
 				xerrz(e);
 				goto end;
 			} else {
-				xerr_prepend(e, __func__);
+				xlog(LOG_WARNING, e, __func__);
+				XERR_PREPENDFN(e);
 				goto fail;
 			}
 		}
@@ -610,8 +614,9 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 			    "%s: unlink src %s", __func__, src);
 		} else {
 			xlog(LOG_INFO, NULL, "%s: purged slab %s "
-			    "(revision=%lu, crc=%u)",
-			    __func__, src, hdr.v.f.revision, v.header_crc);
+			    "(revision=%lu, header_crc=%u, crc=%u)",
+			    __func__, src, hdr.v.f.revision, v.header_crc,
+			    hdr.v.f.checksum);
 			mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
 		}
 	}
@@ -1026,6 +1031,9 @@ copy_incoming_slab(int dst_fd, int src_fd, uint32_t header_crc,
 		    "mismatching header CRC: expected=%u, slab=%u",
 		    header_crc, crc);
 
+	if (ftruncate(dst_fd, 0) == -1)
+		return XERRF(e, XLOG_ERRNO, errno, "ftruncate");
+
 write_hdr_again:
 	if (pwrite_x(dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 		if (errno == ENOSPC) {
@@ -1119,6 +1127,9 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	struct fs_info    fs_info;
 	pid_t             pid;
 
+	if (slab_key_valid(sk, e) == -1)
+		return XERR_PREPENDFN(e);
+
 	do {
 		if (statvfs(fs_config.data_dir, &stv) == -1)
 			return XERRF(e, XLOG_APP, XLOG_IO,
@@ -1131,15 +1142,13 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 			 * partition to prevent the slabdb from breaking.
 			 */
 			xlog(LOG_WARNING, NULL, "%s: free space is below "
-			    "%lu%%, blocking on claim()",
-			    __func__, fs_config.unclaim_purge_threshold_pct);
+			    "%lu%%, blocking on claim() for sk=%lu/%ld",
+			    __func__, fs_config.unclaim_purge_threshold_pct,
+			    sk->ino, sk->base);
 			sleep(1);
 			continue;
 		}
 	} while(0);
-
-	if (slab_key_valid(sk, e) == -1)
-		return XERR_PREPENDFN(e);
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -1382,6 +1391,7 @@ get_again:
 	}
 	if (copy_incoming_slab(*dst_fd, incoming_fd, v.header_crc,
 	    v.revision, e) == -1) {
+		xlog(LOG_ERR, e, "%s: slab %s", __func__, in_path);
 		CLOSE_X(incoming_fd);
 		goto fail_close_dst;
 	}
@@ -1457,6 +1467,7 @@ end:
 fail_close_dst:
 	unlink(dst);
 	CLOSE_X(*dst_fd);
+	*dst_fd = -1;
 	return -1;
 }
 
@@ -1804,7 +1815,7 @@ scrub_local_slab(const char *path)
 
 	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB, 0)) == -1) {
 		if (errno == EWOULDBLOCK) {
-			xlog(LOG_INFO, NULL, "%s: slab %s is already "
+			xlog_dbg(XLOG_MGR, "%s: slab %s is already "
 			    "flock()'d; skipping", __func__, path);
 		} else {
 			xlog_strerror(LOG_ERR, errno, "%s: failed "

@@ -240,7 +240,7 @@ fail:
  * If v->last_claimed is NULL, we just write back the previous value.
  */
 int
-slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint8_t flags,
+slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint32_t flags,
     struct xerr *e)
 {
 	struct xerr       e2;
@@ -322,6 +322,7 @@ slabdb_get_nolock(const struct slab_key *sk, struct slabdb_val *v,
 		goto fail;
 	}
 
+	bzero(v, sizeof(struct slabdb_val));
 	switch ((r = sqlite3_step(qry_get.stmt))) {
 	case SQLITE_ROW:
 		v->revision = (uint64_t)sqlite3_column_int64(qry_get.stmt,
@@ -389,6 +390,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 			goto fail;
 
 		xerrz(e);
+		bzero(v, sizeof(struct slabdb_val));
 		v->revision = 0;
 		v->header_crc = 0L;
 		v->flags = 0;
@@ -505,7 +507,7 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 			v.last_claimed.tv_nsec = sqlite3_column_int64(
 			    qry_loop_lru.stmt,
 			    qry_loop_lru.o_last_claimed_nsec);
-			v.flags = sqlite3_column_int(
+			v.flags = (uint32_t)sqlite3_column_int(
 			    qry_loop_lru.stmt, qry_loop_lru.o_flags);
 			v.truncate_offset = sqlite3_column_int64(
 			    qry_loop_lru.stmt,

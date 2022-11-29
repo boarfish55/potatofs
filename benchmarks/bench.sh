@@ -9,7 +9,7 @@ dir="$1"
 [ -d "$dir" ] || fail "no such dir $dir"
 
 name=potatofs_rw_integrity
-out=$(mktemp -t potatofs_rw_integrity_$(date +'%Y-%m-%d').out.XXXXXX)
+out=$(mktemp -t potatofs_rw_integrity_small_$(date +'%Y-%m-%d').out.XXXXXX)
 
 if ! fio --name="$name" \
 	--output="$out" \
@@ -22,9 +22,10 @@ if ! fio --name="$name" \
 	--direct=0 \
 	--numjobs=4 \
 	--time_based=1 \
-	--runtime=600 \
-	--size=2G \
-	--nrfiles=500 \
+	--runtime=300 \
+	--size=200M \
+	--nrfiles=100 \
+	--openfiles=50 \
 	--ioengine=psync \
 	--iodepth=1 \
 	--do_verify=1 \

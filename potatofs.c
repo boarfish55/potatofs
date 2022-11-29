@@ -1487,10 +1487,16 @@ fs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync,
 	counter_incr(COUNTER_FS_FSYNC);
 
 	inode_lock(oi, LK_LOCK_RW);
-	if (inode_sync(oi, &e) == -1)
-		FS_ERR(&r_sent, req, &e);
-	else
-		FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
+again:
+	if (inode_sync(oi, &e) == -1) {
+		if (fs_retry(req, &e))
+			goto again;
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+	}
+	FUSE_REPLY(&r_sent, fuse_reply_err(req, 0));
 	inode_unlock(oi);
 }
 

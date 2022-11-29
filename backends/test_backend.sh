@@ -102,6 +102,7 @@ do_get() {
 	fi
 	cp "$BACKEND_DATA_PATH/$slab" "$local_path"
 	if [ $? -ne 0 ]; then
+		rm -f "$local_path"
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to get slab: $slab\"}"
 		return 1
 	fi
@@ -130,6 +131,7 @@ do_put() {
 	sz=$(stat -c %s "$local_path")
 	cp "$local_path" "$BACKEND_DATA_PATH/$slab"
 	if [ $? -ne 0 ]; then
+		rm -f "$BACKEND_DATA_PATH/$slab"
 		echo "{\"status\": \"ERR\", \"msg\": \"failed to put slab: $slab\"}"
 		return 1
 	fi

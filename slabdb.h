@@ -36,7 +36,7 @@ struct slabdb_val {
 	uint32_t        header_crc;
 	uuid_t          owner;
 	struct timespec last_claimed;
-	uint8_t         flags;
+	uint32_t        flags;
 	uint64_t        truncate_offset;
 };
 
@@ -47,12 +47,12 @@ struct slabdb_val {
 #define SLABDB_PUT_TRUNCATE     0x10
 #define SLABDB_PUT_ALL          0xFF
 
-#define SLABDB_FLAG_TRUNCATE    0x01
+#define SLABDB_FLAG_TRUNCATE    0x00000001
 
 int  slabdb_init(uuid_t, struct xerr *);
 void slabdb_shutdown();
 
-int slabdb_put(const struct slab_key *, struct slabdb_val *, uint8_t,
+int slabdb_put(const struct slab_key *, struct slabdb_val *, uint32_t,
         struct xerr *);
 int slabdb_put_nolock(const struct slab_key *, struct slabdb_val *,
         struct xerr *);
