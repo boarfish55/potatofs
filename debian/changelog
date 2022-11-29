@@ -1,3 +1,24 @@
+potatofs (2.6.1) unstable; urgency=medium
+
+  v2.6.1
+  Fix a few bugs, some major:
+  * Truncate slabs in copy_outgoing_slab() and copy_incoming_slab(),
+    otherwise we can end up with trailing bytes from a previous iteration.
+    This causes those slabs to have the wrong CRC, preventing them from being
+    used. Corruption, essentially.
+  * Fix cast in slabdb for flags; just use uint32_t. Sqlite doesn't store
+    short ints like uint8_t.
+  * Fix possible bad file descriptor in failure situations in claim()
+  * Have fs_sync() handle retryable errors
+  * Convert XLOG_EOF to XLOG_BUSY in slab_load() to make that retryable by
+    fs ops.
+  * Have our test backend cleanup partial files when out of space
+  * Display slab CRC in potatoctl
+  * Add some logging
+  * Update bench.sh to have smaller defaults to run on smaller systems
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 28 Nov 2022 22:50:08 -0500
+
 potatofs (2.6.0) unstable; urgency=medium
 
   * Fix libuuid1 dep
