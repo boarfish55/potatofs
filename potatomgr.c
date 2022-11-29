@@ -785,8 +785,9 @@ backend_get(const char *local_path, const char *backend_name,
 	clock_gettime_x(CLOCK_REALTIME, &end);
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: completed in %u.%09u seconds",
-	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
+	xlog(LOG_NOTICE, NULL, "%s: sk=%lu/%ld completed in %u.%09u seconds",
+	    __func__, sk->ino, sk->base, delta_ns / 1000000000,
+	    delta_ns % 1000000000);
 
 	if (WIFSIGNALED(wstatus)) {
 		XERRF(e, XLOG_APP, XLOG_BEERROR,
@@ -2071,6 +2072,7 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 	struct slab_hdr    hdr;
 	struct slabdb_val  pv;
 	struct xerr        e = XLOG_ERR_INITIALIZER;
+	fsblkcnt_t         threshold;
 
 	if (uuid_compare(v->owner, instance_id) != 0)
 		return 0;
@@ -2128,16 +2130,18 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 		    "(revision=%lu, crc=%u)", __func__, path,
 		    v->revision, v->header_crc);
 		mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
-		fs_usage->used_blocks -= st.st_blocks;
+		fs_usage->used_blocks -=
+		    (st.st_blocks / (fs_usage->stv.f_bsize / 512));
 	}
 
 	CLOSE_X(fd);
 
-	if (fs_usage->used_blocks <
-	    fs_usage->stv.f_blocks * fs_config.purge_threshold_pct / 100) {
+	threshold = fs_usage->stv.f_blocks *
+	    fs_config.purge_threshold_pct / 100;
+	if (fs_usage->used_blocks < threshold) {
 		xlog(LOG_INFO, NULL, "%s: ending purge, used blocks %lu "
-		    "within threshold %lu", __func__, fs_usage->used_blocks,
-		    fs_usage->stv.f_blocks);
+		    "within threshold %lu", __func__,
+		    fs_usage->used_blocks, threshold);
 		return 1;
 	}
 
