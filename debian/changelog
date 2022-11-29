@@ -1,3 +1,11 @@
+potatofs (2.6.2) unstable; urgency=medium
+
+  v2.6.2
+  * Fix used block calculation used during purge
+  * Log inode/base along with duration when performing backend_get()
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 28 Nov 2022 23:42:03 -0500
+
 potatofs (2.6.1) unstable; urgency=medium
 
   v2.6.1
