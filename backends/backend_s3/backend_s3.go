@@ -57,6 +57,7 @@ var (
 )
 
 type Config struct {
+	LogLevel              string `toml:"log_level"`
 	S3Endpoint            string `toml:"s3_endpoint"`
 	S3Bucket              string `toml:"s3_bucket"`
 	S3Region              string `toml:"s3_region"`
@@ -446,6 +447,29 @@ func serve() error {
 	return nil
 }
 
+func parseLogLevel(logLevel string) syslog.Priority {
+	switch logLevel {
+	case "debug":
+		return syslog.LOG_DEBUG
+	case "info":
+		return syslog.LOG_INFO
+	case "notice":
+		return syslog.LOG_NOTICE
+	case "warning":
+		return syslog.LOG_WARNING
+	case "error":
+		return syslog.LOG_ERR
+	case "crit":
+		return syslog.LOG_CRIT
+	case "alert":
+		return syslog.LOG_ALERT
+	case "emerg":
+		return syslog.LOG_EMERG
+	default:
+		return syslog.LOG_INFO
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -460,7 +484,7 @@ func main() {
 		die(2, "%v", err)
 	}
 
-	logger, err = NewSysLoggy(syslog.LOG_NOTICE|syslog.LOG_USER, program)
+	logger, err = NewSysLoggy(syslog.LOG_USER, parseLogLevel(config.LogLevel), program)
 	if err != nil {
 		die(2, "could not initialize logger: %v\n", err)
 	}

@@ -2,6 +2,10 @@ s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"
 s3_region = "us-east-1"
 
+# syslog mimimum log level. Priorities lower than this are silently
+# discarded.
+log_level = "notice"
+
 # S3 credentials
 access_key_id = "some id"
 secret_access_key = "some key"

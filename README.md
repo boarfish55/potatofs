@@ -153,6 +153,7 @@ directory, a large majority of files are under 4K in size.
 KNOWN ISSUES
 ============
 * When potatoctl fsck errors out, it may not always shutdown the mgr.
+* Running in low-space conditions isn't well tested. Corruption may occur.
 
 TODO
 ====
@@ -177,7 +178,6 @@ TODO
   unlink/truncate to read previous file data.
 * Add a "rm" handler in backend scripts, though mention this will only
   be used by fsck, therefore is optional.
-* Add a "wide" option to top
 * fsck should cleanup unreferenced slabs on the backend.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
 * Need to doublecheck all the usage and conversions for ino_t (uint64_t)

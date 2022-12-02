@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
+#include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -49,6 +50,7 @@ static int  show_inode(int, char **);
 static int  inode_tables(int, char **);
 static int  fsck(int, char **);
 static int  top(int, char **);
+static int  ctop(int, char **);
 static int  dump_counters(int, char **);
 static int  dump_config(int, char **);
 static int  fs_status(int, char **);
@@ -75,6 +77,7 @@ struct subc {
 	{ "dir", &show_dir, 0 },
 	{ "inode", &show_inode, 0 },
 	{ "top", &top, 0 },
+	{ "ctop", &ctop, 0 },
 	{ "counters", &dump_counters, 0 },
 	{ "config", &dump_config, 0 },
 	{ "status", &fs_status, 0 },
@@ -196,7 +199,7 @@ read_metrics(uint64_t *counters_now, uint64_t *mgr_counters_now)
 	struct xerr    e;
 	struct mgr_msg m;
 
-	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
 		xerr_print(&e);
 		exit(1);
 	}
@@ -1199,7 +1202,7 @@ fs_status(int argc, char **argv)
 	double         used, total;
 	struct fs_info fs_info;
 	struct statvfs stv;
-	char           mgr_line[80];
+	char           mgr_line[80], pid_version[64];
 	int            exit_code = 0;
 
 	mgr = mgr_connect(0, xerrz(&e));
@@ -1219,20 +1222,16 @@ fs_status(int argc, char **argv)
 		}
 		snprintf(mgr_line, sizeof(mgr_line), "not running");
 	} else {
+		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_INFO;
-
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			return 1;
 		}
-
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			return 1;
 		}
-
-		close(mgr);
-
 		if (m.m == MGR_MSG_INFO_ERR) {
 			memcpy(&e, &m.v.err, sizeof(struct xerr));
 			xerr_print(&e);
@@ -1242,11 +1241,35 @@ fs_status(int argc, char **argv)
 			    __func__, m.m);
 			return 1;
 		}
+		snprintf(pid_version, sizeof(pid_version),
+		    "running with PID %d, version %s",
+		    m.v.info.mgr_pid, m.v.info.version_string);
 		memcpy(&fs_info, &m.v.info.fs_info, sizeof(fs_info));
 
+		bzero(&m, sizeof(m));
+		m.m = MGR_MSG_GET_OFFLINE;
+		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			xerr_print(&e);
+			return 1;
+		}
+		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			xerr_print(&e);
+			return 1;
+		}
+		close(mgr);
+		if (m.m == MGR_MSG_GET_OFFLINE_ERR) {
+			memcpy(&e, &m.v.err, sizeof(e));
+			xerr_print(&e);
+			return 1;
+		} else if (m.m != MGR_MSG_GET_OFFLINE_OK) {
+			warnx("%s: mgr_recv: unexpected response: %d",
+			    __func__, m.m);
+			return 1;
+		}
+
 		snprintf(mgr_line, sizeof(mgr_line),
-		    "running with PID %d (version %s)", m.v.info.mgr_pid,
-		    m.v.info.version_string);
+		    "%s, offline mode %s", pid_version,
+		    (m.v.get_offline.offline) ? "on" : "off");
 	}
 
 	printf("%s: %s\n", MGR_PROGNAME, mgr_line);
@@ -1440,6 +1463,277 @@ top(int argc, char **argv)
 
 		    counters_now[COUNTER_FS_ERROR]);
 	}
+	return 0;
+}
+
+int
+ctop(int argc, char **argv)
+{
+	uint64_t         counters_now[COUNTER_LAST];
+	uint64_t         counters_prev[COUNTER_LAST];
+	double           counters_delta[COUNTER_LAST];
+	uint64_t         mgr_counters_now[MGR_COUNTER_LAST];
+	uint64_t         mgr_counters_prev[MGR_COUNTER_LAST];
+	double           mgr_counters_delta[MGR_COUNTER_LAST];
+	int              c;
+	int              mgr;
+	struct timespec  ts, te, slp = {0, 100000000}; /* 100ms */
+	struct xerr      e;
+	struct mgr_msg   m;
+	struct fs_info   fs_info;
+	char             u[37], tstr[32];
+	double           used, total;
+	int              row, col1, col2, stats_row, dim_x;
+	char             pid_version_str[80];
+	struct tm       *tm;
+	time_t           t;
+	struct statvfs   stv;
+	double           delta_s;
+	int              interval = 1;
+
+	mgr = mgr_connect(0, xerrz(&e));
+	if (mgr == -1) {
+		xerr_print(&e);
+		return 1;
+	}
+	m.m = MGR_MSG_INFO;
+	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return 1;
+	}
+	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return 1;
+	}
+	close(mgr);
+
+	if (m.m == MGR_MSG_INFO_ERR) {
+		memcpy(&e, &m.v.err, sizeof(struct xerr));
+		xerr_print(&e);
+		return 1;
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		warnx("%s: mgr_recv: unexpected response: %d",
+		    __func__, m.m);
+		return 1;
+	}
+	memcpy(&fs_info, &m.v.info.fs_info, sizeof(fs_info));
+	uuid_unparse(fs_info.instance_id, u);
+
+	initscr();
+	cbreak();
+	noecho();
+	timeout(0);
+	dim_x = getmaxx(stdscr);
+
+	t = time(NULL);
+	tm = localtime(&t);
+	strftime(tstr, sizeof(tstr), "%c", tm);
+	mvprintw(0, 0, "PotatoFS ctop - %s", tstr);
+	snprintf(pid_version_str, sizeof(pid_version_str),
+	    "potatomgr PID %d, version %s",
+	    m.v.info.mgr_pid, m.v.info.version_string);
+	mvprintw(0, dim_x - strlen(pid_version_str), pid_version_str);
+
+	row = 2;
+	col1 = 2;
+	mvprintw(row++, col1, "fs instance  : %s", u);
+
+	if (statvfs(fs_config.data_dir, &stv) == -1)
+		err(1, "statvfs");
+	used = (double) (stv.f_blocks - stv.f_bfree) *
+	    stv.f_bsize / (2UL << 29UL);
+	total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
+
+	mvprintw(row++, col1, "Cache usage  : %.1f / %.1f GiB (%.1f%%)\n",
+	    used, total, used * 100.0 / total);
+
+	/*
+	 * Convert values to GiB
+	 */
+	used = (double) (fs_info.stats.f_blocks -
+	    fs_info.stats.f_bfree) *
+	    fs_info.stats.f_bsize / (2UL << 29UL);
+	total = (double) fs_info.stats.f_blocks *
+	    fs_info.stats.f_bsize / (2UL << 29UL);
+
+	mvprintw(row++, col1, "Backend usage: %.1f / %.1f GiB (%.1f%%)\n",
+	    used, total, used * 100.0 / total);
+
+	col2 = 32;
+	stats_row = ++row;
+	mvprintw(row++, col1, "reads       :");
+	mvprintw(row++, col1, "read MB     :");
+	mvprintw(row++, col1, "writes      :");
+	mvprintw(row++, col1, "write MB    :");
+	mvprintw(row++, col1, "be read MB  :");
+	mvprintw(row++, col1, "be write MB :");
+	row++;
+	mvprintw(row++, col1, "getattr     :");
+	mvprintw(row++, col1, "setattr     :");
+	mvprintw(row++, col1, "opendir     :");
+	mvprintw(row++, col1, "readdir     :");
+	mvprintw(row++, col1, "releasedir  :");
+	mvprintw(row++, col1, "open        :");
+	mvprintw(row++, col1, "flush       :");
+	mvprintw(row++, col1, "forget      :");
+	mvprintw(row++, col1, "forget_multi:");
+	mvprintw(row++, col1, "lookup      :");
+	mvprintw(row++, col1, "mkdir       :");
+
+	row = stats_row;
+	mvprintw(row++, col2, "rmdir       :");
+	mvprintw(row++, col2, "unlink      :");
+	mvprintw(row++, col2, "mknod       :");
+	mvprintw(row++, col2, "fallocate   :");
+	mvprintw(row++, col2, "fsync       :");
+	mvprintw(row++, col2, "fsyncdir    :");
+	mvprintw(row++, col2, "link        :");
+	mvprintw(row++, col2, "symlink     :");
+	mvprintw(row++, col2, "readlink    :");
+	mvprintw(row++, col2, "rename      :");
+	mvprintw(row++, col2, "statfs      :");
+	row++;
+	mvprintw(row++, col2, "delay truncs:");
+	mvprintw(row++, col2, "open slabs  :");
+	mvprintw(row++, col2, "open inodes :");
+	mvprintw(row++, col2, "fs purges   :");
+	mvprintw(row++, col2, "mgr purges  :");
+	mvprintw(row++, col2, "errors      :");
+
+	/* length of longest string above. */
+	col1 += 15;
+	col2 += 15;
+
+	read_metrics(counters_prev, mgr_counters_prev);
+	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+again:
+		if (nanosleep(&slp, NULL) == -1)
+			goto end;
+		switch (getch()) {
+		case 'q':
+			goto end;
+		case '+':
+			if (interval < 300)
+				interval++;
+			break;
+		case '-':
+			if (interval > 1)
+				interval--;
+			break;
+		default:
+			clock_gettime(CLOCK_MONOTONIC, &te);
+			if (te.tv_sec - ts.tv_sec < interval)
+				goto again;
+		}
+
+		read_metrics(counters_now, mgr_counters_now);
+		clock_gettime(CLOCK_MONOTONIC, &te);
+
+		for (c = 0; c < COUNTER_LAST; c++) {
+			counters_delta[c] = counters_now[c] - counters_prev[c];
+			counters_prev[c] = counters_now[c];
+		}
+		for (c = 0; c < MGR_COUNTER_LAST; c++) {
+			mgr_counters_delta[c] = mgr_counters_now[c] -
+			    mgr_counters_prev[c];
+			mgr_counters_prev[c] = mgr_counters_now[c];
+		}
+
+		delta_s = (((te.tv_sec * 1000000000) + te.tv_nsec) -
+		    ((ts.tv_sec * 1000000000) + ts.tv_nsec)) / 1000000000.0;
+
+		t = time(NULL);
+		tm = localtime(&t);
+		strftime(tstr, sizeof(tstr), "%c", tm);
+		mvprintw(0, 16, "%s", tstr);
+
+		snprintf(tstr, sizeof(tstr), "[refresh: %3ds]", interval);
+		mvprintw(1, dim_x - strlen(tstr), tstr);
+
+		row = stats_row;
+		mvprintw(row++, col1, "%8.1f/s",
+		    ((double)counters_delta[COUNTER_FS_READ]) / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_READ_BYTES] /
+		    1024.0 / 1024.0 / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_WRITE] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_WRITE_BYTES] /
+		    1024.0 / 1024.0 / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    mgr_counters_delta[MGR_COUNTER_BACKEND_IN_BYTES] /
+		    1024.0 / 1024.0 / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    mgr_counters_delta[MGR_COUNTER_BACKEND_OUT_BYTES] /
+		    1024.0 / 1024.0 / delta_s);
+
+		row++;
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_GETATTR] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_SETATTR] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_OPENDIR] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_READDIR] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_RELEASEDIR] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_OPEN] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FLUSH] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FORGET] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FORGET_MULTI] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_LOOKUP] / delta_s);
+		mvprintw(row++, col1, "%8.1f/s",
+		    counters_delta[COUNTER_FS_MKDIR] / delta_s);
+
+		row = stats_row;
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_RMDIR] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_UNLINK] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_MKNOD] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FALLOCATE] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FSYNC] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_FSYNCDIR] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_LINK] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_SYMLINK] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_READLINK] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_RENAME] / delta_s);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_delta[COUNTER_FS_STATFS] / delta_s);
+
+		row++;
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[COUNTER_FS_DELAYED_TRUNCATE]);
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[COUNTER_N_OPEN_SLABS]);
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[COUNTER_N_OPEN_INODES]);
+		mvprintw(row++, col2, "%8.1f/s",
+		    counters_now[COUNTER_SLABS_PURGED] / delta_s);
+		mvprintw(row++, col2, "%6lu",
+		    mgr_counters_now[MGR_COUNTER_SLABS_PURGED]);
+		mvprintw(row++, col2, "%6lu", counters_now[COUNTER_FS_ERROR]);
+
+		refresh();
+	}
+end:
+	endwin();
 	return 0;
 }
 
