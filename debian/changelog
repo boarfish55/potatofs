@@ -1,3 +1,13 @@
+potatofs (2.7.0) unstable; urgency=medium
+
+  * v2.7.0
+  * Add ctop to potatoctl, an ncurses "top" tool
+  * Add configurable log level to backend_s3
+  * Add config example about shutdown grace period, and comment why it can
+    be important
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 01 Dec 2022 23:06:22 -0500
+
 potatofs (2.6.2) unstable; urgency=medium
 
   v2.6.2
