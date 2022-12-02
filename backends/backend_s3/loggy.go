@@ -10,26 +10,29 @@ import (
 
 type Loggy struct {
 	io.Writer
-	s *syslog.Writer
-	l *log.Logger
+	s       *syslog.Writer
+	l       *log.Logger
+	logMask syslog.Priority
 }
 
-func NewTermLoggy(w io.Writer, prefix string, flag int) *Loggy {
+func NewTermLoggy(w io.Writer, prefix string, flag int, logMask syslog.Priority) *Loggy {
 	l := log.New(w, prefix+": ", flag)
 	return &Loggy{
-		s: nil,
-		l: l,
+		s:       nil,
+		l:       l,
+		logMask: logMask,
 	}
 }
 
-func NewSysLoggy(priority syslog.Priority, tag string) (*Loggy, error) {
+func NewSysLoggy(priority syslog.Priority, logMask syslog.Priority, tag string) (*Loggy, error) {
 	w, err := syslog.New(priority, tag)
 	if err != nil {
 		return nil, err
 	}
 	return &Loggy{
-		s: w,
-		l: nil,
+		s:       w,
+		l:       nil,
+		logMask: logMask,
 	}, nil
 }
 
@@ -45,6 +48,9 @@ func (l *Loggy) Write(msg []byte) (int, error) {
 }
 
 func (l *Loggy) Debug(msg string) {
+	if l.logMask < syslog.LOG_DEBUG {
+		return
+	}
 	if l.l != nil {
 		l.l.Println(msg)
 	}
@@ -54,10 +60,16 @@ func (l *Loggy) Debug(msg string) {
 }
 
 func (l *Loggy) Debugf(format string, v ...interface{}) {
+	if l.logMask < syslog.LOG_DEBUG {
+		return
+	}
 	l.Debug(fmt.Sprintf(format, v...))
 }
 
 func (l *Loggy) Info(msg string) {
+	if l.logMask < syslog.LOG_INFO {
+		return
+	}
 	if l.l != nil {
 		l.l.Println(msg)
 	}
@@ -67,10 +79,16 @@ func (l *Loggy) Info(msg string) {
 }
 
 func (l *Loggy) Infof(format string, v ...interface{}) {
+	if l.logMask < syslog.LOG_INFO {
+		return
+	}
 	l.Info(fmt.Sprintf(format, v...))
 }
 
 func (l *Loggy) Notice(msg string) {
+	if l.logMask < syslog.LOG_NOTICE {
+		return
+	}
 	if l.l != nil {
 		l.l.Println(msg)
 	}
@@ -80,10 +98,16 @@ func (l *Loggy) Notice(msg string) {
 }
 
 func (l *Loggy) Noticef(format string, v ...interface{}) {
+	if l.logMask < syslog.LOG_NOTICE {
+		return
+	}
 	l.Notice(fmt.Sprintf(format, v...))
 }
 
 func (l *Loggy) Warning(msg string) {
+	if l.logMask < syslog.LOG_WARNING {
+		return
+	}
 	if l.l != nil {
 		l.l.Println(msg)
 	}
@@ -93,10 +117,16 @@ func (l *Loggy) Warning(msg string) {
 }
 
 func (l *Loggy) Warningf(format string, v ...interface{}) {
+	if l.logMask < syslog.LOG_WARNING {
+		return
+	}
 	l.Warning(fmt.Sprintf(format, v...))
 }
 
 func (l *Loggy) Err(msg string) {
+	if l.logMask < syslog.LOG_ERR {
+		return
+	}
 	if l.l != nil {
 		l.l.Println(msg)
 	}
@@ -106,5 +136,8 @@ func (l *Loggy) Err(msg string) {
 }
 
 func (l *Loggy) Errf(format string, v ...interface{}) {
+	if l.logMask < syslog.LOG_ERR {
+		return
+	}
 	l.Err(fmt.Sprintf(format, v...))
 }

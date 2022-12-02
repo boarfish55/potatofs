@@ -27,7 +27,8 @@ potatofs: $(OBJS)
 	$(CC) -o potatofs $(OBJS) $(LDFLAGS)
 
 potatoctl: $(CTLOBJS)
-	$(CC) -o potatoctl $(CTLOBJS) $(LDFLAGS)
+	$(CC) -o potatoctl $(CTLOBJS) $(LDFLAGS) \
+		`pkg-config --cflags --libs ncurses`
 
 potatofs_tests: $(TESTOBJS)
 	$(CC) -o potatofs_tests $(TESTOBJS) $(LDFLAGS)

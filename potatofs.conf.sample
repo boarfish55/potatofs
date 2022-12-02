@@ -26,3 +26,10 @@ unclaim_purge_threshold_pct: 90
 purge_threshold_pct: 60
 noatime: yes
 df_interval: 60
+
+# How many seconds after receiving the 'shutdown' message should
+# the potatomgr keep running and flushing. It's a good idea to
+# leave at least a few seconds so that when the filesystem is unmounted,
+# the potatomgr has a chance to upload some slabs that were open for a
+# long time, as is typical for inode tables.
+shutdown_grace_period: 10
