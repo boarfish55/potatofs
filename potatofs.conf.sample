@@ -33,3 +33,8 @@ df_interval: 60
 # the potatomgr has a chance to upload some slabs that were open for a
 # long time, as is typical for inode tables.
 shutdown_grace_period: 10
+
+scrubber_interval: 3600
+purger_interval: 60
+workers: 2
+bgworkers: 2

@@ -265,7 +265,8 @@ slab_purge(void *unused)
 		} else {
 			if ((stv.f_bfree < stv.f_blocks * (100 -
 			    fs_config.unclaim_purge_threshold_pct) / 100) ||
-			    counter_get(COUNTER_N_OPEN_SLABS) >= max_open)
+			    counter_get(COUNTER_N_OPEN_SLABS) >=
+			    (uint64_t)(max_open * 0.9))
 				/*
 				 * Purge more aggressively if we're are getting
 				 * tight on space.

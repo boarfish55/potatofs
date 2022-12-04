@@ -1179,7 +1179,7 @@ int
 do_shutdown(int argc, char **argv)
 {
 	struct xerr e;
-	time_t      grace_seconds;
+	time_t      grace_seconds = 10;
 
 	if (argc >= 1)
 		grace_seconds = strtoul(argv[0], NULL, 10);
@@ -1202,7 +1202,7 @@ fs_status(int argc, char **argv)
 	double         used, total;
 	struct fs_info fs_info;
 	struct statvfs stv;
-	char           mgr_line[80], pid_version[64];
+	char           mgr_line[80], pid_version[50];
 	int            exit_code = 0;
 
 	mgr = mgr_connect(0, xerrz(&e));
