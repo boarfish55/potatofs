@@ -1,3 +1,14 @@
+potatofs (2.7.1) unstable; urgency=medium
+
+  * Add missing fuse3 dependency
+  * Fix warnings (and potential bugs) for fs_status and do_shutdown with O2
+  * Add more sample params to example conf
+  * Create the data dir at startup if it doesn exist
+  * Unclaim slabs from LRU more aggressively when we're nearing our
+    max_open limit
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sat, 03 Dec 2022 21:28:25 -0500
+
 potatofs (2.7.0) unstable; urgency=medium
 
   * v2.7.0
