@@ -987,7 +987,6 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct fuse_entry_param  entry;
 	struct dir_entry         de;
-	int                      status;
 	struct oinode           *oi = NULL, *parent_oi;
 	int                      r_sent = 0;
 
@@ -1009,7 +1008,7 @@ parent_again:
 	inode_lock(parent_oi, LK_LOCK_RD);
 
 lookup_again:
-	if ((status = di_lookup(parent_oi, &de, name, xerrz(&e))) == -1) {
+	if (di_lookup(parent_oi, &de, name, xerrz(&e)) == -1) {
 		if (fs_retry(req, &e))
 			goto lookup_again;
 		if (e.sp == XLOG_FS)

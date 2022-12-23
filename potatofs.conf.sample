@@ -36,5 +36,5 @@ shutdown_grace_period: 10
 
 scrubber_interval: 3600
 purger_interval: 60
-workers: 2
+workers: 12
 bgworkers: 2

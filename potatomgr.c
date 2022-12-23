@@ -250,39 +250,39 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 		if (p_in[0] != STDIN_FILENO) {
 			if (dup2(p_in[0], STDIN_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
-				exit(1);
+				_exit(1);
 			}
 			CLOSE_X(p_in[0]);
 		}
 		if (p_out[1] != STDOUT_FILENO) {
 			if (dup2(p_out[1], STDOUT_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
-				exit(1);
+				_exit(1);
 			}
 			CLOSE_X(p_out[1]);
 		}
 		if (p_err[1] != STDERR_FILENO) {
 			if (dup2(p_err[1], STDERR_FILENO) == -1) {
 				XERRF(e, XLOG_ERRNO, errno, "dup2");
-				exit(1);
+				_exit(1);
 			}
 			CLOSE_X(p_err[1]);
 		}
 
 		if (chdir("/") == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "chdir");
-			exit(1);
+			_exit(1);
 		}
 
 		if (setenv("POTATOFS_BACKEND_CONFIG",
 		    fs_config.mgr_exec_config, 1) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "chdir");
-			exit(1);
+			_exit(1);
 		}
 
 		if (execv(argv[0], argv) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "execv: %s", argv[0]);
-			exit(1);
+			_exit(1);
 		}
 	}
 
@@ -299,6 +299,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 	stdin_w = 0;
 	stdout_r = 0;
 	stderr_r = 0;
+	*wstatus = 2;
 	while (!stdin_closed || !stdout_closed || !stderr_closed) {
 		nfds = 0;
 		if (!stdin_closed) {
@@ -423,6 +424,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
 	stdout[stdout_r] = '\0';
 	stderr[stderr_r] = '\0';
 	if (waitpid(pid, wstatus, 0) == -1) {
+		*wstatus = 2;
 		XERRF(e, XLOG_ERRNO, errno, "waitpid");
 		return -1;
 	}
@@ -537,11 +539,6 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		goto fail;
 	}
 
-	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld, revision=%lu, "
-	    "header_crc=%u, crc=%u", __func__,
-	    m->v.unclaim.key.ino, m->v.unclaim.key.base,
-	    hdr.v.f.revision, v.header_crc, hdr.v.f.checksum);
-
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		XERRF(e, XLOG_ERRNO, errno, "statvfs");
 		goto fail;
@@ -593,6 +590,11 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		uuid_clear(v.owner);
 	else
 		uuid_copy(v.owner, instance_id);
+
+	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld, revision=%lu, "
+	    "header_crc=%u, crc=%u", __func__,
+	    m->v.unclaim.key.ino, m->v.unclaim.key.base,
+	    hdr.v.f.revision, v.header_crc, hdr.v.f.checksum);
 
 	if (slabdb_put(&m->v.unclaim.key, &v,
 	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
@@ -685,46 +687,46 @@ backend_hint(struct slab_key *sk)
 
 	if (len >= sizeof(stdin)) {
 		xlog(LOG_ERR, NULL, "%s: incoming JSON too long", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	if (mgr_spawn(args, &wstatus, stdin, len,
 	    stdout, sizeof(stdout), stderr, sizeof(stderr),
 	    fs_config.backend_hint_timeout, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	if (WIFSIGNALED(wstatus)) {
 		xlog(LOG_ERR, NULL,
 		    "%s: killed by signal %d", __func__, WTERMSIG(wstatus));
-		exit(1);
+		_exit(1);
 	}
 
 	if (WEXITSTATUS(wstatus) > 2) {
 		xlog(LOG_ERR, NULL,
 		    "%s: resulted in an undefined error (exit %d)", __func__,
 		    WTERMSIG(wstatus));
-		exit(1);
+		_exit(1);
 	}
 
 	/* Bad invocation error, there is no JSON to read here. */
 	if (WEXITSTATUS(wstatus) == 2) {
 		xlog(LOG_ERR, NULL,
 		    "%s: reported bad invocation (exit 2)", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	if ((j = json_loads(stdout, JSON_REJECT_DUPLICATES, &jerr)) == NULL) {
 		xlog(LOG_ERR, NULL, "%s: %s", __func__, jerr.text);
-		exit(1);
+		_exit(1);
 	}
 
 	if ((o = json_object_get(j, "status")) == NULL) {
 		xlog(LOG_ERR, NULL,
 		    "%s: \"status\" missing from backend JSON output",
 		    __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	if (strcmp(json_string_value(o), "OK") != 0) {
@@ -732,24 +734,24 @@ backend_hint(struct slab_key *sk)
 			xlog(LOG_ERR, NULL,
 			    "%s: \"msg\" missing from JSON", __func__);
 			json_decref(j);
-			exit(1);
+			_exit(1);
 		}
 
 		xlog(LOG_ERR, NULL, "%s: failed: %s",
 		    __func__, json_string_value(o));
 		json_decref(j);
-		exit(1);
+		_exit(1);
 	}
 
 	if (WEXITSTATUS(wstatus) == 1) {
 		xlog(LOG_ERR, NULL,
 		    "%s: exit 1; backend produced no error message", __func__);
 		json_decref(j);
-		exit(1);
+		_exit(1);
 	}
 
 	json_decref(j);
-	exit(0);
+	_exit(0);
 }
 
 static int
@@ -1205,13 +1207,15 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	if ((*dst_fd = open_wflock(dst, fd_flags, 0600,
 	    ((oflags & OSLAB_NONBLOCK) ? (LOCK_NB|LOCK_EX) : LOCK_EX),
 	    ((oflags & OSLAB_NONBLOCK) ? 0 : flock_timeout))) == -1) {
-		if (errno == EWOULDBLOCK)
+		if (errno == EWOULDBLOCK) {
+			mgr_counter_add(MGR_COUNTER_CLAIM_CONTENTION, 1);
 			XERRF(e, XLOG_APP, XLOG_BUSY,
 			    "open_wflock() failed to acquire lock "
 			    "for slab %s (EWOULDBLOCK)", dst);
-		else
+		} else {
 			XERRF(e, XLOG_ERRNO, errno,
 			    "open_wflock: slab %s", dst);
+		}
 		return -1;
 	}
 	if (fcntl(*dst_fd, F_SETFD, FD_CLOEXEC) == -1) {
@@ -1686,7 +1690,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 	if (xlog_init(title, fs_config.dbg, 0) == -1) {
 		xlog(LOG_ERR, NULL,
 		    "%s: failed to initialize logging", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	setproctitle("bgworker: %s", name);
@@ -1694,7 +1698,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	if (slabdb_init(instance_id, &e) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	while (!shutdown_now()) {
@@ -1712,7 +1716,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		}
 	}
 	slabdb_shutdown();
-	exit(0);
+	_exit(0);
 }
 
 static void
@@ -2216,7 +2220,7 @@ worker(int lsock)
 
 	if (xlog_init(MGR_PROGNAME "-worker", fs_config.dbg, 0) == -1) {
 		xlog(LOG_ERR, NULL, "failed to initialize logging in worker");
-		exit(1);
+		_exit(1);
 	}
 
 	setproctitle("worker");
@@ -2224,7 +2228,7 @@ worker(int lsock)
 
 	if (slabdb_init(instance_id, &e) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	while (!shutdown_requested()) {
@@ -2249,7 +2253,7 @@ worker(int lsock)
 			default:
 				xlog_strerror(LOG_ERR, errno,
 				    "%s: accept", __func__);
-				exit(1);
+				_exit(1);
 			}
 		}
 
@@ -2269,7 +2273,7 @@ worker(int lsock)
 
 		for (;;) {
 			while (waitpid(-1, NULL, WNOHANG) > 0);
-			if ((r = mgr_recv(c, &fd, &m, xerrz(&e))) == -1) {
+			if (mgr_recv(c, &fd, &m, xerrz(&e)) == -1) {
 				if (xerr_is(&e, XLOG_ERRNO, EAGAIN)) {
 					xlog(LOG_NOTICE, NULL,
 					    "read timeout on socket %d", c);
@@ -2346,7 +2350,7 @@ worker(int lsock)
 	}
 	CLOSE_X(lsock);
 	slabdb_shutdown();
-	exit(0);
+	_exit(0);
 }
 
 int
@@ -2408,7 +2412,7 @@ mgr_start(int workers, int bgworkers)
 	snprintf(pid_line, sizeof(pid_line), "%d\n", getpid());
 	if (write(pid_fd, pid_line, strlen(pid_line)) == -1) {
 		xlog_strerror(LOG_ERR, errno, "write");
-		exit(1);
+		_exit(1);
 	}
 	fsync(pid_fd);
 
@@ -2417,29 +2421,29 @@ mgr_start(int workers, int bgworkers)
 			xlog(LOG_ERR, NULL,
 			    "Group %s not found in group database",
 			    unpriv_group);
-			exit(1);
+			_exit(1);
 		}
 		if (setgid(gr->gr_gid) == -1) {
 			xlog_strerror(LOG_ERR, errno, "setgid");
-			exit(1);
+			_exit(1);
 		}
 		if (setegid(gr->gr_gid) == -1) {
 			xlog_strerror(LOG_ERR, errno, "setegid");
-			exit(1);
+			_exit(1);
 		}
 
 		if ((pw = getpwnam(unpriv_user)) == NULL) {
 			xlog_strerror(LOG_ERR, errno,
 			    "User %s not found in users database", unpriv_user);
-			exit(1);
+			_exit(1);
 		}
 		if (setuid(pw->pw_uid) == -1) {
 			xlog_strerror(LOG_ERR, errno, "setuid");
-			exit(1);
+			_exit(1);
 		}
 		if (seteuid(pw->pw_uid) == -1) {
 			xlog_strerror(LOG_ERR, errno, "seteuid");
-			exit(1);
+			_exit(1);
 		}
 	}
 
@@ -2448,24 +2452,24 @@ mgr_start(int workers, int bgworkers)
 			if (mkdir(fs_config.data_dir, 0700) == -1) {
 				xlog_strerror(LOG_ERR, errno,
 				    "mkdir: %s", fs_config.data_dir);
-				exit(1);
+				_exit(1);
 			}
 		} else {
 			xlog_strerror(LOG_ERR, errno, "access: %s",
 			    fs_config.data_dir);
-			exit(1);
+			_exit(1);
 		}
 	}
 
 	if (access(fs_config.mgr_exec, X_OK) == -1) {
 		xlog_strerror(LOG_ERR, errno, "access: %s",
 		    fs_config.mgr_exec);
-		exit(1);
+		_exit(1);
 	}
 
 	if (statvfs(fs_config.data_dir, &stv) == -1) {
 		xlog_strerror(LOG_ERR, errno, "statvfs");
-		exit(1);
+		_exit(1);
 	}
 
 	xlog(LOG_INFO, NULL, "%s: cache size is %llu bytes (%lu slabs)",
@@ -2475,32 +2479,32 @@ mgr_start(int workers, int bgworkers)
 
 	if (fs_info_open(&fs_info, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
-		exit(1);
+		_exit(1);
 	}
 	uuid_copy(instance_id, fs_info.instance_id);
 
 	if (slab_make_dirs(xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
-		exit(1);
+		_exit(1);
 	}
 
 	if ((lsock = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
 		xlog_strerror(LOG_ERR, errno, "socket");
-		exit(1);
+		_exit(1);
 	}
 	unlink(fs_config.mgr_sock_path);
 
 	if (fcntl(lsock, F_SETFD, FD_CLOEXEC) == -1) {
 		xlog_strerror(LOG_ERR, errno, "fcntl");
-		exit(1);
+		_exit(1);
 	}
 	if ((lsock_flags = fcntl(lsock, F_GETFL, 0)) == -1) {
 		xlog_strerror(LOG_ERR, errno, "fcntl");
-		exit(1);
+		_exit(1);
 	}
 	if (fcntl(lsock, F_SETFL, lsock_flags | O_NONBLOCK) == -1) {
 		xlog_strerror(LOG_ERR, errno, "fcntl");
-		exit(1);
+		_exit(1);
 	}
 
 	bzero(&saddr, sizeof(saddr));
@@ -2510,18 +2514,18 @@ mgr_start(int workers, int bgworkers)
 
 	if (bind(lsock, (struct sockaddr *)&saddr, SUN_LEN(&saddr)) == -1) {
 		xlog_strerror(LOG_ERR, errno, "bind");
-		exit(1);
+		_exit(1);
 	}
 
 	if (listen(lsock, 64) == -1) {
 		xlog_strerror(LOG_ERR, errno, "listen");
-		exit(1);
+		_exit(1);
 	}
 
 	if ((mgr_shared = mmap(NULL, sizeof(struct mgr_shared),
 	    PROT_READ|PROT_WRITE, MAP_ANON|MAP_SHARED, -1, 0)) == MAP_FAILED) {
 		xlog_strerror(LOG_ERR, errno, "mmap");
-		exit(1);
+		_exit(1);
 	}
 
 	/* Not sure MAP_ANON initializes to zero on BSD */
@@ -2529,7 +2533,7 @@ mgr_start(int workers, int bgworkers)
 
 	if (sem_init(&mgr_shared->sem, 1, 1) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sem_init");
-		exit(1);
+		_exit(1);
 	}
 
 	/*
@@ -2591,18 +2595,18 @@ mgr_start(int workers, int bgworkers)
 
 	if (fs_info_read(&fs_info, xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, "%s", __func__);
-		exit(1);
+		_exit(1);
 	} else {
 		if (fs_info.error == 0)
 			fs_info.clean = 1;
 
 		if (fs_info_write(&fs_info, &e) == -1) {
 			xlog(LOG_ERR, &e, "%s", __func__);
-			exit(1);
+			_exit(1);
 		}
 	}
 	CLOSE_X(pid_fd);
 
 	xlog(LOG_INFO, NULL, "exiting");
-	exit(0);
+	_exit(0);
 }

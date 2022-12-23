@@ -1,10 +1,10 @@
 DEPDIR := .deps
-CFLAGS := -DFUSE_USE_VERSION=26 \
+CC := gcc
+CFLAGS := -Wall -g -DFUSE_USE_VERSION=26 \
 	$(shell pkg-config --cflags fuse uuid libbsd-overlay)
 LDFLAGS := $(shell pkg-config --libs fuse uuid 'jansson >= 2.9' \
 	libbsd-overlay libbsd-ctor sqlite3 zlib)
 EXTRA_CFLAGS :=
-CC := gcc -Wall -Werror -g $(CFLAGS) $(EXTRA_CFLAGS)
 
 DEPFLAGS = -MMD -MP -MF $(DEPDIR)/$@.d
 
@@ -24,21 +24,23 @@ TESTOBJS = $(TESTSRCS:.c=.o)
 all: potatofs potatoctl potatofs_tests
 
 potatofs: $(OBJS)
-	$(CC) -o potatofs $(OBJS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatofs $(OBJS) $(LDFLAGS)
 
 potatoctl: $(CTLOBJS)
-	$(CC) -o potatoctl $(CTLOBJS) $(LDFLAGS) \
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatoctl $(CTLOBJS) $(LDFLAGS) \
 		`pkg-config --cflags --libs ncurses`
 
 potatofs_tests: $(TESTOBJS)
-	$(CC) -o potatofs_tests $(TESTOBJS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatofs_tests \
+		$(TESTOBJS) $(LDFLAGS)
 
 tests: potatofs_tests
 	./potatofs_tests.sh
 
 .c.o:
 	@mkdir -p $(DEPDIR)
-	$(CC) $(DEPFLAGS) -c $<
+	#scan-build $(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS) -c $<
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS) -c $<
 
 .PHONY: clean
 

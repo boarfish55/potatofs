@@ -59,8 +59,8 @@ const char *counter_names[] = {
 const char *mgr_counter_names[] = {
 	"backend_in_bytes",  /* COUNTER_BACKEND_IN_BYTES */
 	"backend_out_bytes", /* COUNTER_BACKEND_OUT_BYTES */
-	"slabs_purged"       /* MGR_COUNTER_SLABS_PURGED */
-
+	"slabs_purged",      /* MGR_COUNTER_SLABS_PURGED */
+	"claim_contention"   /* MGR_COUNTER_CLAIM_CONTENTION */
 };
 
 #endif

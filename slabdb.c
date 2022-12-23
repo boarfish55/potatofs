@@ -264,7 +264,7 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint32_t flags,
 
 	    ((flags & SLABDB_PUT_LAST_CLAIMED) &&
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
-	     sizeof(struct timespec) == 0)) &&
+	     sizeof(struct timespec)) == 0) &&
 
 	    ((flags & SLABDB_PUT_TRUNCATE) &&
 	     ((r_v.flags & SLABDB_FLAG_TRUNCATE) ==
@@ -830,47 +830,45 @@ fail:
 void
 slabdb_shutdown()
 {
-	int r;
-
-	if ((r = sqlite3_finalize(qry_put.stmt)))
+	if (sqlite3_finalize(qry_put.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_put: %s", sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_get.stmt)))
+	if (sqlite3_finalize(qry_get.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get: %s", sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_get_next_itbl.stmt)))
+	if (sqlite3_finalize(qry_get_next_itbl.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get_next_itbl: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_loop_lru.stmt)))
+	if (sqlite3_finalize(qry_loop_lru.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_loop_lru: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_begin_txn.stmt)))
+	if (sqlite3_finalize(qry_begin_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_begin_txn: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_commit_txn.stmt)))
+	if (sqlite3_finalize(qry_commit_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_commit_txn: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_rollback_txn.stmt)))
+	if (sqlite3_finalize(qry_rollback_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_rollback_txn: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_count.stmt)))
+	if (sqlite3_finalize(qry_count.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_count: %s",
 		    sqlite3_errmsg(db));
 
-	if ((r = sqlite3_close(db)) != SQLITE_OK)
+	if (sqlite3_close(db) != SQLITE_OK)
 		xlog(LOG_ERR, NULL,
 		    "%s: sqlite3_close: %s", sqlite3_errmsg(db));
 }

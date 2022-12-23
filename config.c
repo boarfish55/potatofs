@@ -128,7 +128,7 @@ config_read()
 				warnx("noatime must be 'yes' or 'no'");
 		} else if (strcmp(p, "slab_max_age") == 0) {
 			if ((fs_config.slab_max_age =
-			    strtoul(v, NULL, 10)) == ULONG_MAX)
+			    strtoull(v, NULL, 10)) == ULLONG_MAX)
 				err(1, "slab_max_age");
 		} else if (strcmp(p, "unclaim_purge_threshold_pct") == 0) {
 			if ((fs_config.unclaim_purge_threshold_pct =

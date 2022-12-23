@@ -844,8 +844,10 @@ test_readdir_max_v2_dir_depth()
 		err(1, "malloc");
 	bzero(found, sizeof(int) * found_count);
 
-	if ((dir = opendir(p)) == NULL)
+	if ((dir = opendir(p)) == NULL) {
+		free(found);
 		return ERR("", errno);
+	}
 	while ((de = readdir(dir))) {
 		for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
 			if (strcmp(de->d_name, same_hash_30b_suffix[i]) == 0)
@@ -997,20 +999,26 @@ test_unlink_max_v2_dir_depth()
 	 * of our list of files.
 	 */
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i - 1]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[i - 1] = 0;
 	i--;
 
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i / 2]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[i / 2] = 0;
 	i--;
 
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[0]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[0] = 0;
 	i--;
 
@@ -1033,11 +1041,14 @@ test_unlink_max_v2_dir_depth()
 		}
 	}
 
-	if (rmdir(p) == 0)
+	if (rmdir(p) == 0) {
+		free(found);
 		return ERR("successfully removed directory that "
 		    "is not empty", 0);
-	else if (errno != ENOTEMPTY)
+	} else if (errno != ENOTEMPTY) {
+		free(found);
 		return ERR("", errno);
+	}
 
 	/*
 	 * And now delete them all.
@@ -1046,15 +1057,18 @@ test_unlink_max_v2_dir_depth()
 		if (found[i] == 1) {
 			snprintf(file, sizeof(file), "%s/%s", p,
 			    same_hash_30b_suffix[i]);
-			if (unlink(file) == -1)
+			if (unlink(file) == -1) {
+				free(found);
 				return ERR("", errno);
+			}
 		}
 	}
+
+	free(found);
 
 	if (rmdir(p) == -1)
 		return ERR("", errno);
 
-	free(found);
 	return success();
 }
 
@@ -2799,8 +2813,8 @@ test_claim_from_backend()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout / 2);
-	if ((r = write(fd, buf, strlen(buf))) == -1)
+	snprintf(buf, sizeof(buf), "%lu\n", fs_config.backend_get_timeout / 2);
+	if (write(fd, buf, strlen(buf)) == -1)
 		return ERR("", errno);
 	close(fd);
 
@@ -2940,8 +2954,8 @@ test_backend_timeout_interrupt()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout * 2);
-	if ((r = write(fd, buf, strlen(buf))) == -1)
+	snprintf(buf, sizeof(buf), "%lu\n", fs_config.backend_get_timeout * 2);
+	if (write(fd, buf, strlen(buf)) == -1)
 		return ERR("", errno);
 	close(fd);
 

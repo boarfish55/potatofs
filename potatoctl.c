@@ -520,8 +520,10 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	bzero(dir_blocks, dir_blocks_sz);
 
 	if (validate_dir_block_v2(mgr, hdr->v.h.inode, dir, *dir_sz,
-	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1)
+	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1) {
+		free(dir_blocks);
 		return XERR_PREPENDFN(e);
+	}
 
 	for (b = (struct dir_block_v2 *)(dir + hdr->v.h.free_list_start);
 	    (char *)b - dir > 0;
@@ -531,6 +533,7 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 			warnx("dir inode %lu has a block part of its freelist "
 			    "that's allocated at offset %ld",
 			    hdr->v.h.inode, (char *)b - dir);
+			free(dir_blocks);
 			return 0;
 		}
 		dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
@@ -623,18 +626,23 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 
 	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
 		dirty = validate_dir_v1(mgr, ino, dir, &dir_sz, stats, e);
-		if (dirty == -1)
+		if (dirty == -1) {
+			free(dir);
 			return XERR_PREPENDFN(e);
+		}
 	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
 		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats, e);
-		if (dirty == -1)
+		if (dirty == -1) {
+			free(dir);
 			return XERR_PREPENDFN(e);
+		}
 	}
 
 	if (dirty) {
 		inode->v.f.size = dir_sz;
 		inode->v.f.blocks = inode->v.f.size / 512 + 1;
 		if (write_dir(mgr, dir, inode) == -1) {
+			free(dir);
 			stats->errors++;
 			return -1;
 		}
@@ -1097,7 +1105,6 @@ inode_tables(int argc, char **argv)
 	struct slab_key sk;
 	int             fd;
 	uuid_t          u;
-	int             r;
 
 	uuid_clear(u);
 	if (slabdb_init(u, xerrz(&e)) == -1) {
@@ -1105,7 +1112,7 @@ inode_tables(int argc, char **argv)
 		exit(1);
 	}
 
-	while ((r = slabdb_get_next_itbl(&base, xerrz(&e))) != -1) {
+	while (slabdb_get_next_itbl(&base, xerrz(&e)) != -1) {
 		printf("slabdb_get_next_itbl: found base %lu\n", base);
 	}
 
@@ -1369,10 +1376,10 @@ dump_config(int argc, char **argv)
 	printf("uid:                         %u\n", fs_config.uid);
 	printf("gid:                         %u\n", fs_config.gid);
 	printf("dbg:                         %s\n",
-	    (fs_config.dbg) ? fs_config.dbg : "off");
+	    (fs_config.dbg[0] != '\0') ? fs_config.dbg : "off");
 	printf("max_open_slabs:              %lu\n", fs_config.max_open_slabs);
 	printf("entry_timeouts:              %u\n", fs_config.entry_timeouts);
-	printf("slab_max_age:                %u\n", fs_config.slab_max_age);
+	printf("slab_max_age:                %lu\n", fs_config.slab_max_age);
 	printf("slab_size:                   %lu\n", fs_config.slab_size);
 	printf("noatime:                     %s\n",
 	    (fs_config.noatime) ? "true" : "false");
@@ -1380,9 +1387,9 @@ dump_config(int argc, char **argv)
 	printf("mgr_sock_path:               %s\n", fs_config.mgr_sock_path);
 	printf("mgr_exec:                    %s\n", fs_config.mgr_exec);
 	printf("cfg_path:                    %s\n", fs_config.cfg_path);
-	printf("unclaim_purge_threshold_pct: %u\n",
+	printf("unclaim_purge_threshold_pct: %lu\n",
 	    fs_config.unclaim_purge_threshold_pct);
-	printf("purge_threshold_pct:         %u\n",
+	printf("purge_threshold_pct:         %lu\n",
 	    fs_config.purge_threshold_pct);
 	return 0;
 }
@@ -1599,6 +1606,7 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col2, "fs purges   :");
 	mvprintw(row++, col2, "mgr purges  :");
 	mvprintw(row++, col2, "errors      :");
+	mvprintw(row++, col2, "claim cttn  :");
 
 	/* length of longest string above. */
 	col1 += 15;
@@ -1729,6 +1737,8 @@ again:
 		mvprintw(row++, col2, "%6lu",
 		    mgr_counters_now[MGR_COUNTER_SLABS_PURGED]);
 		mvprintw(row++, col2, "%6lu", counters_now[COUNTER_FS_ERROR]);
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
 
 		refresh();
 	}
@@ -2618,7 +2628,7 @@ main(int argc, char **argv)
 					exit(1);
 				}
 				if (!fs_info.clean)
-					fprintf(stderr, clean_warning);
+					fprintf(stderr, "%s", clean_warning);
 			}
 			return c->fn(argc - optind, argv + optind);
 		}
