@@ -229,8 +229,10 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		exit(0);
 	case OPT_FOREGROUND:
 		fuse_opt_add_arg(outargs, "-f");
+		break;
 	case OPT_NOATIME:
 		fs_config.noatime = 1;
+		break;
 	}
 	return 1;
 }

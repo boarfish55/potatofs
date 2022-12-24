@@ -2182,13 +2182,13 @@ bg_purge()
 	    / fs_usage.stv.f_blocks);
 
 	if (clock_gettime(CLOCK_REALTIME, &start) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return;
 	}
 	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
 	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
+		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
 		return;
 	}
 
