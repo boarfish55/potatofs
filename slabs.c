@@ -235,11 +235,7 @@ slab_purge(void *unused)
 	max_open = owned_slabs.max_open;
 	MTX_UNLOCK(&owned_slabs.lock);
 
-	if (clock_gettime(CLOCK_MONOTONIC, &last) == -1) {
-		fs_error_set();
-		xlog_strerror(LOG_ERR, errno,
-		    "%s: failed to get current time", __func__);
-	}
+	clock_gettime_x(CLOCK_MONOTONIC, &last);
 
 	while (!do_shutdown) {
 		nanosleep(&t, NULL);
@@ -252,12 +248,7 @@ slab_purge(void *unused)
 		if (do_shutdown)
 			break;
 
-		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
-			fs_error_set();
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: failed to get current time", __func__);
-			continue;
-		}
+		clock_gettime_x(CLOCK_MONOTONIC, &now);
 
 		purge = 0;
 		if (statvfs(fs_config.data_dir, &stv) == -1) {
@@ -949,9 +940,9 @@ slab_forget(struct oslab *b, struct xerr *e)
 	    __func__, b->sk.ino, b->sk.base, b->refcnt);
 	b->refcnt--;
 	if (b->refcnt == 0) {
-		if (clock_gettime(CLOCK_MONOTONIC, &t) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-		} else if (b->open_since.tv_sec
+		clock_gettime_x(CLOCK_MONOTONIC, &t);
+
+		if (b->open_since.tv_sec
 		    <= t.tv_sec - owned_slabs.max_age) {
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 			if (!b->sk.ino)

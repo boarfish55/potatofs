@@ -600,8 +600,7 @@ test_utimes_file()
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if (utimes(p, times) == -1)
 		return ERR("", errno);
@@ -635,8 +634,7 @@ test_chmod()
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (chmod(p, 0466) == -1)
 		return ERR("", errno);
 
@@ -660,8 +658,7 @@ test_parent_mtime_after_mknod()
 	if (mkdir(d1, 0755) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 
@@ -738,8 +735,7 @@ test_parent_mtime_after_rmnod()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (unlink(p1) == -1)
 		return ERR("", errno);
 
@@ -1175,8 +1171,7 @@ test_file_size_and_mtime()
 	}
 	sleep(1);
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 		if (w == -1)
@@ -1356,8 +1351,7 @@ test_ctime_after_link()
 	if (mknod(p, 0666, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (link(p, p2) == -1)
 		return ERR("", errno);
 
@@ -1377,8 +1371,7 @@ test_parent_mtime_after_link()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (link(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1534,8 +1527,7 @@ test_rename_crossdir()
 		return ERR("", errno);
 
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1580,8 +1572,7 @@ test_rename_dir_crossdir()
 		return ERR("", errno);
 
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1908,8 +1899,7 @@ test_parents_mtime_after_rename()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -2832,8 +2822,7 @@ test_claim_from_backend()
 		if (pid > 0)
 			continue;
 
-		if (clock_gettime(CLOCK_MONOTONIC, &tp) == -1)
-			err(1, "clock_gettime");
+		clock_gettime_x(CLOCK_MONOTONIC, &tp);
 
 		/* Then reclaim, hopefully from the actual backend this time. */
 		if ((fd = open(p, O_RDWR)) == -1)
@@ -2848,8 +2837,7 @@ test_claim_from_backend()
 			err(1, "pwrite");
 		close(fd);
 
-		if (clock_gettime(CLOCK_MONOTONIC, &tp2) == -1)
-			err(1, "clock_gettime");
+		clock_gettime_x(CLOCK_MONOTONIC, &tp2);
 
 		if (tp2.tv_sec - tp.tv_sec < 1)
 			errx(2, "time elapsed on claim was less than 1 second");

@@ -1409,13 +1409,9 @@ end:
 		 * We don't update last_claimed for "ephemeral" slabs,
 		 * since we don't mind if they get purged shortly after.
 		 */
-		if (clock_gettime(CLOCK_REALTIME, &v.last_claimed) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "%s: clock_gettime");
-			xlog_strerror(LOG_ERR, errno, "%s: clock_gettime",
-			    __func__);
-			goto fail_close_dst;
-		}
+		clock_gettime_x(CLOCK_REALTIME, &v.last_claimed);
 	}
+
 	uuid_copy(v.owner, instance_id);
 
 	if (v.flags & SLABDB_FLAG_TRUNCATE) {
@@ -2181,16 +2177,12 @@ bg_purge()
 	    (fs_usage.stv.f_blocks - fs_usage.stv.f_bfree) * 100
 	    / fs_usage.stv.f_blocks);
 
-	if (clock_gettime(CLOCK_REALTIME, &start) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &start);
+
 	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
-	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime", __func__);
-		return;
-	}
+
+	clock_gettime_x(CLOCK_REALTIME, &end);
 
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);

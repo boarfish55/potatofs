@@ -1432,11 +1432,11 @@ top(int argc, char **argv)
 
 	read_metrics(counters_prev, mgr_counters_prev);
 	for (i = 0;; i++) {
-		clock_gettime(CLOCK_MONOTONIC, &ts);
+		clock_gettime_x(CLOCK_MONOTONIC, &ts);
 		sleep(seconds);
 
 		read_metrics(counters_now, mgr_counters_now);
-		clock_gettime(CLOCK_MONOTONIC, &te);
+		clock_gettime_x(CLOCK_MONOTONIC, &te);
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
 			counters_prev[c] = counters_now[c];
@@ -1614,7 +1614,7 @@ ctop(int argc, char **argv)
 
 	read_metrics(counters_prev, mgr_counters_prev);
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &ts);
+		clock_gettime_x(CLOCK_MONOTONIC, &ts);
 again:
 		if (nanosleep(&slp, NULL) == -1)
 			goto end;
@@ -1630,13 +1630,13 @@ again:
 				interval--;
 			break;
 		default:
-			clock_gettime(CLOCK_MONOTONIC, &te);
+			clock_gettime_x(CLOCK_MONOTONIC, &te);
 			if (te.tv_sec - ts.tv_sec < interval)
 				goto again;
 		}
 
 		read_metrics(counters_now, mgr_counters_now);
-		clock_gettime(CLOCK_MONOTONIC, &te);
+		clock_gettime_x(CLOCK_MONOTONIC, &te);
 
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];

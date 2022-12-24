@@ -396,10 +396,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		v->flags = 0;
 		v->truncate_offset = 0;
 		uuid_copy(v->owner, instance_id);
-		if (clock_gettime(CLOCK_REALTIME, &v->last_claimed) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-			goto fail;
-		}
+		clock_gettime_x(CLOCK_REALTIME, &v->last_claimed);
 		if (slabdb_put_nolock(sk, v, e) == -1)
 			goto fail;
 		if (slabdb_commit_txn(e) == -1)
@@ -555,10 +552,7 @@ txn_duration()
 	time_t          delta_ns;
 	struct timespec end;
 
-	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
-		return ULONG_MAX;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &end);
 
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((qry_begin_txn.start.tv_sec * 1000000000) +
@@ -587,10 +581,7 @@ slabdb_begin_txn(struct xerr *e)
 		goto fail;
 	}
 
-	if (clock_gettime(CLOCK_REALTIME, &qry_begin_txn.start) == -1) {
-		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-		goto fail;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &qry_begin_txn.start);
 	return slabdb_qry_cleanup(qry_begin_txn.stmt, e);
 fail:
 	if (slabdb_qry_cleanup(qry_begin_txn.stmt, xerrz(&e2)) == -1)
