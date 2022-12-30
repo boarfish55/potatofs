@@ -787,7 +787,7 @@ backend_get(const char *local_path, const char *backend_name,
 	clock_gettime_x(CLOCK_REALTIME, &end);
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: sk=%lu/%ld completed in %u.%09u seconds",
+	xlog(LOG_NOTICE, NULL, "%s: sk=%lu/%ld completed in %u.%09ld seconds",
 	    __func__, sk->ino, sk->base, delta_ns / 1000000000,
 	    delta_ns % 1000000000);
 
@@ -894,7 +894,7 @@ backend_put(const char *local_path, const char *backend_name,
 	clock_gettime_x(CLOCK_REALTIME, &end);
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: completed in %u.%09u seconds",
+	xlog(LOG_NOTICE, NULL, "%s: completed in %ld.%09u seconds",
 	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	if (WIFSIGNALED(wstatus))
@@ -1254,7 +1254,7 @@ new_slab_again:
 			if (errno == ENOSPC) {
 				xlog(LOG_ERR, NULL,
 				    "%s: ran out of space while creating new "
-				    "slab sk=%lu/%ld; retrying",
+				    "slab sk=%lu/%ld; retrying", __func__,
 				    hdr.v.f.key.ino, hdr.v.f.key.base);
 				sleep(1);
 				goto new_slab_again;
@@ -1563,7 +1563,7 @@ do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 		m->m = MGR_MSG_SHUTDOWN_OK;
 	}
 
-	xlog(LOG_NOTICE, NULL, "shutdown requested; grace period %u",
+	xlog(LOG_NOTICE, NULL, "shutdown requested; grace period %lu",
 	    m->v.shutdown.grace_period);
 
 	if (mgr_send(c, -1, m, xerrz(e)) == -1)
@@ -1893,6 +1893,8 @@ scrub_local_slab(const char *path)
 
 		v.revision = hdr.v.f.revision;
 		v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
+		// TODO: allow the possibility of purging here. Meaning we'd have
+		// to reset the owner.
 		uuid_copy(v.owner, instance_id);
 		if (slabdb_put(&sk, &v,
 		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
@@ -2172,7 +2174,7 @@ bg_purge()
 
 	fs_usage.used_blocks = fs_usage.stv.f_blocks - fs_usage.stv.f_bfree;
 
-	xlog(LOG_NOTICE, NULL, "%s: cache use is at %d%% of partition size; "
+	xlog(LOG_NOTICE, NULL, "%s: cache use is at %lu%% of partition size; "
 	    "purging slabs", __func__,
 	    (fs_usage.stv.f_blocks - fs_usage.stv.f_bfree) * 100
 	    / fs_usage.stv.f_blocks);
@@ -2186,7 +2188,7 @@ bg_purge()
 
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: purging took %u.%09u seconds",
+	xlog(LOG_NOTICE, NULL, "%s: purging took %lu.%09u seconds",
 	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 }
 
@@ -2216,7 +2218,7 @@ worker(int lsock)
 	}
 
 	setproctitle("worker");
-	xlog(LOG_INFO, NULL, "ready", __func__);
+	xlog(LOG_INFO, NULL, "ready");
 
 	if (slabdb_init(instance_id, &e) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);

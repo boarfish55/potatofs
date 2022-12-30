@@ -894,13 +894,6 @@ again:
 		return;
 	}
 
-	/*
-	 * We still need to do cleanup on error. Let's report zero bytes
-	 * written.
-	 */
-	if (w < 0)
-		w = 0;
-
 	bufv->off += w;
 
 	if (inode_splice_end_write(&si, w, xerrz(&e)) == -1)

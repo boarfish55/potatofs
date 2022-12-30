@@ -418,7 +418,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 	}
 
 	uuid_unparse(v->owner, u);
-	xlog_dbg(XLOG_SLABDB, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
+	xlog_dbg(XLOG_SLABDB, "%s: k=%lu/%lu, v=%lu/%u/%s/%lu.%ld\n",
 	    __func__,
 	    sk->ino, sk->base, v->revision, v->header_crc, u,
 	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
@@ -612,7 +612,7 @@ slabdb_commit_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09lu "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
@@ -646,7 +646,7 @@ slabdb_rollback_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %ld.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);
@@ -823,43 +823,45 @@ slabdb_shutdown()
 {
 	if (sqlite3_finalize(qry_put.stmt))
 		xlog(LOG_WARNING, NULL,
-		    "%s: sqlite3_finalize: qry_put: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_finalize: qry_put: %s",
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_get.stmt))
 		xlog(LOG_WARNING, NULL,
-		    "%s: sqlite3_finalize: qry_get: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_finalize: qry_get: %s",
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_get_next_itbl.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get_next_itbl: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_loop_lru.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_loop_lru: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_begin_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_begin_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_commit_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_commit_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_rollback_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_rollback_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_count.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_count: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_close(db) != SQLITE_OK)
 		xlog(LOG_ERR, NULL,
-		    "%s: sqlite3_close: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_close: %s", __func__, sqlite3_errmsg(db));
 }

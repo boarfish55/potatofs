@@ -51,11 +51,12 @@ openfile_alloc(ino_t ino, int flags, struct xerr *e)
 
 	if (flags & O_SYNC)
 		oflags |= INODE_OSYNC;
-	if (flags & O_RDONLY)
+	if ((flags & (O_WRONLY|O_RDWR)) == 0)
 		oflags |= INODE_ORO;
 
 	LK_WRLOCK(&of->lock);
 	if ((of->oi = inode_load(ino, oflags, xerrz(e))) == NULL) {
+		LK_UNLOCK(&of->lock);
 		free(of);
 		return NULL;
 	}
