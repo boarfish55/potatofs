@@ -1232,18 +1232,22 @@ fs_status(int argc, char **argv)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_INFO;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (m.m == MGR_MSG_INFO_ERR) {
+			close(mgr);
 			memcpy(&e, &m.v.err, sizeof(struct xerr));
 			xerr_print(&e);
 			return 1;
 		} else if (m.m != MGR_MSG_INFO_OK) {
+			close(mgr);
 			warnx("%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			return 1;
@@ -1256,10 +1260,12 @@ fs_status(int argc, char **argv)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_GET_OFFLINE;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}

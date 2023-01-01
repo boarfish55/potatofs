@@ -148,14 +148,15 @@ di_check_format(struct oinode *oi, struct xerr *e)
 
 	r = inode_read(oi, 0, &hdr, sizeof(struct dir_hdr), xerrz(e));
 	if (r == -1) {
-		return XERR_PREPENDFN(e);
+		XERR_PREPENDFN(e);
+		return 0;
 	} else if (r < sizeof(struct dir_hdr)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "corrupted dir_hdr");
+		XERRF(e, XLOG_APP, XLOG_IO, "corrupted dir_hdr");
+		return 0;
 	}
 	if (!hdr.dirinode_format || hdr.dirinode_format > DIRINODE_FORMAT) {
-		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
-		    "unsupported dirinode format");
+		XERRF(e, XLOG_APP, XLOG_MISMATCH, "unsupported dirinode format");
+		return 0;
 	}
 
 	return hdr.dirinode_format;

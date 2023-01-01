@@ -1261,7 +1261,7 @@ test_readlink_path_max()
 
 	if (symlink(target, p) == -1)
 		return ERR("", errno);
-	if ((r = readlink(p, buf, sizeof(buf))) == -1)
+	if ((r = readlink(p, buf, sizeof(buf) - 1)) == -1)
 		return ERR("", errno);
 	buf[r] = '\0';
 
