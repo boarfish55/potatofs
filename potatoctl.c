@@ -299,17 +299,19 @@ add_found_inode(ino_t ino, struct xerr *e)
 		return XERRF(e, XLOG_ERRNO, errno, "malloc");
 	bzero(fino, sizeof(struct found_inode));
 	fino->ino = ino;
-	if (!RB_FIND(scanned_dirent_inode_tree,
+	if (RB_FIND(scanned_dirent_inode_tree,
 	    &scanned_dirent_inodes.head, fino)) {
-		if (RB_INSERT(scanned_dirent_inode_tree,
-		    &scanned_dirent_inodes.head, fino)
-		    != NULL) {
-			free(fino);
-			return XERRF(e, XLOG_ERRNO, errno,
-			    "RB_INSERT");
-		}
-		scanned_dirent_inodes.count++;
+		free(fino);
+		return 0;
 	}
+
+	if (RB_INSERT(scanned_dirent_inode_tree,
+	    &scanned_dirent_inodes.head, fino) != NULL) {
+		free(fino);
+		return XERRF(e, XLOG_ERRNO, errno,
+		    "RB_INSERT");
+	}
+	scanned_dirent_inodes.count++;
 	return 0;
 }
 
@@ -1506,15 +1508,18 @@ ctop(int argc, char **argv)
 
 	mgr = mgr_connect(0, xerrz(&e));
 	if (mgr == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
 	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
 	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
@@ -2585,6 +2590,7 @@ show_slab(int argc, char **argv)
 		}
 	}
 
+	close(fd);
 	return 0;
 }
 

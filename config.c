@@ -63,13 +63,16 @@ config_read()
 	char        *line;
 	int          line_n = 0;
 	FILE        *cfg;
+	struct stat  st;
 
 	const char *p, *v;
 
-	if (access(fs_config.cfg_path, F_OK|R_OK) == -1)
-		err(1, "%s", fs_config.cfg_path);
 	if ((cfg = fopen(fs_config.cfg_path, "r")) == NULL)
 		err(1, "%s", fs_config.cfg_path);
+	if (fstat(fileno(cfg), &st) == -1)
+		err(1, "fstat");
+	if (!(st.st_mode & S_IFREG))
+		errx(1, "%s is not a regular file", fs_config.cfg_path);
 
 	while (fgets(buf, sizeof(buf), cfg)) {
 		line_n++;

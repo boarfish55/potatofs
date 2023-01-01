@@ -109,9 +109,9 @@ fs_info_open(struct fs_info *dst_info, struct xerr *e)
 		    "write() returned %d instead of %d:", r, sizeof(fs_info));
 		goto end;
 	}
-end:
 	if (dst_info != NULL)
 		memcpy(dst_info, &fs_info, sizeof(fs_info));
+end:
 	if (fd > 0)
 		CLOSE_X(fd);
 	return xerr_fail(e);

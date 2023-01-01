@@ -500,18 +500,17 @@ fs_destroy(void *unused)
 	 * until everything is closed, to avoid our processes
 	 * being killed by the shutdown sequence too soon.
 	 */
-	do {
-		if (wait(&wstatus) == -1) {
-			if (errno == EINTR)
-				continue;
-			else if (errno != ECHILD)
-				xlog_strerror(LOG_ERR, errno, "wait");
-		}
-	} while(0);
-
-	if (WEXITSTATUS(wstatus) != 0)
-		xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
-		    __func__, wstatus);
+wait_again:
+	if (wait(&wstatus) == -1) {
+		if (errno == EINTR)
+			goto wait_again;
+		if (errno != ECHILD)
+			xlog_strerror(LOG_ERR, errno, "wait");
+	} else {
+		if (WEXITSTATUS(wstatus) != 0)
+			xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
+			    __func__, wstatus);
+	}
 }
 
 static void

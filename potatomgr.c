@@ -2408,7 +2408,10 @@ mgr_start(int workers, int bgworkers)
 		xlog_strerror(LOG_ERR, errno, "write");
 		_exit(1);
 	}
-	fsync(pid_fd);
+	if (fsync(pid_fd) == -1) {
+		xlog_strerror(LOG_ERR, errno, "fsync");
+		_exit(1);
+	}
 
 	if (geteuid() == 0) {
 		if ((gr = getgrnam(unpriv_group)) == NULL) {
@@ -2441,18 +2444,17 @@ mgr_start(int workers, int bgworkers)
 		}
 	}
 
-	if (access(fs_config.data_dir, R_OK|X_OK) == -1) {
-		if (errno == ENOENT) {
-			if (mkdir(fs_config.data_dir, 0700) == -1) {
-				xlog_strerror(LOG_ERR, errno,
-				    "mkdir: %s", fs_config.data_dir);
-				_exit(1);
-			}
-		} else {
-			xlog_strerror(LOG_ERR, errno, "access: %s",
-			    fs_config.data_dir);
+	if (mkdir(fs_config.data_dir, 0700) == -1) {
+		if (errno != EEXIST) {
+			xlog_strerror(LOG_ERR, errno,
+			    "mkdir: %s", fs_config.data_dir);
 			_exit(1);
 		}
+	}
+	if (access(fs_config.data_dir, R_OK|X_OK) == -1) {
+		xlog_strerror(LOG_ERR, errno, "access: %s",
+		    fs_config.data_dir);
+		_exit(1);
 	}
 
 	if (access(fs_config.mgr_exec, X_OK) == -1) {

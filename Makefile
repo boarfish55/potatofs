@@ -39,7 +39,6 @@ tests: potatofs_tests
 
 .c.o:
 	@mkdir -p $(DEPDIR)
-	#scan-build $(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS) -c $<
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS) -c $<
 
 .PHONY: clean
