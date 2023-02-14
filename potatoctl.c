@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -299,17 +299,19 @@ add_found_inode(ino_t ino, struct xerr *e)
 		return XERRF(e, XLOG_ERRNO, errno, "malloc");
 	bzero(fino, sizeof(struct found_inode));
 	fino->ino = ino;
-	if (!RB_FIND(scanned_dirent_inode_tree,
+	if (RB_FIND(scanned_dirent_inode_tree,
 	    &scanned_dirent_inodes.head, fino)) {
-		if (RB_INSERT(scanned_dirent_inode_tree,
-		    &scanned_dirent_inodes.head, fino)
-		    != NULL) {
-			free(fino);
-			return XERRF(e, XLOG_ERRNO, errno,
-			    "RB_INSERT");
-		}
-		scanned_dirent_inodes.count++;
+		free(fino);
+		return 0;
 	}
+
+	if (RB_INSERT(scanned_dirent_inode_tree,
+	    &scanned_dirent_inodes.head, fino) != NULL) {
+		free(fino);
+		return XERRF(e, XLOG_ERRNO, errno,
+		    "RB_INSERT");
+	}
+	scanned_dirent_inodes.count++;
 	return 0;
 }
 
@@ -520,8 +522,10 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	bzero(dir_blocks, dir_blocks_sz);
 
 	if (validate_dir_block_v2(mgr, hdr->v.h.inode, dir, *dir_sz,
-	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1)
+	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats, e) == -1) {
+		free(dir_blocks);
 		return XERR_PREPENDFN(e);
+	}
 
 	for (b = (struct dir_block_v2 *)(dir + hdr->v.h.free_list_start);
 	    (char *)b - dir > 0;
@@ -531,6 +535,7 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 			warnx("dir inode %lu has a block part of its freelist "
 			    "that's allocated at offset %ld",
 			    hdr->v.h.inode, (char *)b - dir);
+			free(dir_blocks);
 			return 0;
 		}
 		dir_blocks[(((char *)b - sizeof(struct dir_hdr_v2)) - dir) /
@@ -623,18 +628,23 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 
 	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
 		dirty = validate_dir_v1(mgr, ino, dir, &dir_sz, stats, e);
-		if (dirty == -1)
+		if (dirty == -1) {
+			free(dir);
 			return XERR_PREPENDFN(e);
+		}
 	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
 		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats, e);
-		if (dirty == -1)
+		if (dirty == -1) {
+			free(dir);
 			return XERR_PREPENDFN(e);
+		}
 	}
 
 	if (dirty) {
 		inode->v.f.size = dir_sz;
 		inode->v.f.blocks = inode->v.f.size / 512 + 1;
 		if (write_dir(mgr, dir, inode) == -1) {
+			free(dir);
 			stats->errors++;
 			return -1;
 		}
@@ -1097,7 +1107,6 @@ inode_tables(int argc, char **argv)
 	struct slab_key sk;
 	int             fd;
 	uuid_t          u;
-	int             r;
 
 	uuid_clear(u);
 	if (slabdb_init(u, xerrz(&e)) == -1) {
@@ -1105,7 +1114,7 @@ inode_tables(int argc, char **argv)
 		exit(1);
 	}
 
-	while ((r = slabdb_get_next_itbl(&base, xerrz(&e))) != -1) {
+	while (slabdb_get_next_itbl(&base, xerrz(&e)) != -1) {
 		printf("slabdb_get_next_itbl: found base %lu\n", base);
 	}
 
@@ -1225,18 +1234,22 @@ fs_status(int argc, char **argv)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_INFO;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (m.m == MGR_MSG_INFO_ERR) {
+			close(mgr);
 			memcpy(&e, &m.v.err, sizeof(struct xerr));
 			xerr_print(&e);
 			return 1;
 		} else if (m.m != MGR_MSG_INFO_OK) {
+			close(mgr);
 			warnx("%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			return 1;
@@ -1249,10 +1262,12 @@ fs_status(int argc, char **argv)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_GET_OFFLINE;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
 		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+			close(mgr);
 			xerr_print(&e);
 			return 1;
 		}
@@ -1369,10 +1384,10 @@ dump_config(int argc, char **argv)
 	printf("uid:                         %u\n", fs_config.uid);
 	printf("gid:                         %u\n", fs_config.gid);
 	printf("dbg:                         %s\n",
-	    (fs_config.dbg) ? fs_config.dbg : "off");
+	    (fs_config.dbg[0] != '\0') ? fs_config.dbg : "off");
 	printf("max_open_slabs:              %lu\n", fs_config.max_open_slabs);
 	printf("entry_timeouts:              %u\n", fs_config.entry_timeouts);
-	printf("slab_max_age:                %u\n", fs_config.slab_max_age);
+	printf("slab_max_age:                %lu\n", fs_config.slab_max_age);
 	printf("slab_size:                   %lu\n", fs_config.slab_size);
 	printf("noatime:                     %s\n",
 	    (fs_config.noatime) ? "true" : "false");
@@ -1380,9 +1395,9 @@ dump_config(int argc, char **argv)
 	printf("mgr_sock_path:               %s\n", fs_config.mgr_sock_path);
 	printf("mgr_exec:                    %s\n", fs_config.mgr_exec);
 	printf("cfg_path:                    %s\n", fs_config.cfg_path);
-	printf("unclaim_purge_threshold_pct: %u\n",
+	printf("unclaim_purge_threshold_pct: %lu\n",
 	    fs_config.unclaim_purge_threshold_pct);
-	printf("purge_threshold_pct:         %u\n",
+	printf("purge_threshold_pct:         %lu\n",
 	    fs_config.purge_threshold_pct);
 	return 0;
 }
@@ -1425,11 +1440,11 @@ top(int argc, char **argv)
 
 	read_metrics(counters_prev, mgr_counters_prev);
 	for (i = 0;; i++) {
-		clock_gettime(CLOCK_MONOTONIC, &ts);
+		clock_gettime_x(CLOCK_MONOTONIC, &ts);
 		sleep(seconds);
 
 		read_metrics(counters_now, mgr_counters_now);
-		clock_gettime(CLOCK_MONOTONIC, &te);
+		clock_gettime_x(CLOCK_MONOTONIC, &te);
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
 			counters_prev[c] = counters_now[c];
@@ -1493,15 +1508,18 @@ ctop(int argc, char **argv)
 
 	mgr = mgr_connect(0, xerrz(&e));
 	if (mgr == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
 	m.m = MGR_MSG_INFO;
 	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
 	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}
@@ -1599,6 +1617,7 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col2, "fs purges   :");
 	mvprintw(row++, col2, "mgr purges  :");
 	mvprintw(row++, col2, "errors      :");
+	mvprintw(row++, col2, "claim cttn  :");
 
 	/* length of longest string above. */
 	col1 += 15;
@@ -1606,7 +1625,7 @@ ctop(int argc, char **argv)
 
 	read_metrics(counters_prev, mgr_counters_prev);
 	for (;;) {
-		clock_gettime(CLOCK_MONOTONIC, &ts);
+		clock_gettime_x(CLOCK_MONOTONIC, &ts);
 again:
 		if (nanosleep(&slp, NULL) == -1)
 			goto end;
@@ -1622,13 +1641,13 @@ again:
 				interval--;
 			break;
 		default:
-			clock_gettime(CLOCK_MONOTONIC, &te);
+			clock_gettime_x(CLOCK_MONOTONIC, &te);
 			if (te.tv_sec - ts.tv_sec < interval)
 				goto again;
 		}
 
 		read_metrics(counters_now, mgr_counters_now);
-		clock_gettime(CLOCK_MONOTONIC, &te);
+		clock_gettime_x(CLOCK_MONOTONIC, &te);
 
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
@@ -1729,6 +1748,8 @@ again:
 		mvprintw(row++, col2, "%6lu",
 		    mgr_counters_now[MGR_COUNTER_SLABS_PURGED]);
 		mvprintw(row++, col2, "%6lu", counters_now[COUNTER_FS_ERROR]);
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
 
 		refresh();
 	}
@@ -2569,6 +2590,7 @@ show_slab(int argc, char **argv)
 		}
 	}
 
+	close(fd);
 	return 0;
 }
 
@@ -2618,7 +2640,7 @@ main(int argc, char **argv)
 					exit(1);
 				}
 				if (!fs_info.clean)
-					fprintf(stderr, clean_warning);
+					fprintf(stderr, "%s", clean_warning);
 			}
 			return c->fn(argc - optind, argv + optind);
 		}

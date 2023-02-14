@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -145,12 +145,11 @@ static void
 slab_unclaim(struct oslab *b)
 {
 	struct xerr     e = XLOG_ERR_INITIALIZER;
-	int             mgr = -1, i;
+	int             mgr;
 	struct mgr_msg  m;
-	struct timespec tp = {1, 0};
 
 	/*
-	 * Slab was never claimed from mgr.
+	 * Slab was never claimed from mgr, b->fd is not valid.
 	 */
 	if (b->pending) {
 		LK_LOCK_DESTROY(&b->lock);
@@ -162,62 +161,49 @@ slab_unclaim(struct oslab *b)
 	 * Retry a few times, but don't block here forever since
 	 * failed unclaims can always be cleaned up by scrub later.
 	 */
-	for (i = 0; i < 3; i++) {
-		if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
-			xlog(LOG_ERR, &e, __func__);
-			goto fail;
-		}
-
-		bzero(&m, sizeof(m));
-		m.m = MGR_MSG_UNCLAIM;
-		memcpy(&m.v.unclaim.key, &b->sk,
-		    sizeof(struct slab_key));
-
-		if (mgr_send(mgr, b->fd, &m, xerrz(&e)) == -1) {
-			xlog(LOG_ERR, &e, __func__);
-			goto fail;
-		}
-
-		if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
-			xlog(LOG_ERR, &e, "%s: failed to receive response "
-			    "for unclaim of slab sk=%lu/%lu, but "
-			    "closing it anyway", __func__,
-			    b->sk.ino, b->sk.base);
-		} else if (m.m == MGR_MSG_UNCLAIM_ERR) {
-			xlog(LOG_ERR, &m.v.err,
-			    "%s: failed to unclaim slab sk=%lu/%lu, but "
-			    "closing it anyway: mgr_recv", __func__,
-			    b->sk.ino, b->sk.base);
-		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
-			xlog(LOG_ERR, NULL, "%s: mgr_recv: "
-			    "unexpected response: %d for slab sk=%lu/%lu",
-			    __func__, m.m, b->sk.ino, b->sk.base);
-			goto fail;
-		} else if (memcmp(&m.v.unclaim.key, &b->sk,
-		    sizeof(struct slab_key))) {
-			/* We close the fd here to avoid deadlocks. */
-			CLOSE_X(b->fd);
-			xlog(LOG_ERR, NULL,
-			    "%s: bad manager response for unclaim; "
-			    "ino: expected=%lu, received=%lu"
-			    "base: expected=%lu, received=%lu", __func__,
-			    b->sk.ino, m.v.unclaim.key.ino,
-			    b->sk.base, m.v.unclaim.key.base);
-			goto fail;
-		}
-		break;
-fail:
-		/*
-		 * Disowning is important and hard to recover from
-		 * in case of failure. Loop until things recover,
-		 * or until an external action is taken.
-		 */
-		if (mgr != -1)
-			CLOSE_X(mgr);
-		nanosleep(&tp, NULL);
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
+		xlog(LOG_ERR, &e, __func__);
+		goto fail;
 	}
-	CLOSE_X(mgr);
-	CLOSE_X(b->fd);
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_UNCLAIM;
+	memcpy(&m.v.unclaim.key, &b->sk,
+	    sizeof(struct slab_key));
+
+	if (mgr_send(mgr, b->fd, &m, xerrz(&e)) == -1) {
+		xlog(LOG_ERR, &e, __func__);
+		goto fail;
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		xlog(LOG_ERR, &e, "%s: failed to receive response "
+		    "for unclaim of slab sk=%lu/%lu, but "
+		    "closing it anyway", __func__,
+		    b->sk.ino, b->sk.base);
+	} else if (m.m == MGR_MSG_UNCLAIM_ERR) {
+		xlog(LOG_ERR, &m.v.err,
+		    "%s: failed to unclaim slab sk=%lu/%lu, but "
+		    "closing it anyway: mgr_recv", __func__,
+		    b->sk.ino, b->sk.base);
+	} else if (m.m != MGR_MSG_UNCLAIM_OK) {
+		xlog(LOG_ERR, NULL, "%s: mgr_recv: "
+		    "unexpected response: %d for slab sk=%lu/%lu",
+		    __func__, m.m, b->sk.ino, b->sk.base);
+	} else if (memcmp(&m.v.unclaim.key, &b->sk,
+	    sizeof(struct slab_key))) {
+		xlog(LOG_ERR, NULL,
+		    "%s: bad manager response for unclaim; "
+		    "ino: expected=%lu, received=%lu"
+		    "base: expected=%lu, received=%lu", __func__,
+		    b->sk.ino, m.v.unclaim.key.ino,
+		    b->sk.base, m.v.unclaim.key.base);
+	}
+fail:
+	if (mgr != -1)
+		CLOSE_X(mgr);
+	if (b->fd != -1)
+		CLOSE_X(b->fd);
 	LK_LOCK_DESTROY(&b->lock);
 	free(b);
 }
@@ -235,11 +221,7 @@ slab_purge(void *unused)
 	max_open = owned_slabs.max_open;
 	MTX_UNLOCK(&owned_slabs.lock);
 
-	if (clock_gettime(CLOCK_MONOTONIC, &last) == -1) {
-		fs_error_set();
-		xlog_strerror(LOG_ERR, errno,
-		    "%s: failed to get current time", __func__);
-	}
+	clock_gettime_x(CLOCK_MONOTONIC, &last);
 
 	while (!do_shutdown) {
 		nanosleep(&t, NULL);
@@ -252,12 +234,7 @@ slab_purge(void *unused)
 		if (do_shutdown)
 			break;
 
-		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
-			fs_error_set();
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: failed to get current time", __func__);
-			continue;
-		}
+		clock_gettime_x(CLOCK_MONOTONIC, &now);
 
 		purge = 0;
 		if (statvfs(fs_config.data_dir, &stv) == -1) {
@@ -476,8 +453,8 @@ slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
 
 	owned_slabs.max_age = (max_age == 0) ? owned_slabs.max_age : max_age;
 
-	xlog(LOG_NOTICE, NULL, "max open slabs is %lu (RLIMIT_NOFILE is %u, "
-	    "RLIMIT_LOCKS is %u)", owned_slabs.max_open, nofile.rlim_cur,
+	xlog(LOG_NOTICE, NULL, "max open slabs is %lu (RLIMIT_NOFILE is %ld, "
+	    "RLIMIT_LOCKS is %ld)", owned_slabs.max_open, nofile.rlim_cur,
 	    locks.rlim_cur);
 	xlog(LOG_NOTICE, NULL, "slab max age is %lu seconds",
 	    owned_slabs.max_age);
@@ -606,7 +583,7 @@ slab_key(struct slab_key *sk, ino_t ino, off_t base)
 int
 slab_key_valid(const struct slab_key *sk, struct xerr *e)
 {
-	if (sk->base > SLAB_KEY_MAX || sk->base < 0)
+	if (sk->base < 0)
 		return XERRF(e, XLOG_APP, XLOG_INVAL,
 		    "base %ld is out of range", sk->base);
 	if (sk->ino > SLAB_KEY_MAX)
@@ -642,9 +619,8 @@ slab_shutdown(struct xerr *e)
 		next = SPLAY_NEXT(slab_tree, &owned_slabs.head, b);
 		if (b->refcnt != 0)
 			xlog(LOG_ERR, NULL, "%s: slab has non-zero refcnt: "
-			    "ino=%lu, base=%lu, refcnt %d",
-			    __func__, b->sk.ino,
-			    b->sk.base, b->refcnt);
+			    "ino=%lu, base=%lu, refcnt %lu",
+			    __func__, b->sk.ino, b->sk.base, b->refcnt);
 		else
 			TAILQ_REMOVE(&owned_slabs.lru_head, b, lru_entry);
 		SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
@@ -949,9 +925,9 @@ slab_forget(struct oslab *b, struct xerr *e)
 	    __func__, b->sk.ino, b->sk.base, b->refcnt);
 	b->refcnt--;
 	if (b->refcnt == 0) {
-		if (clock_gettime(CLOCK_MONOTONIC, &t) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-		} else if (b->open_since.tv_sec
+		clock_gettime_x(CLOCK_MONOTONIC, &t);
+
+		if (b->open_since.tv_sec
 		    <= t.tv_sec - owned_slabs.max_age) {
 			SPLAY_REMOVE(slab_tree, &owned_slabs.head, b);
 			if (!b->sk.ino)

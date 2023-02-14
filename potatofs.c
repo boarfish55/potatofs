@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -229,8 +229,10 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		exit(0);
 	case OPT_FOREGROUND:
 		fuse_opt_add_arg(outargs, "-f");
+		break;
 	case OPT_NOATIME:
 		fs_config.noatime = 1;
+		break;
 	}
 	return 1;
 }
@@ -324,10 +326,7 @@ fs_set_time(struct oinode *oi, uint32_t what)
 
 	what &= (INODE_ATTR_ATIME|INODE_ATTR_CTIME|INODE_ATTR_MTIME);
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		xlog_strerror(LOG_ERR, errno, "clock_gettime");
-		return;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if (what & INODE_ATTR_ATIME && !fs_config.noatime)
 		memcpy(&st.st_atim, &tp, sizeof(tp));
@@ -412,11 +411,7 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 	if (to_set & (FUSE_SET_ATTR_MTIME|FUSE_SET_ATTR_MTIME_NOW))
 		mask |= INODE_ATTR_MTIME;
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1) {
-		xlog_strerror(LOG_ERR, errno,
-		    "failed to get time for inode creation");
-		return;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	memcpy(&st.st_ctim, &tp, sizeof(st.st_ctim));
 
 	if (to_set & (FUSE_SET_ATTR_ATIME_NOW))
@@ -505,18 +500,17 @@ fs_destroy(void *unused)
 	 * until everything is closed, to avoid our processes
 	 * being killed by the shutdown sequence too soon.
 	 */
-	do {
-		if (wait(&wstatus) == -1) {
-			if (errno == EINTR)
-				continue;
-			else if (errno != ECHILD)
-				xlog_strerror(LOG_ERR, errno, "wait");
-		}
-	} while(0);
-
-	if (WEXITSTATUS(wstatus) != 0)
-		xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
-		    __func__, wstatus);
+wait_again:
+	if (wait(&wstatus) == -1) {
+		if (errno == EINTR)
+			goto wait_again;
+		if (errno != ECHILD)
+			xlog_strerror(LOG_ERR, errno, "wait");
+	} else {
+		if (WEXITSTATUS(wstatus) != 0)
+			xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
+			    __func__, wstatus);
+	}
 }
 
 static void
@@ -899,13 +893,6 @@ again:
 		return;
 	}
 
-	/*
-	 * We still need to do cleanup on error. Let's report zero bytes
-	 * written.
-	 */
-	if (w < 0)
-		w = 0;
-
 	bufv->off += w;
 
 	if (inode_splice_end_write(&si, w, xerrz(&e)) == -1)
@@ -987,7 +974,6 @@ fs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	struct xerr              e = XLOG_ERR_INITIALIZER;
 	struct fuse_entry_param  entry;
 	struct dir_entry         de;
-	int                      status;
 	struct oinode           *oi = NULL, *parent_oi;
 	int                      r_sent = 0;
 
@@ -1009,7 +995,7 @@ parent_again:
 	inode_lock(parent_oi, LK_LOCK_RD);
 
 lookup_again:
-	if ((status = di_lookup(parent_oi, &de, name, xerrz(&e))) == -1) {
+	if (di_lookup(parent_oi, &de, name, xerrz(&e)) == -1) {
 		if (fs_retry(req, &e))
 			goto lookup_again;
 		if (e.sp == XLOG_FS)

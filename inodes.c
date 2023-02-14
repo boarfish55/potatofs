@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -833,7 +833,7 @@ inode_sync(struct oinode *oi, struct xerr *e)
 		if (slab_sync(b, xerrz(e)) == -1) {
 			fs_error_set();
 			xlog(LOG_ERR, e, "%s: ino=%lu (%p)", __func__,
-			    oi->ino, oi);
+			    oi->ino.v.f.inode, oi);
 		}
 		slab_unlock(b);
 

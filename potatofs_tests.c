@@ -600,8 +600,7 @@ test_utimes_file()
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if (utimes(p, times) == -1)
 		return ERR("", errno);
@@ -635,8 +634,7 @@ test_chmod()
 	if (mknod(p, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (chmod(p, 0466) == -1)
 		return ERR("", errno);
 
@@ -660,8 +658,7 @@ test_parent_mtime_after_mknod()
 	if (mkdir(d1, 0755) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 
@@ -738,8 +735,7 @@ test_parent_mtime_after_rmnod()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (unlink(p1) == -1)
 		return ERR("", errno);
 
@@ -844,8 +840,10 @@ test_readdir_max_v2_dir_depth()
 		err(1, "malloc");
 	bzero(found, sizeof(int) * found_count);
 
-	if ((dir = opendir(p)) == NULL)
+	if ((dir = opendir(p)) == NULL) {
+		free(found);
 		return ERR("", errno);
+	}
 	while ((de = readdir(dir))) {
 		for (i = 0; same_hash_30b_suffix[i] != NULL; i++) {
 			if (strcmp(de->d_name, same_hash_30b_suffix[i]) == 0)
@@ -997,20 +995,26 @@ test_unlink_max_v2_dir_depth()
 	 * of our list of files.
 	 */
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i - 1]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[i - 1] = 0;
 	i--;
 
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[i / 2]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[i / 2] = 0;
 	i--;
 
 	snprintf(file, sizeof(file), "%s/%s", p, same_hash_30b_suffix[0]);
-	if (unlink(file) == -1)
+	if (unlink(file) == -1) {
+		free(found);
 		return ERR("", errno);
+	}
 	found[0] = 0;
 	i--;
 
@@ -1033,11 +1037,14 @@ test_unlink_max_v2_dir_depth()
 		}
 	}
 
-	if (rmdir(p) == 0)
+	if (rmdir(p) == 0) {
+		free(found);
 		return ERR("successfully removed directory that "
 		    "is not empty", 0);
-	else if (errno != ENOTEMPTY)
+	} else if (errno != ENOTEMPTY) {
+		free(found);
 		return ERR("", errno);
+	}
 
 	/*
 	 * And now delete them all.
@@ -1046,15 +1053,18 @@ test_unlink_max_v2_dir_depth()
 		if (found[i] == 1) {
 			snprintf(file, sizeof(file), "%s/%s", p,
 			    same_hash_30b_suffix[i]);
-			if (unlink(file) == -1)
+			if (unlink(file) == -1) {
+				free(found);
 				return ERR("", errno);
+			}
 		}
 	}
+
+	free(found);
 
 	if (rmdir(p) == -1)
 		return ERR("", errno);
 
-	free(found);
 	return success();
 }
 
@@ -1161,8 +1171,7 @@ test_file_size_and_mtime()
 	}
 	sleep(1);
 
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if ((w = write(fd, buf, sizeof(buf))) < sizeof(buf)) {
 		if (w == -1)
@@ -1252,7 +1261,7 @@ test_readlink_path_max()
 
 	if (symlink(target, p) == -1)
 		return ERR("", errno);
-	if ((r = readlink(p, buf, sizeof(buf))) == -1)
+	if ((r = readlink(p, buf, sizeof(buf) - 1)) == -1)
 		return ERR("", errno);
 	buf[r] = '\0';
 
@@ -1342,8 +1351,7 @@ test_ctime_after_link()
 	if (mknod(p, 0666, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (link(p, p2) == -1)
 		return ERR("", errno);
 
@@ -1363,8 +1371,7 @@ test_parent_mtime_after_link()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (link(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1520,8 +1527,7 @@ test_rename_crossdir()
 		return ERR("", errno);
 
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1566,8 +1572,7 @@ test_rename_dir_crossdir()
 		return ERR("", errno);
 
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -1894,8 +1899,7 @@ test_parents_mtime_after_rename()
 	if (mknod(p1, 0640, 0) == -1)
 		return ERR("", errno);
 	xnanosleep();
-	if (clock_gettime(CLOCK_REALTIME, &tp) == -1)
-		return ERR("", errno);
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 	if (rename(p1, p2) == -1)
 		return ERR("", errno);
 
@@ -2799,8 +2803,8 @@ test_claim_from_backend()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout / 2);
-	if ((r = write(fd, buf, strlen(buf))) == -1)
+	snprintf(buf, sizeof(buf), "%lu\n", fs_config.backend_get_timeout / 2);
+	if (write(fd, buf, strlen(buf)) == -1)
 		return ERR("", errno);
 	close(fd);
 
@@ -2818,8 +2822,7 @@ test_claim_from_backend()
 		if (pid > 0)
 			continue;
 
-		if (clock_gettime(CLOCK_MONOTONIC, &tp) == -1)
-			err(1, "clock_gettime");
+		clock_gettime_x(CLOCK_MONOTONIC, &tp);
 
 		/* Then reclaim, hopefully from the actual backend this time. */
 		if ((fd = open(p, O_RDWR)) == -1)
@@ -2834,8 +2837,7 @@ test_claim_from_backend()
 			err(1, "pwrite");
 		close(fd);
 
-		if (clock_gettime(CLOCK_MONOTONIC, &tp2) == -1)
-			err(1, "clock_gettime");
+		clock_gettime_x(CLOCK_MONOTONIC, &tp2);
 
 		if (tp2.tv_sec - tp.tv_sec < 1)
 			errx(2, "time elapsed on claim was less than 1 second");
@@ -2940,8 +2942,8 @@ test_backend_timeout_interrupt()
 	 */
 	if ((fd = open(sleep_file, O_CREAT|O_RDWR, 0600)) == -1)
 		return ERR("", errno);
-	snprintf(buf, sizeof(buf), "%d\n", fs_config.backend_get_timeout * 2);
-	if ((r = write(fd, buf, strlen(buf))) == -1)
+	snprintf(buf, sizeof(buf), "%lu\n", fs_config.backend_get_timeout * 2);
+	if (write(fd, buf, strlen(buf)) == -1)
 		return ERR("", errno);
 	close(fd);
 

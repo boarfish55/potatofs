@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -66,6 +66,7 @@ enum {
 	MGR_COUNTER_BACKEND_IN_BYTES = 0,
 	MGR_COUNTER_BACKEND_OUT_BYTES,
 	MGR_COUNTER_SLABS_PURGED,
+	MGR_COUNTER_CLAIM_CONTENTION,
 	MGR_COUNTER_LAST
 };
 

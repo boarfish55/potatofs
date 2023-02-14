@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+# Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
 #
 # This file is part of PotatoFS, a FUSE filesystem implementation.
 #

@@ -18,3 +18,4 @@ TODO
 .build
 .cookie
 backends/backend_s3/backend_s3
+cov-int/

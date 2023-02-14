@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -63,13 +63,16 @@ config_read()
 	char        *line;
 	int          line_n = 0;
 	FILE        *cfg;
+	struct stat  st;
 
 	const char *p, *v;
 
-	if (access(fs_config.cfg_path, F_OK|R_OK) == -1)
-		err(1, "%s", fs_config.cfg_path);
 	if ((cfg = fopen(fs_config.cfg_path, "r")) == NULL)
 		err(1, "%s", fs_config.cfg_path);
+	if (fstat(fileno(cfg), &st) == -1)
+		err(1, "fstat");
+	if (!(st.st_mode & S_IFREG))
+		errx(1, "%s is not a regular file", fs_config.cfg_path);
 
 	while (fgets(buf, sizeof(buf), cfg)) {
 		line_n++;
@@ -128,7 +131,7 @@ config_read()
 				warnx("noatime must be 'yes' or 'no'");
 		} else if (strcmp(p, "slab_max_age") == 0) {
 			if ((fs_config.slab_max_age =
-			    strtoul(v, NULL, 10)) == ULONG_MAX)
+			    strtoull(v, NULL, 10)) == ULLONG_MAX)
 				err(1, "slab_max_age");
 		} else if (strcmp(p, "unclaim_purge_threshold_pct") == 0) {
 			if ((fs_config.unclaim_purge_threshold_pct =

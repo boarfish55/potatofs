@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.7.1"
+#define VERSION      "2.7.2"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -116,7 +116,7 @@ struct fs_config {
 	char      dbg[LINE_MAX];
 	rlim_t    max_open_slabs;
 	uint32_t  entry_timeouts;
-	uint32_t  slab_max_age;
+	uint64_t  slab_max_age;
 	size_t    slab_size;
 	char      data_dir[PATH_MAX];
 	int       noatime;
@@ -131,12 +131,12 @@ struct fs_config {
 	int       purger_interval;
 	int       scrubber_interval;
 	int       df_interval;
-	uint32_t  unclaim_purge_threshold_pct;
-	uint32_t  purge_threshold_pct;
-	uint32_t  backend_get_timeout;
-	uint32_t  backend_put_timeout;
-	uint32_t  backend_df_timeout;
-	uint32_t  backend_hint_timeout;
+	uint64_t  unclaim_purge_threshold_pct;
+	uint64_t  purge_threshold_pct;
+	uint64_t  backend_get_timeout;
+	uint64_t  backend_put_timeout;
+	uint64_t  backend_df_timeout;
+	uint64_t  backend_hint_timeout;
 	time_t    shutdown_grace_period;
 };
 

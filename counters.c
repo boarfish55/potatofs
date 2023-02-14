@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -100,9 +100,12 @@ counter_init(struct xerr *e)
 	pthread_attr_t attr;
 
 	for (c = 0; c < COUNTER_LAST; c++) {
-		counters[c].count = 0;
 		if ((r = pthread_mutex_init(&counters[c].mtx, NULL)) != 0)
 			return XERRF(e, XLOG_ERRNO, r, "pthread_mutex_init");
+		if (pthread_mutex_lock(&counters[c].mtx) != 0)
+			return XERRF(e, XLOG_ERRNO, r, "pthread_mutex_lock");
+		counters[c].count = 0;
+		pthread_mutex_unlock(&counters[c].mtx);
 	}
 
 	if ((r = pthread_attr_init(&attr)) != 0)

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -264,7 +264,7 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint32_t flags,
 
 	    ((flags & SLABDB_PUT_LAST_CLAIMED) &&
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
-	     sizeof(struct timespec) == 0)) &&
+	     sizeof(struct timespec)) == 0) &&
 
 	    ((flags & SLABDB_PUT_TRUNCATE) &&
 	     ((r_v.flags & SLABDB_FLAG_TRUNCATE) ==
@@ -396,10 +396,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		v->flags = 0;
 		v->truncate_offset = 0;
 		uuid_copy(v->owner, instance_id);
-		if (clock_gettime(CLOCK_REALTIME, &v->last_claimed) == -1) {
-			XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-			goto fail;
-		}
+		clock_gettime_x(CLOCK_REALTIME, &v->last_claimed);
 		if (slabdb_put_nolock(sk, v, e) == -1)
 			goto fail;
 		if (slabdb_commit_txn(e) == -1)
@@ -421,7 +418,7 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 	}
 
 	uuid_unparse(v->owner, u);
-	xlog_dbg(XLOG_SLABDB, "%s: k=%lu/%lu, v=%u/%lu/%s/%u.%u\n",
+	xlog_dbg(XLOG_SLABDB, "%s: k=%lu/%lu, v=%lu/%u/%s/%lu.%ld\n",
 	    __func__,
 	    sk->ino, sk->base, v->revision, v->header_crc, u,
 	    v->last_claimed.tv_sec, v->last_claimed.tv_nsec);
@@ -555,10 +552,7 @@ txn_duration()
 	time_t          delta_ns;
 	struct timespec end;
 
-	if (clock_gettime(CLOCK_REALTIME, &end) == -1) {
-		xlog_strerror(LOG_ERR, errno, "%s: clock_gettime");
-		return ULONG_MAX;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &end);
 
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((qry_begin_txn.start.tv_sec * 1000000000) +
@@ -587,10 +581,7 @@ slabdb_begin_txn(struct xerr *e)
 		goto fail;
 	}
 
-	if (clock_gettime(CLOCK_REALTIME, &qry_begin_txn.start) == -1) {
-		XERRF(e, XLOG_ERRNO, errno, "clock_gettime");
-		goto fail;
-	}
+	clock_gettime_x(CLOCK_REALTIME, &qry_begin_txn.start);
 	return slabdb_qry_cleanup(qry_begin_txn.stmt, e);
 fail:
 	if (slabdb_qry_cleanup(qry_begin_txn.stmt, xerrz(&e2)) == -1)
@@ -621,7 +612,7 @@ slabdb_commit_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09lu "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
@@ -655,7 +646,7 @@ slabdb_rollback_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %ld.%09u "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);
@@ -830,47 +821,47 @@ fail:
 void
 slabdb_shutdown()
 {
-	int r;
-
-	if ((r = sqlite3_finalize(qry_put.stmt)))
+	if (sqlite3_finalize(qry_put.stmt))
 		xlog(LOG_WARNING, NULL,
-		    "%s: sqlite3_finalize: qry_put: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_finalize: qry_put: %s",
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_get.stmt)))
+	if (sqlite3_finalize(qry_get.stmt))
 		xlog(LOG_WARNING, NULL,
-		    "%s: sqlite3_finalize: qry_get: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_finalize: qry_get: %s",
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_get_next_itbl.stmt)))
+	if (sqlite3_finalize(qry_get_next_itbl.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_get_next_itbl: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_loop_lru.stmt)))
+	if (sqlite3_finalize(qry_loop_lru.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_loop_lru: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_begin_txn.stmt)))
+	if (sqlite3_finalize(qry_begin_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_begin_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_commit_txn.stmt)))
+	if (sqlite3_finalize(qry_commit_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_commit_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_rollback_txn.stmt)))
+	if (sqlite3_finalize(qry_rollback_txn.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_rollback_txn: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_finalize(qry_count.stmt)))
+	if (sqlite3_finalize(qry_count.stmt))
 		xlog(LOG_WARNING, NULL,
 		    "%s: sqlite3_finalize: qry_count: %s",
-		    sqlite3_errmsg(db));
+		    __func__, sqlite3_errmsg(db));
 
-	if ((r = sqlite3_close(db)) != SQLITE_OK)
+	if (sqlite3_close(db) != SQLITE_OK)
 		xlog(LOG_ERR, NULL,
-		    "%s: sqlite3_close: %s", sqlite3_errmsg(db));
+		    "%s: sqlite3_close: %s", __func__, sqlite3_errmsg(db));
 }

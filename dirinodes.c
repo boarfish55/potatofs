@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2022 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -148,14 +148,15 @@ di_check_format(struct oinode *oi, struct xerr *e)
 
 	r = inode_read(oi, 0, &hdr, sizeof(struct dir_hdr), xerrz(e));
 	if (r == -1) {
-		return XERR_PREPENDFN(e);
+		XERR_PREPENDFN(e);
+		return 0;
 	} else if (r < sizeof(struct dir_hdr)) {
-		return XERRF(e, XLOG_APP, XLOG_IO,
-		    "corrupted dir_hdr");
+		XERRF(e, XLOG_APP, XLOG_IO, "corrupted dir_hdr");
+		return 0;
 	}
 	if (!hdr.dirinode_format || hdr.dirinode_format > DIRINODE_FORMAT) {
-		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
-		    "unsupported dirinode format");
+		XERRF(e, XLOG_APP, XLOG_MISMATCH, "unsupported dirinode format");
+		return 0;
 	}
 
 	return hdr.dirinode_format;
@@ -467,7 +468,7 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	ssize_t             r;
 	int                 bucket, i = 0;
 
-	if ((r = di_read_dir_block_v2(oi, b_off, &b, xerrz(e))) == -1) {
+	if (di_read_dir_block_v2(oi, b_off, &b, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
 			xerrz(e);
 			return 0;
@@ -487,8 +488,8 @@ di_readdir_deep_v2(struct oinode *oi, off_t b_off, int depth,
 		    b.v.leaf.length, dirs + i, count - i,
 		    ((uint64_t)d_off) & 0x00000000FFFFFFFF, 2, xerrz(e));
 		while (b.v.leaf.next > 0) {
-			if ((r = di_read_dir_block_v2(oi, b.v.leaf.next, &b,
-			    xerrz(e))) == -1) {
+			if (di_read_dir_block_v2(oi, b.v.leaf.next, &b,
+			    xerrz(e)) == -1) {
 				if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
 					xerrz(e);
 					return 0;
@@ -659,7 +660,7 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 	struct dir_block_v2 b;
 	int                 i;
 
-	if ((r = di_read_dir_block_v2(oi, b_off, &b, xerrz(e))) == -1) {
+	if (di_read_dir_block_v2(oi, b_off, &b, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_EOF))
 			return XERRF(e, XLOG_FS, ENOENT,
 			    "no such directory entry: %s", name);
@@ -676,8 +677,8 @@ di_lookup_deep_v2(struct oinode *oi, off_t b_off, int depth,
 			return XERR_PREPENDFN(e);
 
 		while (b.v.leaf.next > 0) {
-			if ((r = di_read_dir_block_v2(oi, b.v.leaf.next, &b,
-			    xerrz(e))) == -1) {
+			if (di_read_dir_block_v2(oi, b.v.leaf.next, &b,
+			    xerrz(e)) == -1) {
 				if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
 					xerrz(e);
 					return 0;
@@ -869,7 +870,6 @@ di_mkdirent_getblock_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 {
 	struct dir_block_v2 b;
 	off_t               offset;
-	ssize_t             r;
 
 	if (hdr->v.h.free_list_start == 0) {
 		offset = inode_getsize(parent);
@@ -886,8 +886,8 @@ di_mkdirent_getblock_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 		 */
 		do {
 			offset = hdr->v.h.free_list_start;
-			if ((r = di_read_dir_block_v2(parent, offset, &b,
-			    xerrz(e))) == -1)
+			if (di_read_dir_block_v2(parent, offset, &b,
+			    xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
 			hdr->v.h.free_list_start = b.v.leaf.next;
 		} while (b.v.flags & DI_BLOCK_ALLOCATED);
@@ -973,7 +973,7 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 	char                *p;
 	off_t                valid_off = -1;
 
-	if ((r = di_read_dir_block_v2(parent, b_off, &b_head, xerrz(e))) == -1)
+	if (di_read_dir_block_v2(parent, b_off, &b_head, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	if (!(b_head.v.flags & DI_BLOCK_ALLOCATED))
@@ -1004,8 +1004,8 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 				break;
 
 			b_off = b.v.leaf.next;
-			if ((r = di_read_dir_block_v2(parent, b.v.leaf.next,
-			    &b, xerrz(e))) == -1)
+			if (di_read_dir_block_v2(parent, b.v.leaf.next,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
 
 			if (!(b.v.flags & DI_BLOCK_ALLOCATED))
@@ -1052,8 +1052,8 @@ di_mkdirent_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr, off_t b_off,
 		 * be loaded in 'b'.
 		 */
 		if (valid_off > -1 && valid_off != b_off) {
-			if ((r = di_read_dir_block_v2(parent, valid_off,
-			    &b, xerrz(e))) == -1)
+			if (di_read_dir_block_v2(parent, valid_off,
+			    &b, xerrz(e)) == -1)
 				return XERR_PREPENDFN(e);
 			b_off = valid_off;
 		}
@@ -1225,14 +1225,13 @@ static int
 di_isempty_v2(struct oinode *oi, struct xerr *e)
 {
 	struct dir_block_v2 b;
-	ssize_t             r;
 	struct dir_hdr_v2   hdr;
 	int                 i;
 
 	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
-	if ((r = di_read_dir_block_v2(oi, sizeof(hdr), &b, xerrz(e))) == -1) {
+	if (di_read_dir_block_v2(oi, sizeof(hdr), &b, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_EOF)) {
 			xerrz(e);
 			return 1;
@@ -1378,8 +1377,7 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 	int                 i;
 	off_t               b_off, b_off_prev;
 
-	if ((r = di_read_dir_block_v2(parent, head_b_off,
-	    &b, xerrz(e))) == -1) {
+	if (di_read_dir_block_v2(parent, head_b_off, &b, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_EOF))
 			return XERRF(e, XLOG_FS, ENOENT,
 			    "no such directory entry: %s", name);
@@ -1440,8 +1438,8 @@ di_unlink_deep_v2(struct oinode *parent, struct dir_hdr_v2 *hdr,
 			memcpy(&b_prev, &b, sizeof(b_prev));
 			b_off = b.v.leaf.next;
 
-			if ((r = di_read_dir_block_v2(parent, b_off,
-			    &b, xerrz(e))) == -1) {
+			if (di_read_dir_block_v2(parent, b_off,
+			    &b, xerrz(e)) == -1) {
 				if (xerr_is(e, XLOG_APP, XLOG_EOF))
 					return XERRF(e, XLOG_FS, ENOENT,
 					    "no such directory entry: %s",
@@ -1601,13 +1599,12 @@ static int
 di_setparent_v2(struct oinode *oi, ino_t parent, struct xerr *e)
 {
 	struct dir_hdr_v2 hdr;
-	ssize_t           r;
 
 	if (di_read_dir_hdr_v2(oi, &hdr, xerrz(e)) == -1)
 		return XERR_PREPENDFN(e);
 
 	hdr.v.h.parent = parent;
-	if ((r = inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e))) < sizeof(hdr)) {
+	if (inode_write(oi, 0, &hdr, sizeof(hdr), xerrz(e)) < sizeof(hdr)) {
 		return XERRF(e, XLOG_APP, XLOG_IO,
 		    "partial dir_hdr_v2 write, this directory "
 		    "might be corrupted");
