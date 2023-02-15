@@ -19,7 +19,7 @@
 
 override_dh_auto_build:
 	make
-	make -C backends/backend_s3
+	GOCACHE=/tmp/.go_cache make -C backends/backend_s3
 
 
 # dh_make generated override targets
