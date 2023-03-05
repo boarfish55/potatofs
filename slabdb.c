@@ -612,7 +612,7 @@ slabdb_commit_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %u.%09lu "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %ld.%09ld "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_commit_txn.stmt, e);
@@ -646,7 +646,7 @@ slabdb_rollback_txn(struct xerr *e)
 	}
 
 	delta_ns = txn_duration();
-	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %ld.%09u "
+	xlog_dbg(XLOG_SLABDB, "%s: transaction held the lock for %ld.%09ld "
 	    "seconds", __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	return slabdb_qry_cleanup(qry_rollback_txn.stmt, e);

@@ -787,7 +787,7 @@ backend_get(const char *local_path, const char *backend_name,
 	clock_gettime_x(CLOCK_REALTIME, &end);
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: sk=%lu/%ld completed in %u.%09ld seconds",
+	xlog(LOG_NOTICE, NULL, "%s: sk=%lu/%ld completed in %ld.%09ld seconds",
 	    __func__, sk->ino, sk->base, delta_ns / 1000000000,
 	    delta_ns % 1000000000);
 
@@ -894,7 +894,7 @@ backend_put(const char *local_path, const char *backend_name,
 	clock_gettime_x(CLOCK_REALTIME, &end);
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: completed in %ld.%09u seconds",
+	xlog(LOG_NOTICE, NULL, "%s: completed in %ld.%09ld seconds",
 	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 
 	if (WIFSIGNALED(wstatus))
@@ -2202,7 +2202,7 @@ bg_purge()
 
 	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
 	    ((start.tv_sec * 1000000000) + start.tv_nsec);
-	xlog(LOG_NOTICE, NULL, "%s: purging took %lu.%09u seconds",
+	xlog(LOG_NOTICE, NULL, "%s: purging took %lu.%09ld seconds",
 	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 }
 
@@ -2279,7 +2279,7 @@ worker(int lsock)
 			continue;
 		}
 
-		for (;;) {
+		while (c > -1) {
 			while (waitpid(-1, NULL, WNOHANG) > 0);
 			if (mgr_recv(c, &fd, &m, xerrz(&e)) == -1) {
 				if (xerr_is(&e, XLOG_ERRNO, EAGAIN)) {
@@ -2289,6 +2289,7 @@ worker(int lsock)
 					xlog(LOG_ERR, &e, __func__);
 				}
 				CLOSE_X(c);
+				c = -1;
 				break;
 			}
 
@@ -2319,7 +2320,8 @@ worker(int lsock)
 				}
 				if (mgr_send(c, -1, &m, xerrz(&e2)) == -1) {
 					xlog(LOG_ERR, &e2, __func__);
-					goto end;
+					CLOSE_X(c);
+					c = -1;
 				}
 				break;
 			case MGR_MSG_CLAIM_NEXT_ITBL:
@@ -2347,17 +2349,19 @@ worker(int lsock)
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
 				    __func__, m.m);
-				goto end;
+				CLOSE_X(c);
+				c = -1;
 			}
 			if (xerr_fail(&e)) {
 				xlog(LOG_ERR, &e, __func__);
-				if (e.sp == XLOG_ERRNO)
-					goto end;
+				if (e.sp == XLOG_ERRNO) {
+					CLOSE_X(c);
+					c = -1;
+					break;
+				}
 			}
 		}
 	}
-end:
-	CLOSE_X(c);
 	CLOSE_X(lsock);
 	slabdb_shutdown();
 	_exit(0);
