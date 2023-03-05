@@ -1,3 +1,23 @@
+potatofs (2.7.3) unstable; urgency=medium
+
+  v2.7.3
+
+  * Copyright 2023
+  * Various clang-analyzer fixes, new lock contention counters
+  * Use _exit() in child processes
+
+  Fixes following Coverity scan:
+  * Ignore coverity files
+  * Missing break in switch that would cause the -f option to also set noatime
+  * Missing args after format string
+  * Use clock_gettime_x() anywhere it makes sense
+  * Add missing dep on ncurses
+  * Missing build dep on golang
+  * Set the GOCACHE to something valid during build with pbuilder
+  * ... and more.
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 05 Mar 2023 16:40:17 -0500
+
 potatofs (2.7.1) unstable; urgency=medium
 
   * Add missing fuse3 dependency
