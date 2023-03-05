@@ -1046,11 +1046,7 @@ unlock:
 static void
 fs_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode)
 {
-	if (FS_RO_ON_ERR(req)) return;
-	LK_RDLOCK(&fs_tree_lock);
-	counter_incr(COUNTER_FS_MKDIR);
 	fs_mknod(req, parent, name, mode | S_IFDIR, 0);
-	LK_UNLOCK(&fs_tree_lock);
 }
 
 static void
@@ -1338,7 +1334,9 @@ fs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode,
 	struct fuse_entry_param entry;
 	int                     r_sent = 0;
 
-	if (!(mode & S_IFDIR))
+	if (mode & S_IFDIR)
+		counter_incr(COUNTER_FS_MKDIR);
+	else
 		counter_incr(COUNTER_FS_MKNOD);
 	if (FS_RO_ON_ERR(req)) return;
 	LK_RDLOCK(&fs_tree_lock);

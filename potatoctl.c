@@ -1508,7 +1508,6 @@ ctop(int argc, char **argv)
 
 	mgr = mgr_connect(0, xerrz(&e));
 	if (mgr == -1) {
-		close(mgr);
 		xerr_print(&e);
 		return 1;
 	}

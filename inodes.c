@@ -177,7 +177,7 @@ int
 inode_dealloc(ino_t ino, struct xerr *e)
 {
 	struct oslab    *b;
-	struct xerr      e_close_tbl;
+	struct xerr      e_local;
 	struct slab_key  sk;
 
 	b = slab_load_itbl(slab_key(&sk, 0, ino), xerrz(e));
@@ -189,12 +189,15 @@ inode_dealloc(ino_t ino, struct xerr *e)
 	slab_lock(b, LK_LOCK_RW);
 	xlog_dbg(XLOG_INODE, "%s: deallocating inode %lu", __func__, ino);
 	slab_itbl_dealloc(b, ino);
-	slab_write_hdr(b, xerrz(e));
+	if (slab_write_hdr(b, xerrz(&e_local)) == -1) {
+		fs_error_set();
+		xlog(LOG_ERR, &e_local, __func__);
+	}
 	slab_unlock(b);
 
-	if (slab_forget(b, xerrz(&e_close_tbl)) == -1) {
+	if (slab_forget(b, xerrz(&e_local)) == -1) {
 		fs_error_set();
-		xlog(LOG_ERR, &e_close_tbl, __func__);
+		xlog(LOG_ERR, &e_local, __func__);
 	}
 
 	return xerr_fail(e);
@@ -794,6 +797,7 @@ inode_sync(struct oinode *oi, struct xerr *e)
 {
 	off_t         offset, size;
 	struct oslab *b;
+	struct xerr   e_local;
 
 	/*
 	 * This should take care of syncing inode metadata and
@@ -837,7 +841,8 @@ inode_sync(struct oinode *oi, struct xerr *e)
 		}
 		slab_unlock(b);
 
-		slab_forget(b, xerrz(e));
+		if (slab_forget(b, xerrz(&e_local)) == -1)
+			xlog(LOG_ERR, &e_local, __func__);
 	}
 	LK_UNLOCK(&oi->bytes_lock);
 	return xerr_fail(e);
