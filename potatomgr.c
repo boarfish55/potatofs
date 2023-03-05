@@ -1133,25 +1133,25 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	if (slab_key_valid(sk, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	do {
+	for (;;) {
 		if (statvfs(fs_config.data_dir, &stv) == -1)
 			return XERRF(e, XLOG_APP, XLOG_IO,
 			    "statvfs: %s", strerror(errno));
 
-		if (stv.f_bfree < stv.f_blocks *
-		    (100 - fs_config.unclaim_purge_threshold_pct) / 100) {
-			/*
-			 * We are tight on space, we should avoid filling the
-			 * partition to prevent the slabdb from breaking.
-			 */
-			xlog(LOG_WARNING, NULL, "%s: free space is below "
-			    "%lu%%, blocking on claim() for sk=%lu/%ld",
-			    __func__, fs_config.unclaim_purge_threshold_pct,
-			    sk->ino, sk->base);
-			sleep(1);
-			continue;
-		}
-	} while(0);
+		if (stv.f_bfree >= stv.f_blocks *
+		    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
+			break;
+
+		/*
+		 * We are tight on space, we should avoid filling the
+		 * partition to prevent the slabdb from breaking.
+		 */
+		xlog(LOG_WARNING, NULL, "%s: free space is below "
+		    "%lu%%, blocking on claim() for sk=%lu/%ld",
+		    __func__, fs_config.unclaim_purge_threshold_pct,
+		    sk->ino, sk->base);
+		sleep(1);
+	}
 
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
@@ -1512,6 +1512,7 @@ claim_next_itbls(int c, struct mgr_msg *m, struct xerr *e)
 {
 	off_t          base;
 	struct mgr_msg claim_msg;
+	struct xerr    e_local;
 
 	base = m->v.claim_next_itbl.base;
 
@@ -1534,7 +1535,8 @@ claim_next_itbls(int c, struct mgr_msg *m, struct xerr *e)
 	return client_claim(c, &claim_msg, e);
 fail:
 	m->m = MGR_MSG_CLAIM_NEXT_ITBL_ERR;
-	mgr_send(c, -1, m, xerrz(e));
+	if (mgr_send(c, -1, m, xerrz(&e_local)) == -1)
+		xlog(LOG_ERR, &e_local, __func__);
 	return -1;
 }
 
@@ -1612,6 +1614,18 @@ bg_df()
 		xlog(LOG_ERR, &e, __func__);
 		return;
 	}
+
+	if (fs_info.stats.f_bsize == 0) {
+		xlog(LOG_ERR, NULL,
+		    "%s: fs_info.stats.f_bsize is zero", __func__);
+		return;
+	}
+	if (fs_info.slab_size == 0) {
+		xlog(LOG_ERR, NULL,
+		    "%s: fs_info.slab_size is zero", __func__);
+		return;
+	}
+
 
 	if (mgr_spawn(args, &wstatus, NULL, 0, stdout, sizeof(stdout),
 	    stderr, sizeof(stderr), fs_config.backend_df_timeout, &e) == -1) {
@@ -2198,6 +2212,7 @@ worker(int lsock)
 	int            fd;
 	struct mgr_msg m;
 	struct xerr    e = XLOG_ERR_INITIALIZER;
+	struct xerr    e2;
 	int            c;
 	int            r;
 	pid_t          pid;
@@ -2220,7 +2235,7 @@ worker(int lsock)
 	setproctitle("worker");
 	xlog(LOG_INFO, NULL, "ready");
 
-	if (slabdb_init(instance_id, &e) == -1) {
+	if (slabdb_init(instance_id, xerrz(&e)) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
 		_exit(1);
 	}
@@ -2259,8 +2274,7 @@ worker(int lsock)
 
 		if (setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &socket_timeout,
 		    sizeof(socket_timeout)) == -1) {
-			xlog(LOG_ERR, &e, "%s", __func__);
-			xerrz(&e);
+			xlog_strerror(LOG_ERR, errno, "setsockopt");
 			CLOSE_X(c);
 			continue;
 		}
@@ -2274,11 +2288,11 @@ worker(int lsock)
 				} else if (!xerr_is(&e, XLOG_APP, XLOG_EOF)) {
 					xlog(LOG_ERR, &e, __func__);
 				}
-				xerrz(&e);
 				CLOSE_X(c);
 				break;
 			}
 
+			xerrz(&e);
 			switch (m.m) {
 			case MGR_MSG_CLAIM:
 				client_claim(c, &m, xerrz(&e));
@@ -2303,7 +2317,10 @@ worker(int lsock)
 				} else {
 					m.m = MGR_MSG_SET_FS_ERROR_OK;
 				}
-				mgr_send(c, -1, &m, xerrz(&e));
+				if (mgr_send(c, -1, &m, xerrz(&e2)) == -1) {
+					xlog(LOG_ERR, &e2, __func__);
+					goto end;
+				}
 				break;
 			case MGR_MSG_CLAIM_NEXT_ITBL:
 				claim_next_itbls(c, &m, xerrz(&e));
@@ -2330,18 +2347,17 @@ worker(int lsock)
 			default:
 				xlog(LOG_ERR, NULL, "%s: wrong message %d",
 				    __func__, m.m);
-				CLOSE_X(c);
-				break;
+				goto end;
 			}
 			if (xerr_fail(&e)) {
 				xlog(LOG_ERR, &e, __func__);
-				if (e.sp == XLOG_ERRNO) {
-					CLOSE_X(c);
-					break;
-				}
+				if (e.sp == XLOG_ERRNO)
+					goto end;
 			}
 		}
 	}
+end:
+	CLOSE_X(c);
 	CLOSE_X(lsock);
 	slabdb_shutdown();
 	_exit(0);
