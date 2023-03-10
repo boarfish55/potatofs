@@ -1748,7 +1748,7 @@ again:
 		    mgr_counters_now[MGR_COUNTER_SLABS_PURGED]);
 		mvprintw(row++, col2, "%6lu", counters_now[COUNTER_FS_ERROR]);
 		mvprintw(row++, col2, "%6lu",
-		    counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
+		    mgr_counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
 
 		refresh();
 	}
