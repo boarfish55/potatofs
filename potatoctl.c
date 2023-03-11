@@ -887,7 +887,7 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 	m.v.claim_next_itbl.base = b->hdr.v.f.key.base;
-	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
+	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		return NULL;
 
@@ -1129,7 +1129,7 @@ inode_tables(int argc, char **argv)
 	for (;;) {
 		m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 		m.v.claim_next_itbl.base = base;
-		m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
+		m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			exit(1);
@@ -1833,7 +1833,7 @@ claim(int argc, char **argv)
 	struct mgr_msg m;
 	struct oslab   b;
 	struct xerr    e;
-	uint32_t       oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK;
+	uint32_t       oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_NOHINT;
 
 	if (argc < 2) {
 		usage();
@@ -1940,7 +1940,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, inode->v.f.inode, offset);
-		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
@@ -1965,7 +1965,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 		bzero(&b, sizeof(b));
 		b.fd = fd;
 		b.dirty = 1;
-		b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (slab_read_hdr(&b, xerrz(&e)) == -1) {
 			xerr_print(&e);
@@ -2039,7 +2039,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	slab_key(&m.v.claim.key, 0, inode->v.f.inode);
-	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 		xerr_print(&e);
@@ -2062,7 +2062,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 	bzero(&b, sizeof(b));
 	b.fd = fd;
 	b.dirty = 1;
-	b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+	b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 	if (slab_read_hdr(&b, xerrz(&e)) == -1) {
 		xerr_print(&e);
@@ -2166,7 +2166,7 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, ino, r_offset);
-		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (mgr_send(mgr, -1, &m, &e) == -1) {
 			xerr_print(&e);
@@ -2325,7 +2325,7 @@ show_inode(int argc, char **argv)
 		}
 
 		if ((data = slab_inspect(mgr, slab_key(&sk, ino, i),
-		    OSLAB_NOCREATE|OSLAB_EPHEMERAL,
+		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			xerr_print(&e);
 			exit(1);
@@ -2415,7 +2415,7 @@ show_dir(int argc, char **argv)
 
 	for (; i < inode.v.f.size; i += slab_sz) {
 		if ((slab_data = slab_inspect(mgr, slab_key(&sk, ino, i),
-		    OSLAB_NOCREATE|OSLAB_EPHEMERAL,
+		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 				xerrz(&e);
