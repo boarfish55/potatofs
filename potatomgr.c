@@ -682,6 +682,8 @@ backend_hint(struct slab_key *sk)
 	json_t       *j, *o;
 	json_error_t  jerr;
 
+	mgr_counter_add(MGR_COUNTER_BACKEND_HINTS, 1);
+
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"inode\": %lu, \"base\": %ld}", sk->ino, sk->base);
 
@@ -767,6 +769,8 @@ backend_get(const char *local_path, const char *backend_name,
 	char             stdin[LINE_MAX];
 	struct timespec  start, end;
 	time_t           delta_ns;
+
+	mgr_counter_add(MGR_COUNTER_BACKEND_GETS, 1);
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"backend_name\": \"%s\", "
@@ -874,6 +878,8 @@ backend_put(const char *local_path, const char *backend_name,
 	size_t           len;
 	struct timespec  start, end;
 	time_t           delta_ns;
+
+	mgr_counter_add(MGR_COUNTER_BACKEND_PUTS, 1);
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"local_path\": \"%s\", "

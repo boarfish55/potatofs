@@ -1482,6 +1482,37 @@ top(int argc, char **argv)
 }
 
 int
+read_info(struct fs_info *info, struct xerr *e)
+{
+	int            mgr;
+	struct mgr_msg m;
+
+	mgr = mgr_connect(0, xerrz(e));
+	if (mgr == -1)
+		return XERR_PREPENDFN(e);
+	m.m = MGR_MSG_INFO;
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+	close(mgr);
+
+	if (m.m == MGR_MSG_INFO_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "mgr_recv: unexpected response: %d", m.m);
+	}
+	memcpy(info, &m.v.info.fs_info, sizeof(struct fs_info));
+	return 0;
+}
+
+int
 ctop(int argc, char **argv)
 {
 	uint64_t         counters_now[COUNTER_LAST];
@@ -1490,10 +1521,9 @@ ctop(int argc, char **argv)
 	uint64_t         mgr_counters_now[MGR_COUNTER_LAST];
 	uint64_t         mgr_counters_prev[MGR_COUNTER_LAST];
 	double           mgr_counters_delta[MGR_COUNTER_LAST];
+	double           hit_ratio;
 	int              c;
-	int              mgr;
 	struct timespec  ts, te, slp = {0, 100000000}; /* 100ms */
-	struct xerr      e;
 	struct mgr_msg   m;
 	struct fs_info   fs_info;
 	char             u[37], tstr[32];
@@ -1505,35 +1535,13 @@ ctop(int argc, char **argv)
 	struct statvfs   stv;
 	double           delta_s;
 	int              interval = 1;
+	struct xerr      e;
 
-	mgr = mgr_connect(0, xerrz(&e));
-	if (mgr == -1) {
+	bzero(&fs_info, sizeof(fs_info));
+	if (read_info(&fs_info, &e) == -1) {
 		xerr_print(&e);
 		return 1;
 	}
-	m.m = MGR_MSG_INFO;
-	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
-		close(mgr);
-		xerr_print(&e);
-		return 1;
-	}
-	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
-		close(mgr);
-		xerr_print(&e);
-		return 1;
-	}
-	close(mgr);
-
-	if (m.m == MGR_MSG_INFO_ERR) {
-		memcpy(&e, &m.v.err, sizeof(struct xerr));
-		xerr_print(&e);
-		return 1;
-	} else if (m.m != MGR_MSG_INFO_OK) {
-		warnx("%s: mgr_recv: unexpected response: %d",
-		    __func__, m.m);
-		return 1;
-	}
-	memcpy(&fs_info, &m.v.info.fs_info, sizeof(fs_info));
 	uuid_unparse(fs_info.instance_id, u);
 
 	initscr();
@@ -1554,27 +1562,8 @@ ctop(int argc, char **argv)
 	row = 2;
 	col1 = 2;
 	mvprintw(row++, col1, "fs instance  : %s", u);
-
-	if (statvfs(fs_config.data_dir, &stv) == -1)
-		err(1, "statvfs");
-	used = (double) (stv.f_blocks - stv.f_bfree) *
-	    stv.f_bsize / (2UL << 29UL);
-	total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
-
-	mvprintw(row++, col1, "Cache usage  : %.1f / %.1f GiB (%.1f%%)\n",
-	    used, total, used * 100.0 / total);
-
-	/*
-	 * Convert values to GiB
-	 */
-	used = (double) (fs_info.stats.f_blocks -
-	    fs_info.stats.f_bfree) *
-	    fs_info.stats.f_bsize / (2UL << 29UL);
-	total = (double) fs_info.stats.f_blocks *
-	    fs_info.stats.f_bsize / (2UL << 29UL);
-
-	mvprintw(row++, col1, "Backend usage: %.1f / %.1f GiB (%.1f%%)\n",
-	    used, total, used * 100.0 / total);
+	mvprintw(row++, col1, "Cache usage  :");
+	mvprintw(row++, col1, "Backend usage:");
 
 	col2 = 32;
 	stats_row = ++row;
@@ -1647,6 +1636,10 @@ again:
 
 		read_metrics(counters_now, mgr_counters_now);
 		clock_gettime_x(CLOCK_MONOTONIC, &te);
+		if (read_info(&fs_info, &e) == -1) {
+			xerr_print(&e);
+			return 1;
+		}
 
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
@@ -1668,6 +1661,37 @@ again:
 
 		snprintf(tstr, sizeof(tstr), "[refresh: %3ds]", interval);
 		mvprintw(1, dim_x - strlen(tstr), tstr);
+
+		if (statvfs(fs_config.data_dir, &stv) == -1)
+			err(1, "statvfs");
+		used = (double) (stv.f_blocks - stv.f_bfree) *
+		    stv.f_bsize / (2UL << 29UL);
+		total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
+
+		if (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
+		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS] == 0) {
+			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%)",
+			    used, total, used * 100.0 / total);
+		} else {
+			hit_ratio =
+			    100.0 *
+			    mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] /
+			    (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
+			     mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%),"
+			    " %.1f%% hit ratio\n",
+			    used, total, used * 100.0 / total, hit_ratio);
+		}
+		/*
+		 * Convert values to GiB
+		 */
+		used = (double) (fs_info.stats.f_blocks -
+		    fs_info.stats.f_bfree) *
+		    fs_info.stats.f_bsize / (2UL << 29UL);
+		total = (double) fs_info.stats.f_blocks *
+		    fs_info.stats.f_bsize / (2UL << 29UL);
+		mvprintw(4, 17, "%.1f / %.1f GiB (%.1f%%)\n",
+		    used, total, used * 100.0 / total);
 
 		row = stats_row;
 		mvprintw(row++, col1, "%8.1f/s",
