@@ -1,3 +1,17 @@
+potatofs (2.8.0) unstable; urgency=medium
+
+  v2.8.0
+  * Add dependency for golang-github-mattn-go-sqlite3-dev
+  * Add hints and preload functionality to backend_s3
+  * Add a NOHINT flag when opening slabs to avoid triggering a hint on the
+    backend. This is to prevent looping indefinitely by triggering another
+    hint when preloading a slab.
+  * Add new counters for backend puts/gets/hints; this lets us compute a
+    rough local cache hit ratio which we display in ctop.
+  * Fix claim contention counter in ctop (was displaying the wrong counter)
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sat, 11 Mar 2023 20:53:06 -0500
+
 potatofs (2.7.3) unstable; urgency=medium
 
   v2.7.3
