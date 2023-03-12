@@ -1214,7 +1214,14 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	    ((oflags & OSLAB_NONBLOCK) ? (LOCK_NB|LOCK_EX) : LOCK_EX),
 	    ((oflags & OSLAB_NONBLOCK) ? 0 : flock_timeout))) == -1) {
 		if (errno == EWOULDBLOCK) {
-			mgr_counter_add(MGR_COUNTER_CLAIM_CONTENTION, 1);
+			/*
+			 * We only want to count contentions for requests
+			 * coming from the filesystem, which will never have
+			 * NONBLOCK set.
+			 */
+			if (!(oflags & OSLAB_NONBLOCK))
+				mgr_counter_add(
+				    MGR_COUNTER_CLAIM_CONTENTION, 1);
 			XERRF(e, XLOG_APP, XLOG_BUSY,
 			    "open_wflock() failed to acquire lock "
 			    "for slab %s (EWOULDBLOCK)", dst);

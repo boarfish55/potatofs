@@ -1482,7 +1482,8 @@ top(int argc, char **argv)
 }
 
 int
-read_info(struct fs_info *info, struct xerr *e)
+read_info(struct fs_info *info, pid_t *mgr_pid,
+    char *version, size_t version_len, struct xerr *e)
 {
 	int            mgr;
 	struct mgr_msg m;
@@ -1509,6 +1510,8 @@ read_info(struct fs_info *info, struct xerr *e)
 		    "mgr_recv: unexpected response: %d", m.m);
 	}
 	memcpy(info, &m.v.info.fs_info, sizeof(struct fs_info));
+	*mgr_pid = m.v.info.mgr_pid;
+	strlcpy(version, m.v.info.version_string, version_len);
 	return 0;
 }
 
@@ -1524,21 +1527,23 @@ ctop(int argc, char **argv)
 	double           hit_ratio;
 	int              c;
 	struct timespec  ts, te, slp = {0, 100000000}; /* 100ms */
-	struct mgr_msg   m;
 	struct fs_info   fs_info;
 	char             u[37], tstr[32];
 	double           used, total;
 	int              row, col1, col2, stats_row, dim_x;
 	char             pid_version_str[80];
+	char             version_string[16];
 	struct tm       *tm;
 	time_t           t;
 	struct statvfs   stv;
 	double           delta_s;
 	int              interval = 1;
 	struct xerr      e;
+	pid_t            mgr_pid;
 
 	bzero(&fs_info, sizeof(fs_info));
-	if (read_info(&fs_info, &e) == -1) {
+	if (read_info(&fs_info, &mgr_pid, version_string,
+	    sizeof(version_string), &e) == -1) {
 		xerr_print(&e);
 		return 1;
 	}
@@ -1555,8 +1560,7 @@ ctop(int argc, char **argv)
 	strftime(tstr, sizeof(tstr), "%c", tm);
 	mvprintw(0, 0, "PotatoFS ctop - %s", tstr);
 	snprintf(pid_version_str, sizeof(pid_version_str),
-	    "potatomgr PID %d, version %s",
-	    m.v.info.mgr_pid, m.v.info.version_string);
+	    "potatomgr PID %d, version %s", mgr_pid, version_string);
 	mvprintw(0, dim_x - strlen(pid_version_str), pid_version_str);
 
 	row = 2;
@@ -1636,7 +1640,8 @@ again:
 
 		read_metrics(counters_now, mgr_counters_now);
 		clock_gettime_x(CLOCK_MONOTONIC, &te);
-		if (read_info(&fs_info, &e) == -1) {
+		if (read_info(&fs_info, &mgr_pid, version_string,
+		    sizeof(version_string), &e) == -1) {
 			xerr_print(&e);
 			return 1;
 		}
