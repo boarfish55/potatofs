@@ -887,7 +887,7 @@ fsck_load_next_itbl(int mgr, struct oslab *b,
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 	m.v.claim_next_itbl.base = b->hdr.v.f.key.base;
-	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
+	m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 	if (mgr_send(mgr, -1, &m, e) == -1)
 		return NULL;
 
@@ -1129,7 +1129,7 @@ inode_tables(int argc, char **argv)
 	for (;;) {
 		m.m = MGR_MSG_CLAIM_NEXT_ITBL;
 		m.v.claim_next_itbl.base = base;
-		m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL;
+		m.v.claim_next_itbl.oflags = OSLAB_NOCREATE|OSLAB_SYNC|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
 			exit(1);
@@ -1482,6 +1482,37 @@ top(int argc, char **argv)
 }
 
 int
+read_info(struct fs_info *info, struct xerr *e)
+{
+	int            mgr;
+	struct mgr_msg m;
+
+	mgr = mgr_connect(0, xerrz(e));
+	if (mgr == -1)
+		return XERR_PREPENDFN(e);
+	m.m = MGR_MSG_INFO;
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		close(mgr);
+		return XERR_PREPENDFN(e);
+	}
+	close(mgr);
+
+	if (m.m == MGR_MSG_INFO_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_INFO_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "mgr_recv: unexpected response: %d", m.m);
+	}
+	memcpy(info, &m.v.info.fs_info, sizeof(struct fs_info));
+	return 0;
+}
+
+int
 ctop(int argc, char **argv)
 {
 	uint64_t         counters_now[COUNTER_LAST];
@@ -1490,10 +1521,9 @@ ctop(int argc, char **argv)
 	uint64_t         mgr_counters_now[MGR_COUNTER_LAST];
 	uint64_t         mgr_counters_prev[MGR_COUNTER_LAST];
 	double           mgr_counters_delta[MGR_COUNTER_LAST];
+	double           hit_ratio;
 	int              c;
-	int              mgr;
 	struct timespec  ts, te, slp = {0, 100000000}; /* 100ms */
-	struct xerr      e;
 	struct mgr_msg   m;
 	struct fs_info   fs_info;
 	char             u[37], tstr[32];
@@ -1505,35 +1535,13 @@ ctop(int argc, char **argv)
 	struct statvfs   stv;
 	double           delta_s;
 	int              interval = 1;
+	struct xerr      e;
 
-	mgr = mgr_connect(0, xerrz(&e));
-	if (mgr == -1) {
+	bzero(&fs_info, sizeof(fs_info));
+	if (read_info(&fs_info, &e) == -1) {
 		xerr_print(&e);
 		return 1;
 	}
-	m.m = MGR_MSG_INFO;
-	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
-		close(mgr);
-		xerr_print(&e);
-		return 1;
-	}
-	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
-		close(mgr);
-		xerr_print(&e);
-		return 1;
-	}
-	close(mgr);
-
-	if (m.m == MGR_MSG_INFO_ERR) {
-		memcpy(&e, &m.v.err, sizeof(struct xerr));
-		xerr_print(&e);
-		return 1;
-	} else if (m.m != MGR_MSG_INFO_OK) {
-		warnx("%s: mgr_recv: unexpected response: %d",
-		    __func__, m.m);
-		return 1;
-	}
-	memcpy(&fs_info, &m.v.info.fs_info, sizeof(fs_info));
 	uuid_unparse(fs_info.instance_id, u);
 
 	initscr();
@@ -1554,27 +1562,8 @@ ctop(int argc, char **argv)
 	row = 2;
 	col1 = 2;
 	mvprintw(row++, col1, "fs instance  : %s", u);
-
-	if (statvfs(fs_config.data_dir, &stv) == -1)
-		err(1, "statvfs");
-	used = (double) (stv.f_blocks - stv.f_bfree) *
-	    stv.f_bsize / (2UL << 29UL);
-	total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
-
-	mvprintw(row++, col1, "Cache usage  : %.1f / %.1f GiB (%.1f%%)\n",
-	    used, total, used * 100.0 / total);
-
-	/*
-	 * Convert values to GiB
-	 */
-	used = (double) (fs_info.stats.f_blocks -
-	    fs_info.stats.f_bfree) *
-	    fs_info.stats.f_bsize / (2UL << 29UL);
-	total = (double) fs_info.stats.f_blocks *
-	    fs_info.stats.f_bsize / (2UL << 29UL);
-
-	mvprintw(row++, col1, "Backend usage: %.1f / %.1f GiB (%.1f%%)\n",
-	    used, total, used * 100.0 / total);
+	mvprintw(row++, col1, "Cache usage  :");
+	mvprintw(row++, col1, "Backend usage:");
 
 	col2 = 32;
 	stats_row = ++row;
@@ -1647,6 +1636,10 @@ again:
 
 		read_metrics(counters_now, mgr_counters_now);
 		clock_gettime_x(CLOCK_MONOTONIC, &te);
+		if (read_info(&fs_info, &e) == -1) {
+			xerr_print(&e);
+			return 1;
+		}
 
 		for (c = 0; c < COUNTER_LAST; c++) {
 			counters_delta[c] = counters_now[c] - counters_prev[c];
@@ -1668,6 +1661,37 @@ again:
 
 		snprintf(tstr, sizeof(tstr), "[refresh: %3ds]", interval);
 		mvprintw(1, dim_x - strlen(tstr), tstr);
+
+		if (statvfs(fs_config.data_dir, &stv) == -1)
+			err(1, "statvfs");
+		used = (double) (stv.f_blocks - stv.f_bfree) *
+		    stv.f_bsize / (2UL << 29UL);
+		total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
+
+		if (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
+		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS] == 0) {
+			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%)",
+			    used, total, used * 100.0 / total);
+		} else {
+			hit_ratio =
+			    100.0 *
+			    mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] /
+			    (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
+			     mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%),"
+			    " %.1f%% hit ratio\n",
+			    used, total, used * 100.0 / total, hit_ratio);
+		}
+		/*
+		 * Convert values to GiB
+		 */
+		used = (double) (fs_info.stats.f_blocks -
+		    fs_info.stats.f_bfree) *
+		    fs_info.stats.f_bsize / (2UL << 29UL);
+		total = (double) fs_info.stats.f_blocks *
+		    fs_info.stats.f_bsize / (2UL << 29UL);
+		mvprintw(4, 17, "%.1f / %.1f GiB (%.1f%%)\n",
+		    used, total, used * 100.0 / total);
 
 		row = stats_row;
 		mvprintw(row++, col1, "%8.1f/s",
@@ -1748,7 +1772,7 @@ again:
 		    mgr_counters_now[MGR_COUNTER_SLABS_PURGED]);
 		mvprintw(row++, col2, "%6lu", counters_now[COUNTER_FS_ERROR]);
 		mvprintw(row++, col2, "%6lu",
-		    counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
+		    mgr_counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
 
 		refresh();
 	}
@@ -1833,7 +1857,7 @@ claim(int argc, char **argv)
 	struct mgr_msg m;
 	struct oslab   b;
 	struct xerr    e;
-	uint32_t       oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK;
+	uint32_t       oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_NOHINT;
 
 	if (argc < 2) {
 		usage();
@@ -1940,7 +1964,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, inode->v.f.inode, offset);
-		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 			xerr_print(&e);
@@ -1965,7 +1989,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 		bzero(&b, sizeof(b));
 		b.fd = fd;
 		b.dirty = 1;
-		b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (slab_read_hdr(&b, xerrz(&e)) == -1) {
 			xerr_print(&e);
@@ -2039,7 +2063,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_CLAIM;
 	slab_key(&m.v.claim.key, 0, inode->v.f.inode);
-	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
 		xerr_print(&e);
@@ -2062,7 +2086,7 @@ write_dir(int mgr, char *data, struct inode *inode)
 	bzero(&b, sizeof(b));
 	b.fd = fd;
 	b.dirty = 1;
-	b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+	b.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 	if (slab_read_hdr(&b, xerrz(&e)) == -1) {
 		xerr_print(&e);
@@ -2166,7 +2190,7 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		bzero(&m, sizeof(m));
 		m.m = MGR_MSG_CLAIM;
 		slab_key(&m.v.claim.key, ino, r_offset);
-		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL;
+		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 		if (mgr_send(mgr, -1, &m, &e) == -1) {
 			xerr_print(&e);
@@ -2325,7 +2349,7 @@ show_inode(int argc, char **argv)
 		}
 
 		if ((data = slab_inspect(mgr, slab_key(&sk, ino, i),
-		    OSLAB_NOCREATE|OSLAB_EPHEMERAL,
+		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			xerr_print(&e);
 			exit(1);
@@ -2415,7 +2439,7 @@ show_dir(int argc, char **argv)
 
 	for (; i < inode.v.f.size; i += slab_sz) {
 		if ((slab_data = slab_inspect(mgr, slab_key(&sk, ino, i),
-		    OSLAB_NOCREATE|OSLAB_EPHEMERAL,
+		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 				xerrz(&e);

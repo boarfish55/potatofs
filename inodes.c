@@ -1385,7 +1385,7 @@ inode_inspect(int mgr, ino_t ino, struct inode *inode, struct xerr *e)
 	bzero(&b, sizeof(struct oslab));
 
 	if ((data = slab_inspect(mgr, slab_key(&sk, 0, ino),
-	    OSLAB_NOCREATE|OSLAB_EPHEMERAL, &b.hdr, &data_sz, xerrz(e))) == NULL)
+	    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT, &b.hdr, &data_sz, xerrz(e))) == NULL)
 		return xerr_prepend(e, __func__);
 
 	if (slab_itbl_is_free(&b, ino)) {

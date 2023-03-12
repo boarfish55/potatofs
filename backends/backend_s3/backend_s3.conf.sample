@@ -1,3 +1,19 @@
+# The backend will exit after this many seconds of inactivity. This also
+# limits how far in the future we can make guesses for slab preloading when
+# the backend is idle. Because the backend will exit after this much idle time,
+# the state of which slab was last loaded is lost.
+idle_timeout_seconds = 300
+
+# The path for the hints database, containing information about the sequence
+# in which slabs are typically loaded. This DB is used to make guesses and
+# try to load slabs preemptively.
+hints_database_path = "/var/potatofs_test/backend_s3_hints.db"
+
+# When computing the time that passed between loading two slabs in a sequence,
+# decrease the computed time by this many milliseconds. This way we can give
+# us a bit of time to download the slab ahead of it being used, hopefully.
+hint_skew_ms = 5000
+
 s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"
 s3_region = "us-east-1"
@@ -25,3 +41,10 @@ backend_timeout_seconds = 65
 
 # Encryption/decryption key path
 backend_secret_key_path = "/var/potatofs_test/secret"
+
+# The command to preload slabs as predicted by the hints database. This should,
+# for now, always point to the right "potatoctl -c <conf> claim <ino> <base>"
+# command, optionally with the right config path. This is currently the only
+# safe way to trigger a claim. The "%inode%" and "%base%" tokens will be
+# replaced by the slab's inode/base that needs to be preloaded.
+backend_claim_command = ""

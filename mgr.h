@@ -91,10 +91,6 @@ struct mgr_msg {
 		struct {
 			struct slab_key key;
 			uint32_t        oflags;
-			// TODO: support "nowait" when claiming to simply
-			// return when someone already has the slab claimed.
-			uint8_t         claim_flags;
-#define MGR_CLAIM_NOWAIT 0x01
 		} claim;
 
 		struct {

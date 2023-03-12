@@ -60,7 +60,10 @@ const char *mgr_counter_names[] = {
 	"backend_in_bytes",  /* COUNTER_BACKEND_IN_BYTES */
 	"backend_out_bytes", /* COUNTER_BACKEND_OUT_BYTES */
 	"slabs_purged",      /* MGR_COUNTER_SLABS_PURGED */
-	"claim_contention"   /* MGR_COUNTER_CLAIM_CONTENTION */
+	"claim_contention",  /* MGR_COUNTER_CLAIM_CONTENTION */
+	"backend_gets",      /* MGR_COUNTER_BACKEND_GETS */
+	"backend_hints",     /* MGR_COUNTER_BACKEND_HINTS */
+	"backend_puts"       /* MGR_COUNTER_BACKEND_PUTS */
 };
 
 #endif

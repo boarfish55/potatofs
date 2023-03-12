@@ -20,7 +20,9 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"container/heap"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -32,6 +34,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -41,6 +46,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/nacl/secretbox"
 )
 
@@ -58,6 +64,7 @@ var (
 
 type Config struct {
 	LogLevel              string `toml:"log_level"`
+	IdleTimeoutSeconds    int64  `toml:"idle_timeout_seconds"`
 	S3Endpoint            string `toml:"s3_endpoint"`
 	S3Bucket              string `toml:"s3_bucket"`
 	S3Region              string `toml:"s3_region"`
@@ -67,6 +74,9 @@ type Config struct {
 	BackendBytes          uint64 `toml:"backend_bytes"`
 	BackendTimeoutSeconds int64  `toml:"backend_timeout_seconds"`
 	BackendSecretKeyPath  string `toml:"backend_secret_key_path"`
+	BackendClaimCommand   string `toml:"backend_claim_command"`
+	HintsDBPath           string `toml:"hints_database_path"`
+	HintSkewMs            int64  `toml:"hint_skew_ms"`
 }
 
 func NewConfig(path string) (Config, error) {
@@ -80,6 +90,7 @@ func NewConfig(path string) (Config, error) {
 var config Config
 var logger *Loggy
 var secretKey [32]byte
+var hintsDB *HintsDB
 
 // S3 gives us a io.ReadCloser on a GET operation.
 func NewGetStream(f io.ReadCloser) (io.Reader, error) {
@@ -233,7 +244,397 @@ func sendErrResponse(c net.Conn, status string, format string, v ...interface{})
 	}
 }
 
-func handleClient(c net.Conn, s3c *s3.S3) {
+type Slab struct {
+	Ino      uint64
+	Base     int64
+	LoadedAt time.Time
+}
+
+type SlabQueue []Slab
+
+func (q SlabQueue) Len() int {
+	return len(q)
+}
+
+func (q SlabQueue) Less(i, j int) bool {
+	return q[i].LoadedAt.Before(q[j].LoadedAt)
+}
+
+func (q SlabQueue) Swap(i, j int) {
+	q[i], q[j] = q[j], q[i]
+}
+
+func (q *SlabQueue) Push(x interface{}) {
+	*q = append(*q, x.(Slab))
+}
+
+func (q *SlabQueue) Pop() interface{} {
+	old := *q
+	n := len(old)
+	x := old[n-1]
+	*q = old[0 : n-1]
+	return x
+}
+
+func (q *SlabQueue) Peek() interface{} {
+	h := *q
+	return h[0]
+}
+
+type HintsDB struct {
+	Db           *sql.DB
+	LastOpenSlab Slab
+	Mtx          sync.Mutex
+	PreloadQueue SlabQueue
+	QMtx         sync.Mutex
+}
+
+func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
+	db, err := sql.Open("sqlite3", config.HintsDBPath)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = db.Exec("pragma foreign_keys = on")
+	if err != nil {
+		return nil, err
+	}
+
+	s := `
+	create table if not exists slabs(
+	ino int not null,
+	base int not null,
+	primary key(ino, base))
+	`
+
+	_, err = db.Exec(s)
+	if err != nil {
+		return nil, err
+	}
+
+	s = `
+	create table if not exists hints(
+	parent_ino int not null,
+	parent_base int not null,
+	ino int not null,
+	base int not null,
+	last_used_ms int not null,
+	load_after_ms int not null,
+	foreign key(parent_ino, parent_base) references slabs(ino, base)
+	on delete cascade)
+	`
+
+	_, err = db.Exec(s)
+	if err != nil {
+		return nil, err
+	}
+
+	s = `create unique index if not exists hints_ino_base
+	on hints(parent_ino, parent_base, ino, base)
+	`
+
+	_, err = db.Exec(s)
+	if err != nil {
+		return nil, err
+	}
+
+	h := &HintsDB{
+		Db: db,
+	}
+
+	heap.Init(&h.PreloadQueue)
+	wg.Add(1)
+	go h.ProcessPreloadQueue(stop, wg)
+
+	return h, nil
+}
+
+func DoClaim(ino uint64, base int64) {
+	if config.BackendClaimCommand == "" {
+		return
+	}
+
+	inoStr := strconv.FormatUint(ino, 10)
+	baseStr := strconv.FormatInt(base, 10)
+	cmd := strings.ReplaceAll(config.BackendClaimCommand, "%inode%", inoStr)
+	cmd = strings.ReplaceAll(cmd, "%base%", baseStr)
+	logger.Debugf("DoClaim: %s", cmd)
+	cmdParts := strings.Fields(cmd)
+	args := cmdParts[1:]
+	e := exec.Command(cmdParts[0], args...)
+	if err := e.Run(); err != nil {
+		logger.Errf("DoClaim: %v", err)
+	}
+}
+
+func (h *HintsDB) ClaimProcessor(claims <-chan Slab, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for slab := range claims {
+		logger.Infof("preloading: ino=%d/base=%d LoadedAt='%v'", slab.Ino, slab.Base, slab.LoadedAt)
+		DoClaim(slab.Ino, slab.Base)
+	}
+}
+
+func (h *HintsDB) ProcessPreloadQueue(stop <-chan bool, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	// TODO: make those limits (workers, chan size) configurable
+	claims := make(chan Slab, 1000)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go h.ClaimProcessor(claims, wg)
+	}
+
+	for {
+		select {
+		case <-stop:
+			logger.Info("ProcessPreloadQueue: stop received")
+			close(claims)
+			return
+		case <-ticker.C:
+			now := time.Now()
+			h.QMtx.Lock()
+			for h.PreloadQueue.Len() > 0 {
+				slab := h.PreloadQueue.Peek().(Slab)
+				if now.After(slab.LoadedAt) {
+					claims <- heap.Pop(&h.PreloadQueue).(Slab)
+				} else {
+					break
+				}
+			}
+			h.QMtx.Unlock()
+		}
+	}
+}
+
+func Rollback(tx *sql.Tx) {
+	if err := tx.Rollback(); err != nil {
+		logger.Errf("Rollback: %v", err)
+	}
+}
+
+func minZero(x int64) int64 {
+	if x < 0 {
+		return 0
+	}
+	return x
+}
+
+func (h *HintsDB) AddHit(ino uint64, base int64) error {
+	h.Mtx.Lock()
+	now := time.Now()
+	var emptySlab Slab
+	if h.LastOpenSlab == emptySlab {
+		h.LastOpenSlab.Ino = ino
+		h.LastOpenSlab.Base = base
+		h.LastOpenSlab.LoadedAt = now
+		h.Mtx.Unlock()
+		return nil
+	}
+	lastSlab := h.LastOpenSlab
+	h.LastOpenSlab.Ino = ino
+	h.LastOpenSlab.Base = base
+	h.LastOpenSlab.LoadedAt = now
+	h.Mtx.Unlock()
+
+	tx, err := h.Db.Begin()
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(
+		"insert or ignore into slabs(ino, base) values(?, ?)")
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+	defer stmt.Close()
+	stmt.Exec(lastSlab.Ino, lastSlab.Base)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+
+	s := `
+	select load_after_ms from hints where
+	parent_ino = ? and parent_base = ? and ino = ? and base = ?
+	`
+	stmt, err = tx.Prepare(s)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+	defer stmt.Close()
+
+	var loadAfterMs int64
+	var lastUsedMs int64
+	lastUsedMs = now.UnixNano() / 1000000
+
+	err = stmt.QueryRow(lastSlab.Ino, lastSlab.Base, ino, base).Scan(&loadAfterMs)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Put a limit on how many hints we can have for
+			// a single "parent" slab. We should remove based on
+			// LRU. But maybe not here, just in the predictor.
+			loadAfterMs = minZero(now.Sub(lastSlab.LoadedAt).Milliseconds() - config.HintSkewMs)
+
+			s = `
+			insert into hints(parent_ino, parent_base,
+			ino, base, last_used_ms, load_after_ms) values(?, ?, ?, ?, ?, ?)
+			`
+			stmt, err = tx.Prepare(s)
+			if err != nil {
+				Rollback(tx)
+				return err
+			}
+			defer stmt.Close()
+			_, err = stmt.Exec(lastSlab.Ino, lastSlab.Base, ino, base, lastUsedMs, loadAfterMs)
+			if err != nil {
+				Rollback(tx)
+				return err
+			}
+
+			tx.Commit()
+			if err != nil {
+				Rollback(tx)
+				return err
+			}
+			return nil
+		} else {
+			Rollback(tx)
+			return err
+		}
+	}
+
+	after := minZero(now.Sub(lastSlab.LoadedAt).Milliseconds() - config.HintSkewMs)
+	if after < loadAfterMs {
+		loadAfterMs = after
+	}
+
+	s = `
+	update hints set last_used_ms = ?, load_after_ms = ? where
+	parent_ino = ? and parent_base = ? and ino = ? and base = ?
+	`
+
+	stmt, err = tx.Prepare(s)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(lastUsedMs, loadAfterMs, lastSlab.Ino, lastSlab.Base, ino, base)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+
+	tx.Commit()
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+
+	return nil
+}
+
+func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
+	tx, err := h.Db.Begin()
+	if err != nil {
+		return err
+	}
+
+	s := `
+	select ino, base, last_used_ms, load_after_ms from hints where
+	parent_ino = ? and parent_base = ? order by last_used_ms desc
+	`
+
+	stmt, err := tx.Prepare(s)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+	defer stmt.Close()
+
+	rows, err := stmt.Query(ino, base)
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+	defer rows.Close()
+
+	n := 0
+	var deleteOlderThanEq int64
+	for rows.Next() {
+		var childIno uint64
+		var childBase int64
+		var loadAfterMs int64
+		var lastUsedMs int64
+		err = rows.Scan(&childIno, &childBase, &lastUsedMs, &loadAfterMs)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+
+		n++
+		if n > 10 {
+			deleteOlderThanEq = lastUsedMs
+			break
+		}
+
+		slab := Slab{
+			Ino:      childIno,
+			Base:     childBase,
+			LoadedAt: time.Now().Add(time.Duration(loadAfterMs) * time.Millisecond),
+		}
+		h.QMtx.Lock()
+		// TODO: make this limit configurable
+		if h.PreloadQueue.Len() < 1000 {
+			heap.Push(&h.PreloadQueue, slab)
+		}
+		h.QMtx.Unlock()
+		logger.Infof("queued preload: inode=%d/base=%d at %v", slab.Ino, slab.Base, slab.LoadedAt)
+	}
+	err = rows.Err()
+	if err != nil {
+		Rollback(tx)
+		return err
+	}
+
+	if n > 10 {
+		s = `
+		delete from hints where parent_ino = ? and parent_base = ? and
+		last_used_ms <= ?
+		`
+
+		stmt, err := tx.Prepare(s)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+		defer stmt.Close()
+
+		_, err = stmt.Exec(ino, base, deleteOlderThanEq)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+
+		tx.Commit()
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+		return nil
+	}
+	Rollback(tx)
+	return nil
+}
+
+func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
+	defer wg.Done()
 	start := time.Now()
 	var msg MgrMsg
 
@@ -295,10 +696,27 @@ func handleClient(c net.Conn, s3c *s3.S3) {
 		}
 	case "hint":
 		logger.Infof("slab hint: inode=%d/base=%d", msg.Args.Inode, msg.Args.Base)
+
+		if err := hintsDB.AddHit(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		}
+
+		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		}
+
 		resp = MgrMsgHintResponse{
 			Status: "OK",
 		}
 	case "get":
+		if err := hintsDB.AddHit(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		}
+
+		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		}
+
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
 		if err != nil {
 			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)
@@ -407,6 +825,7 @@ func loadSecretKey() error {
 }
 
 func serve() error {
+	var wg sync.WaitGroup
 	laddr, err := net.ResolveUnixAddr("unix", config.SocketPath)
 	if err != nil {
 		return fmt.Errorf("net.ResolveUnixAddr: %v", err)
@@ -416,9 +835,9 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("net.UnixListener: %v", err)
 	}
-	defer l.Close()
 
 	if err = loadSecretKey(); err != nil {
+		l.Close()
 		return err
 	}
 
@@ -428,22 +847,34 @@ func serve() error {
 		Credentials: credentials.NewStaticCredentials(config.AccessKeyID, config.SecretAccessKey, ""),
 	})
 	if err != nil {
+		l.Close()
+		return err
+	}
+
+	stop := make(chan bool)
+	hintsDB, err = OpenHintsDB(stop, &wg)
+	if err != nil {
+		l.Close()
 		return err
 	}
 
 	s3c := s3.New(sess)
 	for {
-		l.SetDeadline(time.Now().Add(60 * time.Second))
+		l.SetDeadline(time.Now().Add(time.Duration(config.IdleTimeoutSeconds) * time.Second))
 		c, err := l.Accept()
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
+				l.Close()
 				break
 			}
 			logger.Errf("Accept: %v", err)
 			continue
 		}
-		go handleClient(c, s3c)
+		wg.Add(1)
+		go handleClient(c, s3c, &wg)
 	}
+	stop <- true
+	wg.Wait()
 	return nil
 }
 
@@ -535,6 +966,7 @@ func main() {
 		if i == 0 {
 			cmd := exec.Command(os.Args[0], "-server")
 			if err = cmd.Start(); err != nil {
+				logger.Errf("failed to start S3 backend: %v", err)
 				die(2, "failed to start S3 backend: %v\n", err)
 			}
 		}
@@ -542,6 +974,7 @@ func main() {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if err != nil {
+		logger.Errf("%v", err)
 		die(2, "%v", err)
 	}
 
@@ -569,11 +1002,13 @@ func main() {
 			die(2, "invalid JSON passed to %q: %v", msg.Command, err)
 		}
 	default:
+		logger.Errf("unknown command %q", msg.Command)
 		die(2, "unknown command %q", msg.Command)
 	}
 
 	enc := json.NewEncoder(c)
 	if err := enc.Encode(msg); err != nil {
+		logger.Errf("failed to encode JSON for command %q: %v", msg.Command, err)
 		die(2, "failed to encode JSON for command %q: %v", msg.Command, err)
 	}
 
@@ -581,12 +1016,14 @@ func main() {
 	if err := dec.Decode(&reply); err != nil {
 		reply = MgrMsgErrResponse{}
 		if err := dec.Decode(&reply); err != nil {
+			logger.Errf("Decode: %v", err)
 			die(2, "Decode: %v", err)
 		}
 	}
 
 	enc = json.NewEncoder(os.Stdout)
 	if err := enc.Encode(reply); err != nil {
+		logger.Errf("failed to encode JSON for command %q: %v", msg.Command, err)
 		die(2, "failed to encode JSON for command %q: %v", msg.Command, err)
 	}
 }

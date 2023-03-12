@@ -682,6 +682,8 @@ backend_hint(struct slab_key *sk)
 	json_t       *j, *o;
 	json_error_t  jerr;
 
+	mgr_counter_add(MGR_COUNTER_BACKEND_HINTS, 1);
+
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"inode\": %lu, \"base\": %ld}", sk->ino, sk->base);
 
@@ -767,6 +769,8 @@ backend_get(const char *local_path, const char *backend_name,
 	char             stdin[LINE_MAX];
 	struct timespec  start, end;
 	time_t           delta_ns;
+
+	mgr_counter_add(MGR_COUNTER_BACKEND_GETS, 1);
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"backend_name\": \"%s\", "
@@ -874,6 +878,8 @@ backend_put(const char *local_path, const char *backend_name,
 	size_t           len;
 	struct timespec  start, end;
 	time_t           delta_ns;
+
+	mgr_counter_add(MGR_COUNTER_BACKEND_PUTS, 1);
 
 	len = snprintf(stdin, sizeof(stdin),
 	    "{\"local_path\": \"%s\", "
@@ -1289,12 +1295,7 @@ new_slab_again:
 		 * as an extra sanity check.
 		 */
 		if (check_slab_header(&hdr, v.header_crc, v.revision, e) == 0) {
-			/*
-			 * We don't send hints when the slab is loaded
-			 * with OSLAB_EPHEMERAL. Most times this is used is
-			 * for other operations such as fsck.
-			 */
-			if (!(oflags & OSLAB_EPHEMERAL)) {
+			if (!(oflags & OSLAB_NOHINT)) {
 				if ((pid = fork()) == -1) {
 					XERRF(e, XLOG_ERRNO, errno, "fork");
 					goto fail_close_dst;
@@ -1332,7 +1333,7 @@ new_slab_again:
 		if (copy_incoming_slab(*dst_fd, outgoing_fd, v.header_crc,
 		    v.revision, xerrz(e)) == 0) {
 			CLOSE_X(outgoing_fd);
-			if (!(oflags & OSLAB_EPHEMERAL)) {
+			if (!(oflags & OSLAB_NOHINT)) {
 				if ((pid = fork()) == -1) {
 					XERRF(e, XLOG_ERRNO, errno, "fork");
 					goto fail_close_dst;
@@ -1952,6 +1953,10 @@ scrub()
 
 	xlog(LOG_NOTICE, NULL, "%s: scrubbing now", __func__);
 
+	// TODO: We need to cleanup INCOMING_DIR as well. For example:
+	//  * if the CRC is wrong
+	//  * if the slab is already in our main dir with >= rev
+
 	for (;;) {
 		bzero(&to_truncate, sizeof(to_truncate));
 		if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
@@ -1968,7 +1973,7 @@ scrub()
 		 * truncate to the desired offset prior to returning the fd.
 		 */
 
-		oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_EPHEMERAL;
+		oflags = OSLAB_NOCREATE|OSLAB_NONBLOCK|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 		for (i = 0; i < to_truncate.count; i++) {
 			if (claim(&to_truncate.sk[i], &fd, oflags,
 			    xerrz(&e)) == -1) {
