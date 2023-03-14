@@ -237,7 +237,7 @@ valid_inode(int mgr, ino_t ino)
 	struct inode inode;
 	struct xerr  e;
 
-	if (inode_inspect(mgr, ino, &inode, xerrz(&e)) == -1) {
+	if (inode_inspect(mgr, ino, &inode, 0, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		return 0;
 	}
@@ -1684,7 +1684,7 @@ again:
 			    (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
 			     mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
 			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%),"
-			    " %.1f%% hit ratio\n",
+			    " %.1f%% slab hit ratio\n",
 			    used, total, used * 100.0 / total, hit_ratio);
 		}
 		/*
@@ -2335,7 +2335,7 @@ show_inode(int argc, char **argv)
 		exit(1);
 	}
 
-	if (inode_inspect(mgr, ino, &inode, &e) == -1) {
+	if (inode_inspect(mgr, ino, &inode, 1, &e) == -1) {
 		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
@@ -2418,7 +2418,7 @@ show_dir(int argc, char **argv)
 		exit(1);
 	}
 
-	if (inode_inspect(mgr, ino, &inode, xerrz(&e)) == -1) {
+	if (inode_inspect(mgr, ino, &inode, 1, xerrz(&e)) == -1) {
 		if (xerr_is(&e, XLOG_FS, ENOENT))
 			errx(1, "inode is not allocated");
 		xerr_print(&e);
@@ -2444,7 +2444,7 @@ show_dir(int argc, char **argv)
 
 	for (; i < inode.v.f.size; i += slab_sz) {
 		if ((slab_data = slab_inspect(mgr, slab_key(&sk, ino, i),
-		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
+		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT|OSLAB_NONBLOCK,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
 				xerrz(&e);

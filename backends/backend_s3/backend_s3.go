@@ -77,14 +77,20 @@ type Config struct {
 	BackendClaimCommand   string `toml:"backend_claim_command"`
 	HintsDBPath           string `toml:"hints_database_path"`
 	HintSkewMs            int64  `toml:"hint_skew_ms"`
+	HintsPreloadQueueSize int    `toml:"hints_preload_queue_size"`
 }
 
-func NewConfig(path string) (Config, error) {
-	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return cfg, fmt.Errorf("error decoding configuration: %v", err)
+func loadConfig(path string) error {
+	if _, err := toml.DecodeFile(path, &config); err != nil {
+		return fmt.Errorf("error decoding configuration: %v", err)
 	}
-	return cfg, nil
+	if config.HintsPreloadQueueSize < 10 {
+		config.HintsPreloadQueueSize = 10
+	}
+	if config.HintsPreloadQueueSize > 1000000 {
+		config.HintsPreloadQueueSize = 1000000
+	}
+	return nil
 }
 
 var config Config
@@ -371,7 +377,7 @@ func (h *HintsDB) ClaimProcessor(claims <-chan Slab, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for slab := range claims {
-		logger.Infof("preloading: ino=%d/base=%d LoadedAt='%v'", slab.Ino, slab.Base, slab.LoadedAt)
+		logger.Infof("preloading: ino=%d/base=%d", slab.Ino, slab.Base)
 		DoClaim(slab.Ino, slab.Base)
 	}
 }
@@ -381,8 +387,10 @@ func (h *HintsDB) ProcessPreloadQueue(stop <-chan bool, wg *sync.WaitGroup) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	// TODO: make those limits (workers, chan size) configurable
-	claims := make(chan Slab, 1000)
+	// There is no use in having too many workers here. At some point
+	// we would hit a ulimit on open files and we want to be nice to
+	// the filesystem and leave workers free for actual FS tasks.
+	claims := make(chan Slab, config.HintsPreloadQueueSize)
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go h.ClaimProcessor(claims, wg)
@@ -416,14 +424,14 @@ func Rollback(tx *sql.Tx) {
 	}
 }
 
-func minZero(x int64) int64 {
-	if x < 0 {
-		return 0
+func minZero(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Duration(0)
 	}
-	return x
+	return d
 }
 
-func (h *HintsDB) AddHit(ino uint64, base int64) error {
+func (h *HintsDB) AddHint(ino uint64, base int64) error {
 	h.Mtx.Lock()
 	now := time.Now()
 	var emptySlab Slab
@@ -476,11 +484,6 @@ func (h *HintsDB) AddHit(ino uint64, base int64) error {
 	err = stmt.QueryRow(lastSlab.Ino, lastSlab.Base, ino, base).Scan(&loadAfterMs)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// Put a limit on how many hints we can have for
-			// a single "parent" slab. We should remove based on
-			// LRU. But maybe not here, just in the predictor.
-			loadAfterMs = minZero(now.Sub(lastSlab.LoadedAt).Milliseconds() - config.HintSkewMs)
-
 			s = `
 			insert into hints(parent_ino, parent_base,
 			ino, base, last_used_ms, load_after_ms) values(?, ?, ?, ?, ?, ?)
@@ -491,7 +494,7 @@ func (h *HintsDB) AddHit(ino uint64, base int64) error {
 				return err
 			}
 			defer stmt.Close()
-			_, err = stmt.Exec(lastSlab.Ino, lastSlab.Base, ino, base, lastUsedMs, loadAfterMs)
+			_, err = stmt.Exec(lastSlab.Ino, lastSlab.Base, ino, base, lastUsedMs, now.Sub(lastSlab.LoadedAt).Milliseconds())
 			if err != nil {
 				Rollback(tx)
 				return err
@@ -509,7 +512,7 @@ func (h *HintsDB) AddHit(ino uint64, base int64) error {
 		}
 	}
 
-	after := minZero(now.Sub(lastSlab.LoadedAt).Milliseconds() - config.HintSkewMs)
+	after := now.Sub(lastSlab.LoadedAt).Milliseconds()
 	if after < loadAfterMs {
 		loadAfterMs = after
 	}
@@ -584,18 +587,29 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 			break
 		}
 
+		skew := time.Duration(config.HintSkewMs) * time.Millisecond
 		slab := Slab{
 			Ino:      childIno,
 			Base:     childBase,
-			LoadedAt: time.Now().Add(time.Duration(loadAfterMs) * time.Millisecond),
+			LoadedAt: time.Now().Add(minZero((time.Duration(loadAfterMs) * time.Millisecond) - skew)),
 		}
+
+		queued := false
+		var length int
 		h.QMtx.Lock()
-		// TODO: make this limit configurable
-		if h.PreloadQueue.Len() < 1000 {
+		// Cap memory usage by preventing too many insertions in the
+		// heap.
+		length = h.PreloadQueue.Len()
+		if length < config.HintsPreloadQueueSize {
 			heap.Push(&h.PreloadQueue, slab)
+			queued = true
 		}
 		h.QMtx.Unlock()
-		logger.Infof("queued preload: inode=%d/base=%d at %v", slab.Ino, slab.Base, slab.LoadedAt)
+		if queued {
+			logger.Infof("queued preload: inode=%d/base=%d at %v (in %.3fs)", slab.Ino, slab.Base, slab.LoadedAt.Format("2006-01-02T15:04:05 -0700"), minZero((time.Duration(loadAfterMs)*time.Millisecond)-skew).Seconds())
+		} else {
+			logger.Infof("queue full at %d/%d elements; could not preload: inode=%d/base=%d", length, config.HintsPreloadQueueSize, slab.Ino, slab.Base)
+		}
 	}
 	err = rows.Err()
 	if err != nil {
@@ -697,24 +711,24 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 	case "hint":
 		logger.Infof("slab hint: inode=%d/base=%d", msg.Args.Inode, msg.Args.Base)
 
-		if err := hintsDB.AddHit(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		if err := hintsDB.AddHint(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		resp = MgrMsgHintResponse{
 			Status: "OK",
 		}
 	case "get":
-		if err := hintsDB.AddHit(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+		if err := hintsDB.AddHint(msg.Args.Inode, msg.Args.Base); err != nil {
+			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHit(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
@@ -910,8 +924,7 @@ func main() {
 		die(2, "POTATOFS_BACKEND_CONFIG is not set")
 	}
 
-	config, err = NewConfig(os.Getenv("POTATOFS_BACKEND_CONFIG"))
-	if err != nil {
+	if err = loadConfig(os.Getenv("POTATOFS_BACKEND_CONFIG")); err != nil {
 		die(2, "%v", err)
 	}
 

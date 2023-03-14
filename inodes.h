@@ -237,7 +237,7 @@ int  inode_nlookup_ino(ino_t, int, struct xerr *);
 int  inode_nlink_ino(ino_t, int, struct xerr *);
 
 /* For testing only; no locks acquired */
-int inode_inspect(int, ino_t, struct inode *, struct xerr *);
+int inode_inspect(int, ino_t, struct inode *, int, struct xerr *);
 int inode_disk_inspect(ino_t, struct inode *, struct xerr *);
 
 #endif

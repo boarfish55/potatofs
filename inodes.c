@@ -1374,18 +1374,22 @@ fail:
 }
 
 int
-inode_inspect(int mgr, ino_t ino, struct inode *inode, struct xerr *e)
+inode_inspect(int mgr, ino_t ino, struct inode *inode, int nonblock,
+    struct xerr *e)
 {
 	struct oslab     b;
 	char            *data;
 	size_t           data_sz;
 	struct slab_key  sk;
+	uint32_t         oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
 	bzero(inode, sizeof(struct inode));
 	bzero(&b, sizeof(struct oslab));
 
+	if (nonblock)
+		oflags |= OSLAB_NONBLOCK;
 	if ((data = slab_inspect(mgr, slab_key(&sk, 0, ino),
-	    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT, &b.hdr, &data_sz, xerrz(e))) == NULL)
+	    oflags, &b.hdr, &data_sz, xerrz(e))) == NULL)
 		return xerr_prepend(e, __func__);
 
 	if (slab_itbl_is_free(&b, ino)) {
