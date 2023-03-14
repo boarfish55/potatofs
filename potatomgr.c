@@ -1490,9 +1490,17 @@ client_claim(int c, struct mgr_msg *m, struct xerr *e)
 		    xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			m->m = MGR_MSG_CLAIM_NOENT;
 		} else {
-			memcpy(&m->v.err, e, sizeof(struct xerr));
-			xlog(LOG_ERR, e, __func__);
+			if ((m->v.claim.oflags & OSLAB_NONBLOCK) &&
+			    xerr_is(e, XLOG_APP, XLOG_BUSY)) {
+				xlog(LOG_INFO, NULL,
+				    "%s: failed non-blocking claim on slab "
+				    "sk=%lu/%ld; already locked", __func__,
+				    m->v.claim.key.ino, m->v.claim.key.base);
+			} else {
+				xlog(LOG_ERR, e, __func__);
+			}
 			m->m = MGR_MSG_CLAIM_ERR;
+			memcpy(&m->v.err, e, sizeof(struct xerr));
 			if (mgr_send(c, -1, m, xerrz(e)) == -1)
 				xlog(LOG_ERR, e, __func__);
 			return -1;
