@@ -1,3 +1,17 @@
+potatofs (2.8.3) unstable; urgency=medium
+
+  v2.8.3
+  * backend_s3 now cleans up the socket if there's no server listening on it
+  * Have backend_s3 ignore SIGTERM so it doesn't get terminated during system
+    shutdown
+  * Don't print an error in DoClaim in backend_s3 if the exit code from the
+    claim command is 2. This way we can avoid giving false errors in
+    preloading.
+  * Add a bit more logging at fs shutdown
+  * Add missing error in mgr.c when we get connect failures
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Wed, 15 Mar 2023 23:25:13 -0400
+
 potatofs (2.8.2) unstable; urgency=medium
 
   v2.8.2
