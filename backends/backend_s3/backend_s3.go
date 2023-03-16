@@ -34,9 +34,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -369,7 +371,18 @@ func DoClaim(ino uint64, base int64) {
 	args := cmdParts[1:]
 	e := exec.Command(cmdParts[0], args...)
 	if err := e.Run(); err != nil {
-		logger.Errf("DoClaim: %v", err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			// Don't print an error if the exit code is 2, that is,
+			// the claim command couldn't get a lock on the slab,
+			// meaning it's already local.
+			if exitErr.ExitCode() == 2 {
+				logger.Errf("DoClaim: already locked", err)
+			} else {
+				logger.Errf("DoClaim: %v", err)
+			}
+		} else {
+			logger.Errf("DoClaim: %v", err)
+		}
 	}
 }
 
@@ -840,6 +853,11 @@ func loadSecretKey() error {
 
 func serve() error {
 	var wg sync.WaitGroup
+
+	// We don't want this process to be killed early in the system
+	// shutdown sequence
+	signal.Ignore(syscall.SIGTERM)
+
 	laddr, err := net.ResolveUnixAddr("unix", config.SocketPath)
 	if err != nil {
 		return fmt.Errorf("net.ResolveUnixAddr: %v", err)
@@ -974,6 +992,15 @@ func main() {
 		c, err = net.DialTimeout("unix", config.SocketPath, 10*time.Second)
 		if err == nil {
 			break
+		}
+
+		// If the error is ECONNREFUSED, it's likely the server died
+		// and the unix socket file was left behind. In this case we
+		// can just remove that file and try again.
+		if opErr, ok := err.(*net.OpError); ok {
+			if errors.Is(opErr.Err, syscall.ECONNREFUSED) {
+				os.Remove(config.SocketPath)
+			}
 		}
 
 		if i == 0 {

@@ -511,6 +511,7 @@ wait_again:
 			xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
 			    __func__, wstatus);
 	}
+	xlog(LOG_NOTICE, NULL, "shutdown complete");
 }
 
 static void

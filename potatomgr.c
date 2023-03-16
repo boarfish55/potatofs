@@ -1720,7 +1720,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 	}
 
 	setproctitle("bgworker: %s", name);
-	xlog(LOG_INFO, NULL, "ready");
+	xlog(LOG_NOTICE, NULL, "ready");
 
 	if (slabdb_init(instance_id, &e) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
@@ -1742,6 +1742,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 		}
 	}
 	slabdb_shutdown();
+	xlog(LOG_NOTICE, NULL, "exiting");
 	_exit(0);
 }
 
@@ -2253,7 +2254,7 @@ worker(int lsock)
 	}
 
 	setproctitle("worker");
-	xlog(LOG_INFO, NULL, "ready");
+	xlog(LOG_NOTICE, NULL, "ready");
 
 	if (slabdb_init(instance_id, xerrz(&e)) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
@@ -2384,6 +2385,7 @@ worker(int lsock)
 	}
 	CLOSE_X(lsock);
 	slabdb_shutdown();
+	xlog(LOG_NOTICE, NULL, "exiting");
 	_exit(0);
 }
 

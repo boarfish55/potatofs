@@ -1852,6 +1852,7 @@ slabdb(int argc, char **argv)
 
 /*
  * Claim and unclaim a slab; useful to attempt to get it locally.
+ * Exit status is 2 if the error was that the slab is locked.
  */
 int
 claim(int argc, char **argv)
@@ -1898,7 +1899,7 @@ claim(int argc, char **argv)
 		    "at base %lu: no such slab", ino, base);
 	else if (m.m == MGR_MSG_CLAIM_ERR) {
 		if (xerr_is(&m.v.err, XLOG_APP, XLOG_BUSY)) {
-			errx(1, "%s: could not claim slab; already locked",
+			errx(2, "%s: could not claim slab; already locked",
 			    __func__);
 		}
 		xerr_print(&m.v.err);
