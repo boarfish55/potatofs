@@ -14,6 +14,11 @@ hints_database_path = "/var/potatofs_test/backend_s3_hints.db"
 # us a bit of time to download the slab ahead of it being used, hopefully.
 hint_skew_ms = 5000
 
+# How many hints can be queued for preloading. This is mostly to keep memory
+# usage under control and possibly avoid trying to preload too many things
+# when a large chain of slab hints is triggered.
+hints_preload_queue_size = 10000
+
 s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"
 s3_region = "us-east-1"
