@@ -27,6 +27,7 @@
 
 struct fs_config fs_config = {
 	DEFAULT_CONFIG_PATH,           /* config path */
+	"",                            /* log file path */
 	0,                             /* uid */
 	0,                             /* gid */
 	"",                            /* dbg */
@@ -103,6 +104,9 @@ config_read()
 		if (strcmp(p, "data_dir") == 0) {
 			strlcpy(fs_config.data_dir, v,
 			    sizeof(fs_config.data_dir));
+		} else if (strcmp(p, "log_file_path") == 0) {
+			strlcpy(fs_config.log_file_path, v,
+			    sizeof(fs_config.log_file_path));
 		} else if (strcmp(p, "mgr_socket_path") == 0) {
 			strlcpy(fs_config.mgr_sock_path, v,
 			    sizeof(fs_config.mgr_sock_path));

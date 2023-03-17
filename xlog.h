@@ -107,7 +107,7 @@ int  xerr_fail(const struct xerr *);
 
 int  xerr_is(const struct xerr *, int, int);
 
-int  xlog_init(const char *, const char *, int);
+int  xlog_init(const char *, const char *, const char *, int);
 
 void xlog_dbg(xlog_mask_t, const char *, ...);
 void xlog(int, const struct xerr *, const char *, ...);

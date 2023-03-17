@@ -1713,14 +1713,14 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	bzero(title, sizeof(title));
 	snprintf(title, sizeof(title), "%s-%s", MGR_PROGNAME, name);
-	if (xlog_init(title, fs_config.dbg, 0) == -1) {
+	if (xlog_init(title, fs_config.dbg, fs_config.log_file_path, 0) == -1) {
 		xlog(LOG_ERR, NULL,
 		    "%s: failed to initialize logging", __func__);
 		_exit(1);
 	}
 
 	setproctitle("bgworker: %s", name);
-	xlog(LOG_NOTICE, NULL, "ready");
+	xlog(LOG_NOTICE, NULL, "%s bgworker ready", name);
 
 	if (slabdb_init(instance_id, &e) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
@@ -2248,13 +2248,14 @@ worker(int lsock)
 
 	CLOSE_X(pid_fd);
 
-	if (xlog_init(MGR_PROGNAME "-worker", fs_config.dbg, 0) == -1) {
+	if (xlog_init(MGR_PROGNAME "-worker", fs_config.dbg,
+	    fs_config.log_file_path, 0) == -1) {
 		xlog(LOG_ERR, NULL, "failed to initialize logging in worker");
 		_exit(1);
 	}
 
 	setproctitle("worker");
-	xlog(LOG_NOTICE, NULL, "ready");
+	xlog(LOG_NOTICE, NULL, "worker ready");
 
 	if (slabdb_init(instance_id, xerrz(&e)) == -1) {
                 xlog(LOG_ERR, &e, "%s", __func__);
@@ -2442,7 +2443,8 @@ mgr_start(int workers, int bgworkers)
 	if (null_fd > 2)
 		CLOSE_X(null_fd);
 
-	if (xlog_init(MGR_PROGNAME, fs_config.dbg, 0) == -1)
+	if (xlog_init(MGR_PROGNAME, fs_config.dbg,
+	    fs_config.log_file_path, 0) == -1)
 		err(1, "xlog_init");
 
 	snprintf(pid_line, sizeof(pid_line), "%d\n", getpid());
@@ -2617,11 +2619,11 @@ mgr_start(int workers, int bgworkers)
 			wait_for_workers++;
 	}
 
+	setproctitle("mgr");
 	uuid_unparse(instance_id, u);
-	xlog(LOG_NOTICE, NULL, "initialized instance %s (version %s)", u,
+	xlog(LOG_NOTICE, NULL, "mgr ready; initialized instance %s (version %s)", u,
 	    VERSION);
 
-	setproctitle("mgr");
 	for (n = 0; n < wait_for_workers; ) {
 		if (wait(NULL) == -1) {
 			if (errno == EINTR)
