@@ -2284,7 +2284,8 @@ main(int argc, char **argv)
 	    sigaction(SIGTERM, &act, NULL) == -1)
 		err(1, "sigaction");
 
-	if (xlog_init(PROGNAME, fs_config.dbg, 1) == -1) {
+	if (xlog_init(PROGNAME, fs_config.dbg,
+	    fs_config.log_file_path, 1) == -1) {
 		warn("xlog_init");
 		goto kill_mgr;
 	}

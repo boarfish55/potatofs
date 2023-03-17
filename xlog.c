@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "config.h"
 #include "counters.h"
 #include "xlog.h"
@@ -44,6 +45,8 @@ const struct module_dbg_map_entry module_dbg_map[] = {
 
 static xlog_mask_t  debug_mask = 0;
 locale_t            log_locale;
+FILE               *log_file = NULL;
+static int          log_level = LOG_INFO;
 
 struct xerr *
 xerrz(struct xerr *e)
@@ -137,8 +140,34 @@ xerr_is(const struct xerr *e, int code, int subcode)
 	return 0;
 }
 
+static void
+xlog_fprintf(const char *fmt, ...)
+{
+	va_list   ap;
+	char      msg[LINE_MAX], t_str[64];
+	struct tm tm;
+	time_t    t;
+
+	if (log_file == NULL)
+		return;
+
+	t = time(NULL);
+	if (localtime_r(&t, &tm) == NULL)
+		return;
+
+	strftime(t_str, sizeof(t_str), "%FT%R:%S%z", &tm);
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+
+	fprintf(log_file, "%s/%d: %s\n", t_str, getpid(), msg);
+	fflush(log_file);
+}
+
 int
-xlog_init(const char *progname, const char *dbg_spec, int perror)
+xlog_init(const char *progname, const char *dbg_spec, const char *logf,
+    int perror)
 {
 	char                              *dbg, *module, *save;
 	const struct module_dbg_map_entry *map;
@@ -150,6 +179,10 @@ xlog_init(const char *progname, const char *dbg_spec, int perror)
 	if ((log_locale = newlocale(LC_CTYPE_MASK, "C", 0)) == 0)
 		return -1;
 
+	if (logf != NULL && logf[0] != '\0' && log_file == NULL)
+		if ((log_file = fopen(logf, "a")) == NULL)
+			warn("fopen");
+
 	openlog(progname, opt, LOG_USER);
 	if (dbg_spec == NULL || *dbg_spec == '\0') {
 		setlogmask(LOG_UPTO(LOG_INFO));
@@ -160,6 +193,7 @@ xlog_init(const char *progname, const char *dbg_spec, int perror)
 	if (dbg == NULL)
 		return -1;
 
+	log_level = LOG_DEBUG;
 	setlogmask(LOG_UPTO(LOG_DEBUG));
 	for ((module = strtok_r(dbg, ",", &save)); module;
 	    (module = strtok_r(NULL, ",", &save))) {
@@ -168,10 +202,13 @@ xlog_init(const char *progname, const char *dbg_spec, int perror)
 				debug_mask |= map->flag;
 				syslog(LOG_DEBUG, "enabling %s debug logging",
 				    map->name);
+				xlog_fprintf("enabling %s debug logging",
+				    map->name);
 			}
 		}
 	}
 	free(dbg);
+
 	return 0;
 }
 
@@ -189,6 +226,7 @@ xlog_dbg(xlog_mask_t module, const char *fmt, ...)
 	va_end(ap);
 
 	syslog(LOG_DEBUG, "[thread=%lu]: %s", pthread_self(), msg);
+	xlog_fprintf("[thread=%lu]: %s", pthread_self(), msg);
 }
 
 void
@@ -198,11 +236,16 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 	char    msg[LINE_MAX];
 	size_t  written;
 
+	if (priority > log_level)
+		return;
+
 	if (e == NULL) {
 		if (fmt != NULL) {
 			va_start(ap, fmt);
-			vsyslog(priority, fmt, ap);
+			vsnprintf(msg, sizeof(msg), fmt, ap);
 			va_end(ap);
+			syslog(priority, "%s", msg);
+			xlog_fprintf("%s", msg);
 		}
 		return;
 	}
@@ -222,8 +265,15 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 			    "%s: %s: %s",
 			    pthread_self(), e->sp, e->code, msg, e->msg,
 			    strerror_l(e->code, log_locale));
+			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s: %s",
+			    pthread_self(), e->sp, e->code, msg, e->msg,
+			    strerror_l(e->code, log_locale));
 		} else {
 			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
+			    pthread_self(), e->sp, e->code, e->msg,
+			    strerror_l(e->code, log_locale));
+			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s: %s",
 			    pthread_self(), e->sp, e->code, e->msg,
 			    strerror_l(e->code, log_locale));
 		}
@@ -231,8 +281,12 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 		if (fmt) {
 			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
 			    pthread_self(), e->sp, e->code, msg, e->msg);
+			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s: %s",
+			    pthread_self(), e->sp, e->code, msg, e->msg);
 		} else {
 			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s",
+			    pthread_self(), e->sp, e->code, e->msg);
+			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s",
 			    pthread_self(), e->sp, e->code, e->msg);
 		}
 	}
@@ -244,6 +298,8 @@ xlog_strerror(int priority, int err, const char *fmt, ...)
 	va_list ap;
 	char    msg[LINE_MAX];
 
+	if (priority > log_level)
+		return;
 	if (fmt == NULL)
 		return;
 
@@ -252,6 +308,7 @@ xlog_strerror(int priority, int err, const char *fmt, ...)
 	va_end(ap);
 
 	syslog(priority, "%s: %s", msg, strerror_l(err, log_locale));
+	xlog_fprintf("%s: %s", msg, strerror_l(err, log_locale));
 }
 
 void

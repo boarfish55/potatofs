@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.8.2"
+#define VERSION      "2.9.0"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_PATH      "/var/potatofs"
@@ -111,6 +111,7 @@
 
 struct fs_config {
 	char     *cfg_path;
+	char      log_file_path[PATH_MAX];
 	uid_t     uid;
 	gid_t     gid;
 	char      dbg[LINE_MAX];

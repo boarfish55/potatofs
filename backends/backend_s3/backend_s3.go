@@ -376,7 +376,7 @@ func DoClaim(ino uint64, base int64) {
 			// the claim command couldn't get a lock on the slab,
 			// meaning it's already local.
 			if exitErr.ExitCode() == 2 {
-				logger.Errf("DoClaim: already locked", err)
+				logger.Errf("DoClaim: already locked")
 			} else {
 				logger.Errf("DoClaim: %v", err)
 			}
@@ -865,7 +865,12 @@ func serve() error {
 
 	l, err := net.ListenUnix("unix", laddr)
 	if err != nil {
-		return fmt.Errorf("net.UnixListener: %v", err)
+		opErr, ok := err.(*net.OpError)
+		if ok && errors.Is(opErr.Err, syscall.EADDRINUSE) {
+			return fmt.Errorf("net.ListenUnix: already running")
+		} else {
+			return fmt.Errorf("net.ListenUnix: %v", err)
+		}
 	}
 
 	if err = loadSecretKey(); err != nil {
