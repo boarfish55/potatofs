@@ -865,7 +865,12 @@ func serve() error {
 
 	l, err := net.ListenUnix("unix", laddr)
 	if err != nil {
-		return fmt.Errorf("net.UnixListener: %v", err)
+		opErr, ok := err.(*net.OpError)
+		if ok && errors.Is(opErr.Err, syscall.EADDRINUSE) {
+			return fmt.Errorf("net.ListenUnix: already running")
+		} else {
+			return fmt.Errorf("net.ListenUnix: %v", err)
+		}
 	}
 
 	if err = loadSecretKey(); err != nil {
