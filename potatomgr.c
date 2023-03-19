@@ -601,9 +601,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	    m->v.unclaim.key.ino, m->v.unclaim.key.base,
 	    hdr.v.f.revision, v.header_crc, hdr.v.f.checksum);
 
-	if (slabdb_put(&m->v.unclaim.key, &v,
-	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
-	    e) == -1) {
+	if (slabdb_put(&m->v.unclaim.key, &v, put_flags, e) == -1) {
 		set_fs_error();
 		XERR_PREPENDFN(e);
 		goto fail;
@@ -2120,16 +2118,12 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 	struct xerr        e = XLOG_ERR_INITIALIZER;
 	fsblkcnt_t         threshold;
 
-	if (uuid_compare(v->owner, instance_id) != 0)
-		return 0;
-
 	if (slab_path(path, sizeof(path), sk, 0, &e) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
 		return 0;
 	}
 
-	if ((fd = open_wflock(path, O_RDWR, 0,
-	    LOCK_EX|LOCK_NB, 0)) == -1) {
+	if ((fd = open_wflock(path, O_RDWR, 0, LOCK_EX|LOCK_NB, 0)) == -1) {
 		if (errno != EWOULDBLOCK && errno != ENOENT)
 			xlog_strerror(LOG_ERR, errno, "%s: failed "
 			    "to open_wflock(): %s", __func__, path);
