@@ -1880,7 +1880,7 @@ claim(int argc, char **argv)
 			oflags &= ~OSLAB_NOCREATE;
 	}
 
-	if ((mgr = mgr_connect(1, xerrz(&e))) == -1)
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1)
 		goto fail;
 
 	m.m = MGR_MSG_CLAIM;
