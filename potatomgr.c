@@ -528,6 +528,7 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	int               purge = 0;
 	struct statvfs    stv;
 	struct slabdb_val v;
+	uint32_t          put_flags;
 
 	if (slab_key_valid(&m->v.unclaim.key, e) == -1) {
 		xerr_prepend(e, __func__);
@@ -586,10 +587,14 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 	bzero(&v, sizeof(v));
 	v.revision = hdr.v.f.revision;
 	v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-	if (purge)
-		uuid_clear(v.owner);
-	else
-		uuid_copy(v.owner, instance_id);
+	uuid_clear(v.owner);
+
+	put_flags = SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER;
+
+	if (purge) {
+		put_flags |= SLABDB_PUT_LOCAL;
+		v.flags &= ~SLABDB_FLAG_LOCAL;
+	}
 
 	xlog_dbg(XLOG_MGR, "%s: inode=%lu, base=%ld, revision=%lu, "
 	    "header_crc=%u, crc=%u", __func__,
@@ -604,6 +609,11 @@ unclaim(int c, struct mgr_msg *m, int fd, struct xerr *e)
 		goto fail;
 	}
 
+	/*
+	 * Only purge once we've successfully saved the new revision and
+	 * checksum info to the slabdb. Otherwise we need to keep the
+	 * slab, and the slab ownership.
+	 */
 	if (purge) {
 		if (slab_path(src, sizeof(src),
 		    &m->v.unclaim.key, 0, e) == -1) {
@@ -975,7 +985,7 @@ check_slab_header(struct slab_hdr *hdr, uint32_t header_crc, uint64_t rev,
 		 * backend doesn't have correct (latest?) version
 		 * of slab. Are we dealing with eventual consistency?
 		 */
-		XERRF(e, XLOG_APP, XLOG_MISMATCH,
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching slab revision: "
 		    "expected=%lu, slab=%lu", rev, hdr->v.f.revision);
 	}
@@ -1421,6 +1431,7 @@ end:
 	}
 
 	uuid_copy(v.owner, instance_id);
+	v.flags |= SLABDB_FLAG_LOCAL;
 
 	if (v.flags & SLABDB_FLAG_TRUNCATE) {
 		if (pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == -1) {
@@ -1792,6 +1803,7 @@ bg_flush()
 				    "to open_wflock(): %s", __func__, path);
 			continue;
 		}
+		// TODO: we can just use O_CLOEXEC in the above call
 		if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
 			xlog_strerror(LOG_ERR, errno, "%s: fcntl: %s",
 			    __func__, path);
@@ -1867,13 +1879,6 @@ scrub_local_slab(const char *path)
 		goto end;
 	}
 
-	if (uuid_compare(v.owner, instance_id) != 0) {
-		xlog(LOG_ERR, NULL, "%s: slab %s is not locally-owned; "
-		    "unlinking", __func__, path);
-		unlink(path);
-		goto end;
-	}
-
 	if (read_x(fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
 		xlog_strerror(LOG_ERR, errno,
 		    "%s: short read on slab header for %s",
@@ -1897,7 +1902,7 @@ scrub_local_slab(const char *path)
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
 		/*
-		 * This slab was unclaimed but not writtent to outgoing.
+		 * This slab was unclaimed but not written to outgoing.
 		 * A common reason for this could be a delayed truncation.
 		 */
 		xlog(LOG_INFO, NULL, "%s: slab %s was dirty despite "
@@ -1924,9 +1929,7 @@ scrub_local_slab(const char *path)
 
 		v.revision = hdr.v.f.revision;
 		v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-		// TODO: allow the possibility of purging here. Meaning we'd have
-		// to reset the owner.
-		uuid_copy(v.owner, instance_id);
+		uuid_clear(v.owner);
 		if (slabdb_put(&sk, &v,
 		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
 		    &e) == -1) {
@@ -1934,6 +1937,18 @@ scrub_local_slab(const char *path)
 			set_fs_error();
 			goto end;
 		}
+	}
+
+	/*
+	 * At this point, the slab is not dirty and matches the rev/crc
+	 * that we expect. If it's not marked as local yet it is here,
+	 * it can never be purged, so we should purge it.
+	 */
+	if (!(v.flags & SLABDB_FLAG_LOCAL)) {
+		xlog(LOG_ERR, NULL, "%s: slab %s is not locally-owned; "
+		    "unlinking", __func__, path);
+		unlink(path);
+		goto end;
 	}
 end:
 	CLOSE_X(fd);
@@ -1973,9 +1988,15 @@ scrub()
 	//  * if the CRC is wrong
 	//  * if the slab is already in our main dir with >= rev
 
+	/*
+	 * We loop here just in case we're seeing a large burst
+	 * of delayed truncations, to make sure we process them
+	 * as soon as possible and reclaim space.
+	 */
 	for (;;) {
 		bzero(&to_truncate, sizeof(to_truncate));
-		if (slabdb_loop(&delayed_truncate, &to_truncate, &e) == -1)
+		if (slabdb_loop(SLABDB_FLAG_TRUNCATE,
+		    &delayed_truncate, &to_truncate, &e) == -1)
 			xlog(LOG_ERR, &e, "%s", __func__);
 
 		if (to_truncate.count == 0)
@@ -2147,10 +2168,11 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 		return 0;
 	}
 
+	memcpy(&pv, v, sizeof(pv));
 	pv.revision = v->revision;
 	pv.header_crc = v->header_crc;
 	uuid_clear(pv.owner);
-	memcpy(&pv.last_claimed, &v->last_claimed, sizeof(struct timespec));
+	pv.flags &= ~SLABDB_FLAG_LOCAL;
 
 	if (slabdb_put_nolock(sk, &pv, &e) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
@@ -2216,7 +2238,7 @@ bg_purge()
 
 	clock_gettime_x(CLOCK_REALTIME, &start);
 
-	if (slabdb_loop(&purge, &fs_usage, &e) == -1)
+	if (slabdb_loop(SLABDB_FLAG_LOCAL, &purge, &fs_usage, &e) == -1)
 		xlog(LOG_ERR, &e, "%s", __func__);
 
 	clock_gettime_x(CLOCK_REALTIME, &end);

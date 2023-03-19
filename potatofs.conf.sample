@@ -34,12 +34,17 @@ purge_threshold_pct: 60
 noatime: yes
 df_interval: 60
 
-# How many seconds after receiving the 'shutdown' message should
-# the potatomgr keep running and flushing. It's a good idea to
-# leave at least a few seconds so that when the filesystem is unmounted,
-# the potatomgr has a chance to upload some slabs that were open for a
-# long time, as is typical for inode tables.
-shutdown_grace_period: 10
+# How many seconds after receiving the 'shutdown' message should the potatomgr
+# keep running and flushing. It's a good idea to leave at least a few seconds
+# so that when the filesystem is unmounted, the potatomgr has a chance to
+# upload some slabs that were open for a long time, as is typical for inode
+# tables.
+#
+# Unfortunately, FUSE currently does not support blocking on unmount (see issue
+# https://github.com/libfuse/libfuse/issues/1) so chances are any value greater
+# than zero means the mgr and its children will receive a SIGKILL while trying
+# to flush slabs. Until this is fixed, zero remains the recommended value.
+shutdown_grace_period: 0
 
 scrubber_interval: 3600
 purger_interval: 60

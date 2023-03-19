@@ -1825,7 +1825,7 @@ slabdb(int argc, char **argv)
 		exit(1);
 	}
 
-	r = slabdb_loop(&slabdb_print, &head, xerrz(&e));
+	r = slabdb_loop(SLABDB_FLAG_ALL, &slabdb_print, &head, xerrz(&e));
 	if (r == -1) {
 		slabdb_shutdown();
 		xerr_print(&e);
