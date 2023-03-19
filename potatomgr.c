@@ -1136,7 +1136,7 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 {
 	char              name[NAME_MAX + 1];
 	char              in_path[PATH_MAX], out_path[PATH_MAX], dst[PATH_MAX];
-	int               fd_flags = O_RDWR|O_CREAT;
+	int               fd_flags = O_RDWR|O_CREAT|O_CLOEXEC;
 	int               incoming_fd, outgoing_fd;
 	size_t            in_bytes;
 	struct slab_hdr   hdr;
@@ -1239,11 +1239,6 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 			XERRF(e, XLOG_ERRNO, errno,
 			    "open_wflock: slab %s", dst);
 		}
-		return -1;
-	}
-	if (fcntl(*dst_fd, F_SETFD, FD_CLOEXEC) == -1) {
-		XERRF(e, XLOG_ERRNO, errno, "fcntl: slab %s", dst);
-		CLOSE_X(*dst_fd);
 		return -1;
 	}
 
@@ -1796,18 +1791,11 @@ bg_flush()
 		 * Has to be exclusive since we may be running multiple
 		 * flush workers.
 		 */
-		if ((fd = open_wflock(path, O_RDONLY, 0,
+		if ((fd = open_wflock(path, O_RDONLY|O_CLOEXEC, 0,
 		    LOCK_EX|LOCK_NB, 0)) == -1) {
 			if (errno != EWOULDBLOCK && errno != ENOENT)
 				xlog_strerror(LOG_ERR, errno, "%s: failed "
 				    "to open_wflock(): %s", __func__, path);
-			continue;
-		}
-		// TODO: we can just use O_CLOEXEC in the above call
-		if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
-			xlog_strerror(LOG_ERR, errno, "%s: fcntl: %s",
-			    __func__, path);
-			CLOSE_X(fd);
 			continue;
 		}
 
@@ -2433,9 +2421,7 @@ mgr_start(int workers, int bgworkers)
 	pid_t               pid;
 
 	if ((pid_fd = open(fs_config.pidfile_path,
-	    O_CREAT|O_WRONLY, 0644)) == -1)
-		return -1;
-	if (fcntl(pid_fd, F_SETFD, FD_CLOEXEC) == -1)
+	    O_CREAT|O_WRONLY|O_CLOEXEC, 0644)) == -1)
 		return -1;
 	if (flock(pid_fd, LOCK_EX|LOCK_NB) == -1) {
 		if (errno == EWOULDBLOCK) {
