@@ -13,6 +13,13 @@ data_dir: /var/potatofs/data
 # Default: /var/potatofs/potatomgr.pid
 #pidfile_path: /var/potatofs/potatomgr.pid
 
+# The path to a log file. Use this if you want to store logs in a file
+# in addition to syslog. Lines are fflush()'d synchronously so this may
+# affect performance, but can be useful for troubleshooting in certain
+# situations.
+# Default: None
+#log_file_path: /var/potatofs/potato.log
+
 # The backend script. See the mgr.pl.sample for a proof-of-concept
 # implementation. If the script requires a configuration file, it's path
 # can be indicated in "backend_config", which will be accessible to the
