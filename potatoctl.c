@@ -1825,7 +1825,7 @@ slabdb(int argc, char **argv)
 		exit(1);
 	}
 
-	r = slabdb_loop(&slabdb_print, &head, xerrz(&e));
+	r = slabdb_loop(SLABDB_FLAG_ALL, &slabdb_print, &head, xerrz(&e));
 	if (r == -1) {
 		slabdb_shutdown();
 		xerr_print(&e);
@@ -1880,7 +1880,7 @@ claim(int argc, char **argv)
 			oflags &= ~OSLAB_NOCREATE;
 	}
 
-	if ((mgr = mgr_connect(1, xerrz(&e))) == -1)
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1)
 		goto fail;
 
 	m.m = MGR_MSG_CLAIM;

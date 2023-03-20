@@ -19,6 +19,12 @@ hint_skew_ms = 5000
 # when a large chain of slab hints is triggered.
 hints_preload_queue_size = 10000
 
+# We want to keep a limit over how many slabs to preload for each hint, both
+# to keep the DB size under control, but also because preloading is
+# exponential by that factor. Each time we load a slab, we could end up
+# doing claims for this many slab.
+max_preload_per_hint = 5
+
 s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"
 s3_region = "us-east-1"

@@ -215,12 +215,12 @@ mgr_send_shutdown(time_t grace_period, struct xerr *e)
 }
 
 int
-mgr_fs_info(struct fs_info *fs_info, struct xerr *e)
+mgr_fs_info(int retry, struct fs_info *fs_info, struct xerr *e)
 {
 	int            mgr;
 	struct mgr_msg m;
 
-	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
+	if ((mgr = mgr_connect(retry, xerrz(e))) == -1)
 		return XERR_PREPENDFN(e);
 
 	bzero(&m, sizeof(m));

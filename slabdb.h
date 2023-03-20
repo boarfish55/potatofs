@@ -45,9 +45,13 @@ struct slabdb_val {
 #define SLABDB_PUT_OWNER        0x04
 #define SLABDB_PUT_LAST_CLAIMED 0x08
 #define SLABDB_PUT_TRUNCATE     0x10
+#define SLABDB_PUT_LOCAL        0x20
 #define SLABDB_PUT_ALL          0xFF
 
+#define SLABDB_FLAG_NONE        0x00000000
 #define SLABDB_FLAG_TRUNCATE    0x00000001
+#define SLABDB_FLAG_LOCAL       0x00000002
+#define SLABDB_FLAG_ALL         0xFFFFFFFF
 
 int  slabdb_init(uuid_t, struct xerr *);
 void slabdb_shutdown();
@@ -61,8 +65,8 @@ int slabdb_get(const struct slab_key *, struct slabdb_val *, uint32_t,
 int slabdb_get_nolock(const struct slab_key *, struct slabdb_val *,
         struct xerr *);
 int slabdb_get_next_itbl(off_t *, struct xerr *);
-int slabdb_loop(int(*)(const struct slab_key *, const struct slabdb_val *,
-        void *), void *, struct xerr *);
+int slabdb_loop(uint32_t, int(*)(const struct slab_key *,
+        const struct slabdb_val *, void *), void *, struct xerr *);
 
 int     slabdb_begin_txn(struct xerr *);
 int     slabdb_commit_txn(struct xerr *);

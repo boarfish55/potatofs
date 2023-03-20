@@ -116,6 +116,7 @@ struct {
 struct {
 	sqlite3_stmt *stmt;
 	char         *sql;
+	int           i_flags;
 	int           o_ino;
 	int           o_base;
 	int           o_revision;
@@ -125,13 +126,14 @@ struct {
 	int           o_last_claimed_nsec;
 	int           o_flags;
 	int           o_truncate_offset;
-} qry_loop_lru = {
+} qry_loop = {
 	NULL,
 	"select ino, base, revision, header_crc, owner, "
 	    "last_claimed_sec, last_claimed_nsec, "
 	    "flags, truncate_offset from slabs "
+	    "where flags & ?1 or ?1 = -1 "
 	    "order by last_claimed_sec, last_claimed_nsec asc",
-	0, 1, 2, 3, 4, 5, 6, 7, 8
+	1, 0, 1, 2, 3, 4, 5, 6, 7, 8
 };
 
 struct {
@@ -266,6 +268,10 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint32_t flags,
 	     memcmp(&r_v.last_claimed, &v->last_claimed,
 	     sizeof(struct timespec)) == 0) &&
 
+	    ((flags & SLABDB_PUT_LOCAL) &&
+	     ((r_v.flags & SLABDB_FLAG_LOCAL) ==
+	     (v->flags & SLABDB_FLAG_LOCAL))) &&
+
 	    ((flags & SLABDB_PUT_TRUNCATE) &&
 	     ((r_v.flags & SLABDB_FLAG_TRUNCATE) ==
 	     (v->flags & SLABDB_FLAG_TRUNCATE)) &&
@@ -287,6 +293,11 @@ slabdb_put(const struct slab_key *sk, struct slabdb_val *v, uint32_t flags,
 		if (!(flags & SLABDB_PUT_LAST_CLAIMED))
 			memcpy(&v->last_claimed, &r_v.last_claimed, 
 			    sizeof(struct timespec));
+
+		if (!(flags & SLABDB_PUT_LOCAL)) {
+			v->flags &= ~SLABDB_FLAG_LOCAL;
+			v->flags |= (r_v.flags & SLABDB_FLAG_LOCAL);
+		}
 
 		if (!(flags & SLABDB_PUT_TRUNCATE)) {
 			v->flags &= ~SLABDB_FLAG_TRUNCATE;
@@ -476,8 +487,8 @@ fail:
  * looping. Therefore fn should not start a transaction.
  */
 int
-slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
-    void *), void *data, struct xerr *e)
+slabdb_loop(uint32_t flags, int(*fn)(const struct slab_key *,
+    const struct slabdb_val *, void *), void *data, struct xerr *e)
 {
 	int               r;
 	struct slab_key   sk;
@@ -487,36 +498,42 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 	if (slabdb_begin_txn(e) == -1)
 		return -1;
 
-	while ((r = sqlite3_step(qry_loop_lru.stmt)) != SQLITE_DONE) {
+	if ((r = sqlite3_bind_int(qry_loop.stmt, qry_loop.i_flags, flags))) {
+		XERRF(e, XLOG_DB, r, "sqlite3_bind_int: %s",
+		    sqlite3_errmsg(db));
+		goto fail;
+	}
+
+	while ((r = sqlite3_step(qry_loop.stmt)) != SQLITE_DONE) {
 		switch (r) {
 		case SQLITE_ROW:
-			sk.ino = (ino_t)sqlite3_column_int64(qry_loop_lru.stmt,
-				qry_loop_lru.o_ino);
-			sk.base = sqlite3_column_int64(qry_loop_lru.stmt,
-				qry_loop_lru.o_base);
+			sk.ino = (ino_t)sqlite3_column_int64(qry_loop.stmt,
+				qry_loop.o_ino);
+			sk.base = sqlite3_column_int64(qry_loop.stmt,
+				qry_loop.o_base);
 			v.revision = (uint64_t)sqlite3_column_int64(
-			    qry_loop_lru.stmt, qry_loop_lru.o_revision);
+			    qry_loop.stmt, qry_loop.o_revision);
 			v.header_crc = (uint32_t)sqlite3_column_int(
-			    qry_loop_lru.stmt, qry_loop_lru.o_header_crc);
+			    qry_loop.stmt, qry_loop.o_header_crc);
 			v.last_claimed.tv_sec = sqlite3_column_int64(
-			    qry_loop_lru.stmt,
-			    qry_loop_lru.o_last_claimed_sec);
+			    qry_loop.stmt,
+			    qry_loop.o_last_claimed_sec);
 			v.last_claimed.tv_nsec = sqlite3_column_int64(
-			    qry_loop_lru.stmt,
-			    qry_loop_lru.o_last_claimed_nsec);
+			    qry_loop.stmt,
+			    qry_loop.o_last_claimed_nsec);
 			v.flags = (uint32_t)sqlite3_column_int(
-			    qry_loop_lru.stmt, qry_loop_lru.o_flags);
+			    qry_loop.stmt, qry_loop.o_flags);
 			v.truncate_offset = sqlite3_column_int64(
-			    qry_loop_lru.stmt,
-			    qry_loop_lru.o_truncate_offset);
+			    qry_loop.stmt,
+			    qry_loop.o_truncate_offset);
 
-			if (sqlite3_column_bytes(qry_loop_lru.stmt,
-			    qry_loop_lru.o_owner) == 0) {
+			if (sqlite3_column_bytes(qry_loop.stmt,
+			    qry_loop.o_owner) == 0) {
 				uuid_clear(v.owner);
 			} else {
 				uuid_copy(v.owner,
-				    sqlite3_column_blob(qry_loop_lru.stmt,
-				    qry_loop_lru.o_owner));
+				    sqlite3_column_blob(qry_loop.stmt,
+				    qry_loop.o_owner));
 			}
 			if (fn(&sk, &v, data))
 				goto end;
@@ -532,16 +549,15 @@ slabdb_loop(int(*fn)(const struct slab_key *, const struct slabdb_val *,
 			goto fail;
 		}
 	}
-
 end:
 	if (slabdb_commit_txn(&e2) == -1)
 		goto fail;
 
-	return slabdb_qry_cleanup(qry_loop_lru.stmt, e);
+	return slabdb_qry_cleanup(qry_loop.stmt, e);
 fail:
 	if (slabdb_rollback_txn(xerrz(&e2)) == -1)
 		xlog(LOG_ERR, &e2, "%s", __func__);
-	if (slabdb_qry_cleanup(qry_loop_lru.stmt, xerrz(&e2)) == -1)
+	if (slabdb_qry_cleanup(qry_loop.stmt, xerrz(&e2)) == -1)
 		xlog(LOG_ERR, &e2, "%s", __func__);
 	return -1;
 }
@@ -777,9 +793,9 @@ slabdb_init(uuid_t id, struct xerr *e)
 		goto fail;
 	}
 
-	if ((r = sqlite3_prepare_v2(db, qry_loop_lru.sql, -1,
-	    &qry_loop_lru.stmt, NULL))) {
-		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_loop_lru: %s",
+	if ((r = sqlite3_prepare_v2(db, qry_loop.sql, -1,
+	    &qry_loop.stmt, NULL))) {
+		XERRF(e, XLOG_DB, r, "sqlite3_prepare_v2: qry_loop: %s",
 		    sqlite3_errmsg(db));
 		goto fail;
 	}
@@ -836,9 +852,9 @@ slabdb_shutdown()
 		    "%s: sqlite3_finalize: qry_get_next_itbl: %s",
 		    __func__, sqlite3_errmsg(db));
 
-	if (sqlite3_finalize(qry_loop_lru.stmt))
+	if (sqlite3_finalize(qry_loop.stmt))
 		xlog(LOG_WARNING, NULL,
-		    "%s: sqlite3_finalize: qry_loop_lru: %s",
+		    "%s: sqlite3_finalize: qry_loop: %s",
 		    __func__, sqlite3_errmsg(db));
 
 	if (sqlite3_finalize(qry_begin_txn.stmt))

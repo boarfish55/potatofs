@@ -465,10 +465,63 @@ unlock:
 }
 
 static void
+wait_for_mgr_shutdown()
+{
+	struct xerr     e;
+	int             wstatus;
+	struct fs_info  fs_info;
+	struct timespec tp = {1, 0};
+
+	/*
+	 * Wait for mgr completion. This is to ensure umount blocks
+	 * until everything is closed, to avoid our processes
+	 * being killed by the shutdown sequence too soon.
+	 */
+wait_again:
+	if (wait(&wstatus) == -1) {
+		if (errno == EINTR)
+			goto wait_again;
+
+		if (errno == ECHILD)
+			xlog(LOG_INFO, NULL, "no child process, look "
+			    "for mgr via its socket");
+		else
+			xlog_strerror(LOG_ERR, errno, "%s: wait", __func__);
+	} else {
+		if (WEXITSTATUS(wstatus) != 0)
+			xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
+			    __func__, wstatus);
+		return;
+	}
+
+	/*
+	 * We wait for full mgr shutdown, otherwise the fs will
+	 * not be marked clean. We also want to hold off
+	 * returning from this function so that unmount blocks
+	 * during system shutdown until we've marked the fs as
+	 * clean.
+	 */
+	for (;;) {
+		if (mgr_fs_info(0, &fs_info, xerrz(&e)) == -1) {
+			/*
+			 * If we get a ECONNREFUSED, this means
+			 * the mgr exited. This is a clean
+			 * shutdown.
+			 */
+			if (xerr_is(&e, XLOG_ERRNO, ECONNREFUSED))
+				break;
+
+			xlog(LOG_ERR, &e, "%s: error while waiting for "
+			    "mgr shutdown", __func__);
+		}
+		nanosleep(&tp, NULL);
+	}
+}
+
+static void
 fs_destroy(void *unused)
 {
 	struct xerr e;
-	int         wstatus;
 
 	xlog(LOG_NOTICE, NULL, "cleaning up and exiting");
 
@@ -495,22 +548,7 @@ fs_destroy(void *unused)
 	if (mgr_send_shutdown(fs_config.shutdown_grace_period, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 
-	/*
-	 * Wait for mgr completion. This is to ensure umount blocks
-	 * until everything is closed, to avoid our processes
-	 * being killed by the shutdown sequence too soon.
-	 */
-wait_again:
-	if (wait(&wstatus) == -1) {
-		if (errno == EINTR)
-			goto wait_again;
-		if (errno != ECHILD)
-			xlog_strerror(LOG_ERR, errno, "wait");
-	} else {
-		if (WEXITSTATUS(wstatus) != 0)
-			xlog(LOG_ERR, NULL, "%s: mgr exited with status %d",
-			    __func__, wstatus);
-	}
+	wait_for_mgr_shutdown();
 	xlog(LOG_NOTICE, NULL, "shutdown complete");
 }
 
@@ -1188,7 +1226,7 @@ fs_statfs(fuse_req_t req, fuse_ino_t ino)
 
 	counter_incr(COUNTER_FS_STATFS);
 
-	if (mgr_fs_info(&fs_info, &e) == -1) {
+	if (mgr_fs_info(1, &fs_info, &e) == -1) {
 		xlog(LOG_ERR, &e, __func__);
 		fs_error_set();
 		FS_ERR(&r_sent, req, &e);
@@ -2293,7 +2331,7 @@ main(int argc, char **argv)
 	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) == -1)
 		goto kill_mgr;
 
-	if (mgr_fs_info(&fs_info, xerrz(&e)) == -1) {
+	if (mgr_fs_info(1, &fs_info, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		goto kill_mgr;
 	}

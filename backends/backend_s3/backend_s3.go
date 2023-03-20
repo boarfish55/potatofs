@@ -80,6 +80,7 @@ type Config struct {
 	HintsDBPath           string `toml:"hints_database_path"`
 	HintSkewMs            int64  `toml:"hint_skew_ms"`
 	HintsPreloadQueueSize int    `toml:"hints_preload_queue_size"`
+	MaxPreloadPerHint     int    `toml:"max_preload_per_hint"`
 }
 
 func loadConfig(path string) error {
@@ -91,6 +92,9 @@ func loadConfig(path string) error {
 	}
 	if config.HintsPreloadQueueSize > 1000000 {
 		config.HintsPreloadQueueSize = 1000000
+	}
+	if config.MaxPreloadPerHint < 1 {
+		config.MaxPreloadPerHint = 5
 	}
 	return nil
 }
@@ -595,7 +599,10 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		}
 
 		n++
-		if n > 10 {
+		// We want to keep a limit over how many slabs to preload for each
+		// hint, both to keep the DB size under control, but also because
+		// preloading is exponential by that factor.
+		if n > config.MaxPreloadPerHint {
 			deleteOlderThanEq = lastUsedMs
 			break
 		}

@@ -13,6 +13,13 @@ data_dir: /var/potatofs/data
 # Default: /var/potatofs/potatomgr.pid
 #pidfile_path: /var/potatofs/potatomgr.pid
 
+# The path to a log file. Use this if you want to store logs in a file
+# in addition to syslog. Lines are fflush()'d synchronously so this may
+# affect performance, but can be useful for troubleshooting in certain
+# situations.
+# Default: None
+#log_file_path: /var/potatofs/potato.log
+
 # The backend script. See the mgr.pl.sample for a proof-of-concept
 # implementation. If the script requires a configuration file, it's path
 # can be indicated in "backend_config", which will be accessible to the
@@ -27,12 +34,17 @@ purge_threshold_pct: 60
 noatime: yes
 df_interval: 60
 
-# How many seconds after receiving the 'shutdown' message should
-# the potatomgr keep running and flushing. It's a good idea to
-# leave at least a few seconds so that when the filesystem is unmounted,
-# the potatomgr has a chance to upload some slabs that were open for a
-# long time, as is typical for inode tables.
-shutdown_grace_period: 10
+# How many seconds after receiving the 'shutdown' message should the potatomgr
+# keep running and flushing. It's a good idea to leave at least a few seconds
+# so that when the filesystem is unmounted, the potatomgr has a chance to
+# upload some slabs that were open for a long time, as is typical for inode
+# tables.
+#
+# Unfortunately, FUSE currently does not support blocking on unmount (see issue
+# https://github.com/libfuse/libfuse/issues/1) so chances are any value greater
+# than zero means the mgr and its children will receive a SIGKILL while trying
+# to flush slabs. Until this is fixed, zero remains the recommended value.
+shutdown_grace_period: 0
 
 scrubber_interval: 3600
 purger_interval: 60
