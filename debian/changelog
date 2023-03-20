@@ -1,3 +1,10 @@
+potatofs (2.10.1) unstable; urgency=medium
+
+  * Fix issue with offset in show_slab() for inode tables
+  * Build with -O2
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 20 Mar 2023 00:38:47 -0400
+
 potatofs (2.10.0) unstable; urgency=medium
 
   v2.10.0
