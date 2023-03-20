@@ -1,3 +1,29 @@
+potatofs (2.10.0) unstable; urgency=medium
+
+  v2.10.0
+  * Everytime we unclaim(), clear our ownership from the slab. Eventually that
+    will ensure we leave slabs claimable by other fs instances, even if the
+    slab is still local. This means we need a new slabdb flag to indicate
+    that the slab is available locally, even if not currently owned, to make
+    purges efficient.
+  * Looping on slabs now supports filtering by slabdb flags, which is useful
+    to make looping for LRU or over delayed truncations faster
+  * Make sure the fs waits for mgr shutdown before shutting down itself,
+    though this currently doesn't matter much since FUSE doesn't support
+    blocking on unmount (see https://github.com/libfuse/libfuse/issues/1)
+  * Make the max preload factor configurable, defaulting to 5
+  * Add max_preload_per_hint example
+  * Don't attempt to retry to connect to the mgr on a "claim" command.
+    This is so we don't block needlessly when the fs already has a claim.
+    This is useful for backends who would like to use "potatoctl claim"
+    to preload slabs.
+  * Add example for log_file_path
+  * Use O_CLOEXEC on open() instead of calling fcntl() after
+  * Fix issue where we don't save the SLABDB_FLAG_LOCAL in unclaim
+  * Given latest changes, we shouldn't skip unclaimed slabs in purge()
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 19 Mar 2023 23:52:05 -0400
+
 potatofs (2.9.0) unstable; urgency=medium
 
   v2.9.0
