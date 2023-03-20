@@ -2605,7 +2605,7 @@ show_slab(int argc, char **argv)
 		printf("\n\n");
 
 		printf("  inodes:\n");
-		if (lseek(fd, 0, SEEK_SET) == -1)
+		if (lseek(fd, sizeof(b.hdr), SEEK_SET) == -1)
 			err(1, "lseek");
 		for (ino = b.hdr.v.f.key.base;
 		    ino < b.hdr.v.f.key.base + slab_inode_max(); ino++) {
