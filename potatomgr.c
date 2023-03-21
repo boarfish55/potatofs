@@ -1369,6 +1369,13 @@ new_slab_again:
 		goto fail_close_dst;
 	}
 
+	/*
+	 * Preloads always have nohint set. We can subtrack from the total
+	 * number of backend gets to know which gets actually caused the
+	 * user to wait.
+	 */
+	if (oflags & OSLAB_NOHINT)
+		mgr_counter_add(MGR_COUNTER_BACKEND_PRELOADS, 1);
 get_again:
 	in_bytes = 0;
 	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {

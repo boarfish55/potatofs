@@ -1674,7 +1674,8 @@ again:
 		total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
 
 		if (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
-		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS] == 0) {
+		    (mgr_counters_now[MGR_COUNTER_BACKEND_GETS] -
+		     mgr_counters_now[MGR_COUNTER_BACKEND_PRELOADS]) == 0) {
 			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%)",
 			    used, total, used * 100.0 / total);
 		} else {
@@ -1682,7 +1683,8 @@ again:
 			    100.0 *
 			    mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] /
 			    (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
-			     mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+			     (mgr_counters_now[MGR_COUNTER_BACKEND_GETS] -
+			      mgr_counters_now[MGR_COUNTER_BACKEND_PRELOADS]));
 			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%),"
 			    " %.1f%% slab hit ratio\n",
 			    used, total, used * 100.0 / total, hit_ratio);

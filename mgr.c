@@ -49,8 +49,7 @@ mgr_connect(int retry, struct xerr *e)
 
 		if (connect(mgr, (struct sockaddr *)&mgr_addr,
 		    sizeof(mgr_addr)) == -1) {
-			XERRF(e, XLOG_ERRNO, errno,
-			    "%s: connect", __func__);
+			XERRF(e, XLOG_ERRNO, errno, "connect");
 			switch (errno) {
 			case ENOENT:
 				if (++nosock_count < 3)
@@ -70,8 +69,7 @@ mgr_connect(int retry, struct xerr *e)
 					break;
 			default:
 				refused_count = 0;
-				xlog_strerror(LOG_ERR, errno,
-				    "%s: connect", __func__);
+				xlog_strerror(LOG_ERR, errno, "connect");
 			}
 			goto fail;
 		}

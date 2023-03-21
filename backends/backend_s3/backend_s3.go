@@ -637,7 +637,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		return err
 	}
 
-	if n > 10 {
+	if n > config.MaxPreloadPerHint {
 		s = `
 		delete from hints where parent_ino = ? and parent_base = ? and
 		last_used_ms <= ?
@@ -650,6 +650,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		}
 		defer stmt.Close()
 
+		logger.Infof("deleting hints for inode=%d/base=%d older than %dms (max hints is %d)", ino, base, deleteOlderThanEq, config.MaxPreloadPerHint)
 		_, err = stmt.Exec(ino, base, deleteOlderThanEq)
 		if err != nil {
 			Rollback(tx)
