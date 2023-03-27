@@ -1,3 +1,18 @@
+potatofs (2.11.0) unstable; urgency=medium
+
+  * Fix MaxPreloadPerHint, which was ignored when deleting extra hints
+  * Add a new counter for backend preloads; useful when computing slab
+    cache hit ratio
+  * Fix some error formats
+  * Don't report ECONNRESET errors at fs shutdown
+  * Add a "purge" command to attempt to free all local slabs, unless dirty.
+    Add some prototypes to potatomgr.c.
+  * Change how backend_s3 does preloading; keep track of loaded slabs and
+    add hints for each of them; a new config value comes with this:
+    hint_slab_max_age_seconds
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 26 Mar 2023 20:53:29 -0400
+
 potatofs (2.10.1) unstable; urgency=medium
 
   * Fix issue with offset in show_slab() for inode tables
