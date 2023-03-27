@@ -2524,6 +2524,9 @@ show_dir(int argc, char **argv)
 		warnx("  ** inode is truncated; data might be incomplete");
 	printf("  dirents:\n\n");
 
+	// TODO: must support dir v2
+	errx(1, "displaying v2 dirs not currently supported");
+
 	de = (struct dir_entry_v1 *)(data + sizeof(struct dir_hdr));
 
 	for (n = 0; i > 0; i -= sizeof(struct dir_entry_v1), de++, n++) {

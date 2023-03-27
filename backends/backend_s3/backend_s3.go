@@ -57,11 +57,12 @@ const (
 )
 
 var (
-	server        = flag.Bool("server", false, "Starts a S3 backend service")
-	decrypt       = flag.Bool("decrypt", false, "Decrypt STDIN")
-	encrypt       = flag.Bool("encrypt", false, "Encrypt STDIN")
-	encrypt_inode = flag.Uint64("encrypt_inode", 0, "Inode for encrypt nonce")
-	encrypt_base  = flag.Int64("encrypt_base", 0, "Base for encrypt nonce")
+	confPath     = flag.String("config", "", "Configuration file path")
+	server       = flag.Bool("server", false, "Starts a S3 backend service")
+	decrypt      = flag.Bool("decrypt", false, "Decrypt STDIN")
+	encrypt      = flag.Bool("encrypt", false, "Encrypt STDIN")
+	encryptInode = flag.Uint64("encrypt_inode", 0, "Inode for encrypt nonce")
+	encryptBase  = flag.Int64("encrypt_base", 0, "Base for encrypt nonce")
 )
 
 type Config struct {
@@ -80,7 +81,8 @@ type Config struct {
 	HintsDBPath           string `toml:"hints_database_path"`
 	HintSkewMs            int64  `toml:"hint_skew_ms"`
 	HintsPreloadQueueSize int    `toml:"hints_preload_queue_size"`
-	MaxPreloadPerHint     int    `toml:"max_preload_per_hint"`
+	MaxPreloadPerHint     int64  `toml:"max_preload_per_hint"`
+	HintSlabMaxAgeSeconds int64  `toml:"hint_slab_max_age_seconds"`
 }
 
 func loadConfig(path string) error {
@@ -93,8 +95,11 @@ func loadConfig(path string) error {
 	if config.HintsPreloadQueueSize > 1000000 {
 		config.HintsPreloadQueueSize = 1000000
 	}
-	if config.MaxPreloadPerHint < 1 {
-		config.MaxPreloadPerHint = 5
+	if config.MaxPreloadPerHint < 10 {
+		config.MaxPreloadPerHint = 10
+	}
+	if config.HintSlabMaxAgeSeconds < 1 {
+		config.HintSlabMaxAgeSeconds = 1
 	}
 	return nil
 }
@@ -262,43 +267,94 @@ type Slab struct {
 	LoadedAt time.Time
 }
 
-type SlabQueue []Slab
+type QueuedSlab struct {
+	Slab *Slab
+	Idx  int
+}
+
+type SlabQueue struct {
+	Items []*QueuedSlab
+	Index map[Slab]*QueuedSlab
+}
 
 func (q SlabQueue) Len() int {
-	return len(q)
+	return len(q.Items)
 }
 
 func (q SlabQueue) Less(i, j int) bool {
-	return q[i].LoadedAt.Before(q[j].LoadedAt)
+	return q.Items[i].Slab.LoadedAt.Before(q.Items[j].Slab.LoadedAt)
 }
 
 func (q SlabQueue) Swap(i, j int) {
-	q[i], q[j] = q[j], q[i]
+	q.Items[i], q.Items[j] = q.Items[j], q.Items[i]
+	q.Items[i].Idx = i
+	q.Items[j].Idx = j
 }
 
 func (q *SlabQueue) Push(x interface{}) {
-	*q = append(*q, x.(Slab))
+	s := x.(*Slab)
+	k := Slab{
+		Ino:  s.Ino,
+		Base: s.Base,
+	}
+
+	if qs, ok := q.Index[k]; ok {
+		if qs.Slab.LoadedAt.After(s.LoadedAt) {
+			qs.Slab.LoadedAt = s.LoadedAt
+			heap.Fix(q, qs.Idx)
+		}
+		return
+	}
+
+	qs := &QueuedSlab{
+		Idx:  len(q.Items),
+		Slab: s,
+	}
+	q.Items = append(q.Items, qs)
+	q.Index[k] = qs
 }
 
 func (q *SlabQueue) Pop() interface{} {
-	old := *q
-	n := len(old)
-	x := old[n-1]
-	*q = old[0 : n-1]
-	return x
+	qs := q.Items[len(q.Items)-1]
+	q.Items = q.Items[0 : len(q.Items)-1]
+	idx := Slab{
+		Ino:  qs.Slab.Ino,
+		Base: qs.Slab.Base,
+	}
+	delete(q.Index, idx)
+	return qs.Slab
 }
 
 func (q *SlabQueue) Peek() interface{} {
-	h := *q
-	return h[0]
+	return q.Items[0].Slab
+}
+
+func (q *SlabQueue) Lookup(ino uint64, base int64) *Slab {
+	s := Slab{
+		Ino:  ino,
+		Base: base,
+	}
+	if qs, ok := q.Index[s]; ok {
+		return qs.Slab
+	}
+	return nil
+}
+
+func (q *SlabQueue) AllSlabs() []Slab {
+	var allSlabs []Slab
+	for _, slab := range q.Items {
+		allSlabs = append(allSlabs, *slab.Slab)
+	}
+	return allSlabs
 }
 
 type HintsDB struct {
-	Db           *sql.DB
-	LastOpenSlab Slab
-	Mtx          sync.Mutex
-	PreloadQueue SlabQueue
-	QMtx         sync.Mutex
+	Db              *sql.DB
+	OpenSlabs       SlabQueue
+	OpenSlabsMtx    sync.Mutex
+	PreloadQueue    SlabQueue
+	PreloadQueueMtx sync.Mutex
+	TokenBucket     chan struct{}
 }
 
 func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
@@ -354,7 +410,24 @@ func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
 		Db: db,
 	}
 
+	// We don't want to fill our hints for a given parent inode/base
+	// with a bunch of slabs that are loaded in a burst.
+	h.TokenBucket = make(chan struct{}, config.MaxPreloadPerHint/2)
+	go func() {
+		for {
+			time.Sleep(time.Duration(config.HintSlabMaxAgeSeconds/(config.MaxPreloadPerHint/2)) * time.Second)
+			select {
+			case <-h.TokenBucket:
+			default:
+			}
+		}
+	}()
+
+	heap.Init(&h.OpenSlabs)
+	h.OpenSlabs.Index = make(map[Slab]*QueuedSlab)
 	heap.Init(&h.PreloadQueue)
+	h.PreloadQueue.Index = make(map[Slab]*QueuedSlab)
+
 	wg.Add(1)
 	go h.ProcessPreloadQueue(stop, wg)
 
@@ -421,16 +494,16 @@ func (h *HintsDB) ProcessPreloadQueue(stop <-chan bool, wg *sync.WaitGroup) {
 			return
 		case <-ticker.C:
 			now := time.Now()
-			h.QMtx.Lock()
+			h.PreloadQueueMtx.Lock()
 			for h.PreloadQueue.Len() > 0 {
-				slab := h.PreloadQueue.Peek().(Slab)
+				slab := h.PreloadQueue.Peek().(*Slab)
 				if now.After(slab.LoadedAt) {
-					claims <- heap.Pop(&h.PreloadQueue).(Slab)
+					claims <- *(heap.Pop(&h.PreloadQueue).(*Slab))
 				} else {
 					break
 				}
 			}
-			h.QMtx.Unlock()
+			h.PreloadQueueMtx.Unlock()
 		}
 	}
 }
@@ -448,113 +521,151 @@ func minZero(d time.Duration) time.Duration {
 	return d
 }
 
-func (h *HintsDB) AddHint(ino uint64, base int64) error {
-	h.Mtx.Lock()
+func (h *HintsDB) AddOpenSlab(ino uint64, base int64) error {
 	now := time.Now()
-	var emptySlab Slab
-	if h.LastOpenSlab == emptySlab {
-		h.LastOpenSlab.Ino = ino
-		h.LastOpenSlab.Base = base
-		h.LastOpenSlab.LoadedAt = now
-		h.Mtx.Unlock()
-		return nil
-	}
-	lastSlab := h.LastOpenSlab
-	h.LastOpenSlab.Ino = ino
-	h.LastOpenSlab.Base = base
-	h.LastOpenSlab.LoadedAt = now
-	h.Mtx.Unlock()
 
-	tx, err := h.Db.Begin()
-	if err != nil {
-		return err
-	}
+	h.OpenSlabsMtx.Lock()
+	defer h.OpenSlabsMtx.Unlock()
 
-	stmt, err := tx.Prepare(
-		"insert or ignore into slabs(ino, base) values(?, ?)")
-	if err != nil {
-		Rollback(tx)
-		return err
-	}
-	defer stmt.Close()
-	stmt.Exec(lastSlab.Ino, lastSlab.Base)
-	if err != nil {
-		Rollback(tx)
-		return err
-	}
-
-	s := `
-	select load_after_ms from hints where
-	parent_ino = ? and parent_base = ? and ino = ? and base = ?
-	`
-	stmt, err = tx.Prepare(s)
-	if err != nil {
-		Rollback(tx)
-		return err
-	}
-	defer stmt.Close()
-
-	var loadAfterMs int64
-	var lastUsedMs int64
-	lastUsedMs = now.UnixNano() / 1000000
-
-	err = stmt.QueryRow(lastSlab.Ino, lastSlab.Base, ino, base).Scan(&loadAfterMs)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			s = `
-			insert into hints(parent_ino, parent_base,
-			ino, base, last_used_ms, load_after_ms) values(?, ?, ?, ?, ?, ?)
-			`
-			stmt, err = tx.Prepare(s)
-			if err != nil {
-				Rollback(tx)
-				return err
-			}
-			defer stmt.Close()
-			_, err = stmt.Exec(lastSlab.Ino, lastSlab.Base, ino, base, lastUsedMs, now.Sub(lastSlab.LoadedAt).Milliseconds())
-			if err != nil {
-				Rollback(tx)
-				return err
-			}
-
-			tx.Commit()
-			if err != nil {
-				Rollback(tx)
-				return err
-			}
-			return nil
-		} else {
-			Rollback(tx)
+	slab := h.OpenSlabs.Lookup(ino, base)
+	if slab == nil {
+		// If the slab is already in memory, for sure it's already
+		// in the DB.
+		stmt, err := h.Db.Prepare(
+			"insert or ignore into slabs(ino, base) values(?, ?)")
+		if err != nil {
 			return err
+		}
+		defer stmt.Close()
+		stmt.Exec(ino, base)
+		if err != nil {
+			return err
+		}
+
+		slab = &Slab{
+			Ino:      ino,
+			Base:     base,
+			LoadedAt: now,
 		}
 	}
 
-	after := now.Sub(lastSlab.LoadedAt).Milliseconds()
-	if after < loadAfterMs {
-		loadAfterMs = after
+	heap.Push(&h.OpenSlabs, slab)
+
+	// Clear slabs that have been open for longer then the max age
+	for {
+		slab = h.OpenSlabs.Peek().(*Slab)
+		if now.Sub(slab.LoadedAt) > (time.Duration(config.HintSlabMaxAgeSeconds) * time.Second) {
+			heap.Pop(&h.OpenSlabs)
+			continue
+		}
+		break
 	}
 
-	s = `
-	update hints set last_used_ms = ?, load_after_ms = ? where
-	parent_ino = ? and parent_base = ? and ino = ? and base = ?
-	`
+	return nil
+}
 
-	stmt, err = tx.Prepare(s)
-	if err != nil {
-		Rollback(tx)
-		return err
-	}
-	defer stmt.Close()
-	_, err = stmt.Exec(lastUsedMs, loadAfterMs, lastSlab.Ino, lastSlab.Base, ino, base)
-	if err != nil {
-		Rollback(tx)
-		return err
-	}
+func (h *HintsDB) AddHint(ino uint64, base int64) error {
+	now := time.Now()
+	h.AddOpenSlab(ino, base)
 
-	tx.Commit()
-	if err != nil {
-		Rollback(tx)
-		return err
+	select {
+	case h.TokenBucket <- struct{}{}:
+	default:
+		logger.Noticef("AddHint: token bucket full at %d", len(h.TokenBucket))
+		return nil
+	}
+	logger.Infof("AddHint: token bucket at %d", len(h.TokenBucket))
+
+	// Get a copy of the list of loaded slabs to avoid holding the lock
+	h.OpenSlabsMtx.Lock()
+	openSlabs := h.OpenSlabs.AllSlabs()
+	h.OpenSlabsMtx.Unlock()
+	logger.Infof("%d open slabs", len(openSlabs))
+
+	for _, slab := range openSlabs {
+		if slab.Ino == ino && slab.Base == base {
+			// No preloading needed for itself
+			continue
+		}
+		tx, err := h.Db.Begin()
+		if err != nil {
+			return err
+		}
+
+		s := `
+		select load_after_ms from hints where
+		parent_ino = ? and parent_base = ? and ino = ? and base = ?
+		`
+		stmt, err := tx.Prepare(s)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+		defer stmt.Close()
+
+		var loadAfterMs int64
+		var lastUsedMs int64
+		lastUsedMs = now.UnixNano() / 1000000
+
+		err = stmt.QueryRow(slab.Ino, slab.Base, ino, base).Scan(&loadAfterMs)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				s = `
+				insert into hints(parent_ino, parent_base,
+				ino, base, last_used_ms, load_after_ms)
+				values(?, ?, ?, ?, ?, ?)
+				`
+				stmt, err = tx.Prepare(s)
+				if err != nil {
+					Rollback(tx)
+					return err
+				}
+				defer stmt.Close()
+				_, err = stmt.Exec(slab.Ino, slab.Base, ino, base, lastUsedMs, now.Sub(slab.LoadedAt).Milliseconds())
+				if err != nil {
+					Rollback(tx)
+					return err
+				}
+
+				tx.Commit()
+				if err != nil {
+					Rollback(tx)
+					logger.Errf("AddHint: inserting new hint: %v")
+				}
+			} else {
+				Rollback(tx)
+				logger.Errf("AddHint: %v")
+			}
+			continue
+		}
+
+		after := now.Sub(slab.LoadedAt).Milliseconds()
+		if after < loadAfterMs {
+			loadAfterMs = after
+		}
+
+		s = `
+		update hints set last_used_ms = ?, load_after_ms = ? where
+		parent_ino = ? and parent_base = ? and ino = ? and base = ?
+		`
+
+		stmt, err = tx.Prepare(s)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+		defer stmt.Close()
+		_, err = stmt.Exec(lastUsedMs, loadAfterMs, slab.Ino, slab.Base, ino, base)
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
+
+		tx.Commit()
+		if err != nil {
+			Rollback(tx)
+			return err
+		}
 	}
 
 	return nil
@@ -585,7 +696,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 	}
 	defer rows.Close()
 
-	n := 0
+	var n int64
 	var deleteOlderThanEq int64
 	for rows.Next() {
 		var childIno uint64
@@ -608,7 +719,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		}
 
 		skew := time.Duration(config.HintSkewMs) * time.Millisecond
-		slab := Slab{
+		slab := &Slab{
 			Ino:      childIno,
 			Base:     childBase,
 			LoadedAt: time.Now().Add(minZero((time.Duration(loadAfterMs) * time.Millisecond) - skew)),
@@ -616,7 +727,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 
 		queued := false
 		var length int
-		h.QMtx.Lock()
+		h.PreloadQueueMtx.Lock()
 		// Cap memory usage by preventing too many insertions in the
 		// heap.
 		length = h.PreloadQueue.Len()
@@ -624,7 +735,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 			heap.Push(&h.PreloadQueue, slab)
 			queued = true
 		}
-		h.QMtx.Unlock()
+		h.PreloadQueueMtx.Unlock()
 		if queued {
 			logger.Infof("queued preload: inode=%d/base=%d at %v (in %.3fs)", slab.Ino, slab.Base, slab.LoadedAt.Format("2006-01-02T15:04:05 -0700"), minZero((time.Duration(loadAfterMs)*time.Millisecond)-skew).Seconds())
 		} else {
@@ -737,7 +848,7 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		}
 
 		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+			logger.Errf("handleClient: PreloadSlabs(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		resp = MgrMsgHintResponse{
@@ -749,7 +860,7 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		}
 
 		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
+			logger.Errf("handleClient: PreloadSlabs(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
 		}
 
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
@@ -950,12 +1061,19 @@ func main() {
 	flag.Parse()
 
 	var err error
+	var cfg string
 
-	if os.Getenv("POTATOFS_BACKEND_CONFIG") == "" {
-		die(2, "POTATOFS_BACKEND_CONFIG is not set")
+	if *confPath == "" {
+		if os.Getenv("POTATOFS_BACKEND_CONFIG") == "" {
+			die(2, "POTATOFS_BACKEND_CONFIG is not set")
+		}
+		cfg = os.Getenv("POTATOFS_BACKEND_CONFIG")
+	} else {
+		cfg = *confPath
+		os.Setenv("POTATOFS_BACKEND_CONFIG", cfg)
 	}
 
-	if err = loadConfig(os.Getenv("POTATOFS_BACKEND_CONFIG")); err != nil {
+	if err = loadConfig(cfg); err != nil {
 		die(2, "%v", err)
 	}
 
@@ -968,7 +1086,7 @@ func main() {
 		if err = loadSecretKey(); err != nil {
 			die(2, "%v", err)
 		}
-		s, err := NewPutStream(os.Stdin, *encrypt_inode, *encrypt_base)
+		s, err := NewPutStream(os.Stdin, *encryptInode, *encryptBase)
 		if err != nil {
 			die(2, "%v", err)
 		}
