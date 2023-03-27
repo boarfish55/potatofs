@@ -58,6 +58,7 @@ static int  do_shutdown(int, char **);
 static int  set_clean(int, char **);
 static int  do_scrub(int, char **);
 static int  do_flush(int, char **);
+static int  do_purge(int, char **);
 static int  do_offline(int, char **);
 static int  do_online(int, char **);
 static void usage();
@@ -85,6 +86,7 @@ struct subc {
 	{ "set_clean", &set_clean, 0 },
 	{ "scrub", &do_scrub, 0 },
 	{ "flush", &do_flush, 0 },
+	{ "purge", &do_purge, 0 },
 	{ "offline", &do_offline, 0 },
 	{ "online", &do_online, 0 },
 	{ "inode_tables", &inode_tables, 0 },
@@ -163,6 +165,7 @@ usage()
 	    "           set_clean\n"
 	    "           scrub\n"
 	    "           flush\n"
+	    "           purge\n"
 	    "           online\n"
 	    "           offline\n"
 	    "           fsck  [verbose]\n"
@@ -776,6 +779,45 @@ do_flush(int argc, char **argv)
 
 	close(mgr);
 end:
+	if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return 1;
+	}
+	return status;
+}
+
+int
+do_purge(int argc, char **argv)
+{
+	int             mgr;
+	struct xerr     e;
+	int             status = 0;
+	struct mgr_msg  m;
+
+	if (mgr_start(1, 1) == -1)
+		err(1, "mgr_start");
+
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		status = 1;
+		goto end;
+	}
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_PURGE_ALL;
+	if (mgr_send(mgr, -1, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		status = 1;
+		goto end;
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		status = 1;
+		goto end;
+	}
+end:
+	close(mgr);
 	if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		return 1;
@@ -1674,7 +1716,8 @@ again:
 		total = (double) stv.f_blocks * stv.f_bsize / (2UL << 29UL);
 
 		if (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
-		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS] == 0) {
+		    (mgr_counters_now[MGR_COUNTER_BACKEND_GETS] -
+		     mgr_counters_now[MGR_COUNTER_BACKEND_PRELOADS]) == 0) {
 			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%)",
 			    used, total, used * 100.0 / total);
 		} else {
@@ -1682,7 +1725,8 @@ again:
 			    100.0 *
 			    mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] /
 			    (mgr_counters_now[MGR_COUNTER_BACKEND_HINTS] +
-			     mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+			     (mgr_counters_now[MGR_COUNTER_BACKEND_GETS] -
+			      mgr_counters_now[MGR_COUNTER_BACKEND_PRELOADS]));
 			mvprintw(3, 17, "%.1f / %.1f GiB (%.1f%%),"
 			    " %.1f%% slab hit ratio\n",
 			    used, total, used * 100.0 / total, hit_ratio);
@@ -2479,6 +2523,9 @@ show_dir(int argc, char **argv)
 	if (i < inode.v.f.size)
 		warnx("  ** inode is truncated; data might be incomplete");
 	printf("  dirents:\n\n");
+
+	// TODO: must support dir v2
+	errx(1, "displaying v2 dirs not currently supported");
 
 	de = (struct dir_entry_v1 *)(data + sizeof(struct dir_hdr));
 

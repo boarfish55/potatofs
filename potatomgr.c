@@ -67,6 +67,51 @@ struct delayed_truncates {
 	int             count;
 };
 
+static int    mgr_shared_lock();
+static void   mgr_shared_unlock();
+static time_t shutdown_requested();
+static int    shutdown_now();
+static int    set_fs_error();
+static void   mgr_counter_add(int, uint64_t);
+static int    snd_counters(int, struct mgr_msg *, struct xerr *);
+static int    rcv_counters(int, struct mgr_msg *, struct xerr *);
+static int    mgr_spawn(char *const[], int *, char *, size_t, char *, size_t,
+		  char *, size_t, int, struct xerr *);
+static int    copy_outgoing_slab(int, struct slab_key *,
+                  struct slab_hdr *, struct xerr *);
+static int    unclaim(int, struct mgr_msg *, int, struct xerr *);
+static int    truncate_slab(int, struct mgr_msg *, struct xerr *);
+static void   backend_hint(struct slab_key *);
+static int    backend_get(const char *, const char *, size_t *,
+                  struct slab_key *, struct xerr *);
+static int    backend_put(const char *, const char *, size_t *,
+                  const struct slab_key *, struct xerr *);
+static int    check_slab_header(struct slab_hdr *, uint32_t,
+                  uint64_t, struct xerr *);
+static int    copy_incoming_slab(int, int, uint32_t, uint64_t, struct xerr *);
+static int    claim(struct slab_key *, int *, uint32_t, struct xerr *);
+static int    client_claim(int, struct mgr_msg *, struct xerr *);
+static int    claim_next_itbls(int, struct mgr_msg *, struct xerr *);
+static int    set_shutdown_requested(time_t);
+static int    do_shutdown(int, struct mgr_msg *, struct xerr *);
+static int    info(int, struct mgr_msg *, struct xerr *);
+static void   bg_df();
+static int    bgworker(const char *, void(*)(), int);
+static void   bg_flush();
+static void   scrub_local_slab(const char *path);
+static int    delayed_truncate(const struct slab_key *,
+                  const struct slabdb_val *, void *);
+static void   scrub();
+static int    client_scrub(int, struct mgr_msg *, struct xerr *);
+static int    client_flush(int, struct mgr_msg *, struct xerr *);
+static int    client_purge_all(int, struct mgr_msg *, struct xerr *);
+static int    client_offline(int, struct mgr_msg *, struct xerr *);
+static int    client_get_offline(int, struct mgr_msg *, struct xerr *);
+static void   purge_all();
+static int    purge(const struct slab_key *, const struct slabdb_val *, void *);
+static void   bg_purge();
+static int    worker(int);
+
 struct timeval     socket_timeout = {300, 0};
 uuid_t             instance_id;
 struct mgr_shared *mgr_shared;
@@ -1369,6 +1414,13 @@ new_slab_again:
 		goto fail_close_dst;
 	}
 
+	/*
+	 * Preloads always have nohint set. We can subtrack from the total
+	 * number of backend gets to know which gets actually caused the
+	 * user to wait.
+	 */
+	if (oflags & OSLAB_NOHINT)
+		mgr_counter_add(MGR_COUNTER_BACKEND_PRELOADS, 1);
 get_again:
 	in_bytes = 0;
 	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {
@@ -2057,6 +2109,18 @@ client_flush(int c, struct mgr_msg *m, struct xerr *e)
 }
 
 static int
+client_purge_all(int c, struct mgr_msg *m, struct xerr *e)
+{
+	purge_all();
+	m->m = MGR_MSG_PURGE_ALL_OK;
+	if (mgr_send(c, -1, m, xerrz(e)) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int
 client_offline(int c, struct mgr_msg *m, struct xerr *e)
 {
 	if (m->m == MGR_MSG_OFFLINE) {
@@ -2104,6 +2168,26 @@ client_get_offline(int c, struct mgr_msg *m, struct xerr *e)
 		return -1;
 	}
 	return 0;
+}
+
+static void
+purge_all()
+{
+	struct xerr     e = XLOG_ERR_INITIALIZER;
+	struct timespec start, end;
+	time_t          delta_ns;
+
+	clock_gettime_x(CLOCK_REALTIME, &start);
+
+	if (slabdb_loop(SLABDB_FLAG_LOCAL, &purge, NULL, &e) == -1)
+		xlog(LOG_ERR, &e, "%s", __func__);
+
+	clock_gettime_x(CLOCK_REALTIME, &end);
+
+	delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+	    ((start.tv_sec * 1000000000) + start.tv_nsec);
+	xlog(LOG_NOTICE, NULL, "%s: purging took %lu.%09ld seconds",
+	    __func__, delta_ns / 1000000000, delta_ns % 1000000000);
 }
 
 static int
@@ -2171,19 +2255,23 @@ purge(const struct slab_key *sk, const struct slabdb_val *v, void *usage)
 		    "(revision=%lu, crc=%u)", __func__, path,
 		    v->revision, v->header_crc);
 		mgr_counter_add(MGR_COUNTER_SLABS_PURGED, 1);
-		fs_usage->used_blocks -=
-		    (st.st_blocks / (fs_usage->stv.f_bsize / 512));
+		if (fs_usage != NULL)
+			fs_usage->used_blocks -=
+			    (st.st_blocks / (fs_usage->stv.f_bsize / 512));
 	}
 
 	CLOSE_X(fd);
 
-	threshold = fs_usage->stv.f_blocks *
-	    fs_config.purge_threshold_pct / 100;
-	if (fs_usage->used_blocks < threshold) {
-		xlog(LOG_INFO, NULL, "%s: ending purge, used blocks %lu "
-		    "within threshold %lu", __func__,
-		    fs_usage->used_blocks, threshold);
-		return 1;
+	if (fs_usage != NULL) {
+		threshold = fs_usage->stv.f_blocks *
+		    fs_config.purge_threshold_pct / 100;
+		if (fs_usage->used_blocks < threshold) {
+			xlog(LOG_INFO, NULL,
+			    "%s: ending purge, used blocks %lu "
+			    "within threshold %lu", __func__,
+			    fs_usage->used_blocks, threshold);
+			return 1;
+		}
 	}
 
 	return 0;
@@ -2364,6 +2452,9 @@ worker(int lsock)
 				break;
 			case MGR_MSG_FLUSH:
 				client_flush(c, &m, xerrz(&e));
+				break;
+			case MGR_MSG_PURGE_ALL:
+				client_purge_all(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_ONLINE:
 			case MGR_MSG_OFFLINE:

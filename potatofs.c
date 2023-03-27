@@ -511,8 +511,9 @@ wait_again:
 			if (xerr_is(&e, XLOG_ERRNO, ECONNREFUSED))
 				break;
 
-			xlog(LOG_ERR, &e, "%s: error while waiting for "
-			    "mgr shutdown", __func__);
+			if (!xerr_is(&e, XLOG_ERRNO, ECONNRESET))
+				xlog(LOG_ERR, &e, "%s: error while waiting for "
+				    "mgr shutdown", __func__);
 		}
 		nanosleep(&tp, NULL);
 	}

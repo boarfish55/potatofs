@@ -63,7 +63,8 @@ const char *mgr_counter_names[] = {
 	"claim_contention",  /* MGR_COUNTER_CLAIM_CONTENTION */
 	"backend_gets",      /* MGR_COUNTER_BACKEND_GETS */
 	"backend_hints",     /* MGR_COUNTER_BACKEND_HINTS */
-	"backend_puts"       /* MGR_COUNTER_BACKEND_PUTS */
+	"backend_puts",      /* MGR_COUNTER_BACKEND_PUTS */
+	"backend_preloads"   /* MGR_COUNTER_BACKEND_PRELOADS */
 };
 
 #endif
