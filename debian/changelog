@@ -1,3 +1,15 @@
+potatofs (2.11.1) unstable; urgency=medium
+
+  * Set a limit on how many in-memory slabs we can have
+  * Add logs for timing of AddHint, to see if we're spending too much
+    time adding hints; this can be limited by reducing hint_slabs_max_open
+  * Set the minimum token bucket refill interval to 1 second, fixing an
+    infinite loop issue
+  * Process hints in a goroutine, thus unblocking get operations in the meantime
+  * Fixed potatoctl dir command for v2 dirs
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Tue, 28 Mar 2023 22:16:55 -0400
+
 potatofs (2.11.0) unstable; urgency=medium
 
   * Fix MaxPreloadPerHint, which was ignored when deleting extra hints
