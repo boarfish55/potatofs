@@ -12,25 +12,39 @@ hints_database_path = "/var/potatofs_test/backend_s3_hints.db"
 # When computing the time that passed between loading two slabs in a sequence,
 # decrease the computed time by this many milliseconds. This way we can give
 # us a bit of time to download the slab ahead of it being used, hopefully.
-hint_skew_ms = 5000
+hint_skew_ms = 15000
 
 # How many hints can be queued for preloading. This is mostly to keep memory
 # usage under control and possibly avoid trying to preload too many things
 # when a large chain of slab hints is triggered.
 hints_preload_queue_size = 10000
 
-# We want to keep a limit over how many slabs to preload for each hint, both
-# to keep the DB size under control, but also because preloading is
-# exponential by that factor. Each time we load a slab, we could end up
-# doing claims for this many slab.
-max_preload_per_hint = 5
+# Maximum number of hints per slab. This is so we keep a cap on the database
+# size and don't trigger more than this many preloads anytime to load a slab.
+# Together with hint_slab_max_age_seconds, this is used to rate-limit how many
+# hints we accept over time. We allow bursting up to 50% of that value, then
+# the token bucket refills at one per
+# hint_slab_max_age_seconds/(max_preload_per_hint/2) second.
+max_preload_per_hint = 100
+
+# How many slabs to keep in memory for the purpose of updating their hints.
+# Hints may be updated for this many slabs each time we get a get/hint request.
+# Holding too many slabs in memory at once will use up more CPU and may cause
+# lock contention on the hints table as we have to issue this many SQL updates
+# each time.
+hint_slabs_max_open = 50
+
+# How long to keep track of open slabs. As long as a slab is consideredis
+# in-memory, any new coming hint will be added to the "tree" of hints for
+# preloading. This should ideally match the "slab_max_age" configuration
+# directive for the fs.
+hint_slab_max_age_seconds = 300
 
 s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"
 s3_region = "us-east-1"
 
-# syslog mimimum log level. Priorities lower than this are silently
-# discarded.
+# syslog mimimum log level. Priorities lower than this are silently discarded.
 log_level = "notice"
 
 # S3 credentials
@@ -42,8 +56,7 @@ secret_access_key = "some key"
 socket_path = "/var/potatofs_test/.backend_s3.sock"
 
 # Because this backend has infinite capacity, put a cap to it so we can
-# correctly compute how much capacity our filesystem has.
-# Here is 1TB.
+# correctly compute how much capacity our filesystem has. Here is 1TB.
 backend_bytes = 1099511627776
 
 # Timeout for S3 operations. Needs to be a bit longer than the

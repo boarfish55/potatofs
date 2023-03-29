@@ -483,7 +483,7 @@ wait_again:
 			goto wait_again;
 
 		if (errno == ECHILD)
-			xlog(LOG_INFO, NULL, "no child process, look "
+			xlog(LOG_INFO, NULL, "no child process, looking "
 			    "for mgr via its socket");
 		else
 			xlog_strerror(LOG_ERR, errno, "%s: wait", __func__);
