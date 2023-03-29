@@ -83,7 +83,7 @@ static int    unclaim(int, struct mgr_msg *, int, struct xerr *);
 static int    truncate_slab(int, struct mgr_msg *, struct xerr *);
 static void   backend_hint(struct slab_key *);
 static int    backend_get(const char *, const char *, size_t *,
-                  struct slab_key *, struct xerr *);
+                  struct slab_key *, uint32_t, struct xerr *);
 static int    backend_put(const char *, const char *, size_t *,
                   const struct slab_key *, struct xerr *);
 static int    check_slab_header(struct slab_hdr *, uint32_t,
@@ -811,7 +811,7 @@ backend_hint(struct slab_key *sk)
 
 static int
 backend_get(const char *local_path, const char *backend_name,
-    size_t *in_bytes, struct slab_key *sk, struct xerr *e)
+    size_t *in_bytes, struct slab_key *sk, uint32_t oflags, struct xerr *e)
 {
 	char            *args[] = {(char *)fs_config.mgr_exec, "get", NULL};
 	int              wstatus;
@@ -829,8 +829,10 @@ backend_get(const char *local_path, const char *backend_name,
 	    "{\"backend_name\": \"%s\", "
 	    "\"local_path\": \"%s\", "
 	    "\"inode\": %lu, "
-	    "\"base\": %ld}",
-	    backend_name, local_path, sk->ino, sk->base);
+	    "\"base\": %ld, "
+	    "\"is_preload\": %s}",
+	    backend_name, local_path, sk->ino, sk->base,
+	    ((oflags & OSLAB_NOHINT) ? "true" : "false"));
 
 	if (len >= sizeof(stdin))
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
@@ -1423,7 +1425,7 @@ new_slab_again:
 		mgr_counter_add(MGR_COUNTER_BACKEND_PRELOADS, 1);
 get_again:
 	in_bytes = 0;
-	if (backend_get(in_path, name, &in_bytes, sk, xerrz(e)) == -1) {
+	if (backend_get(in_path, name, &in_bytes, sk, oflags, xerrz(e)) == -1) {
 		if (xerr_is(e, XLOG_APP, XLOG_NOSLAB)) {
 			/*
 			 * Maybe the backend isn't up-to-date? Eventual

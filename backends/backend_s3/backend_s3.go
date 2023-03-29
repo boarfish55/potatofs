@@ -221,6 +221,7 @@ type MgrMsgArgs struct {
 	LocalPath   string `json:"local_path"`
 	Inode       uint64 `json:"inode"`
 	Base        int64  `json:"base"`
+	IsPreload   bool   `json:"is_preload"`
 }
 
 type MgrMsg struct {
@@ -442,7 +443,15 @@ func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
 	return h, nil
 }
 
-func DoClaim(ino uint64, base int64) {
+func (h *HintsDB) EmptyPreloadQueue() {
+	h.PreloadQueueMtx.Lock()
+	h.PreloadQueue.Index = make(map[Slab]*QueuedSlab)
+	h.PreloadQueue.Items = []*QueuedSlab{}
+	heap.Init(&h.PreloadQueue)
+	h.PreloadQueueMtx.Unlock()
+}
+
+func (h *HintsDB) DoClaim(ino uint64, base int64) {
 	if config.BackendClaimCommand == "" {
 		return
 	}
@@ -464,9 +473,11 @@ func DoClaim(ino uint64, base int64) {
 				logger.Errf("DoClaim: already locked")
 			} else {
 				logger.Errf("DoClaim: %v", err)
+				h.EmptyPreloadQueue()
 			}
 		} else {
 			logger.Errf("DoClaim: %v", err)
+			h.EmptyPreloadQueue()
 		}
 	}
 }
@@ -476,7 +487,7 @@ func (h *HintsDB) ClaimProcessor(claims <-chan Slab, wg *sync.WaitGroup) {
 
 	for slab := range claims {
 		logger.Infof("preloading: ino=%d/base=%d", slab.Ino, slab.Base)
-		DoClaim(slab.Ino, slab.Base)
+		h.DoClaim(slab.Ino, slab.Base)
 	}
 }
 
@@ -877,7 +888,10 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 			Status: "OK",
 		}
 	case "get":
-		go processHints(msg.Args.Inode, msg.Args.Base)
+		logger.Infof("slab get: inode=%d/base=%d, is_preload=%v", msg.Args.Inode, msg.Args.Base, msg.Args.IsPreload)
+		if !msg.Args.IsPreload {
+			go processHints(msg.Args.Inode, msg.Args.Base)
+		}
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
 		if err != nil {
 			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)
