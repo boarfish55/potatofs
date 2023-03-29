@@ -1,3 +1,12 @@
+potatofs (2.11.2) unstable; urgency=medium
+
+  * Let backend_s3 know when a "get" is the result of a preload; the backend
+    shouldn't start tracking the sequence of slabs when a get is a preload
+  * Empty the preload queue in backend_s3 when the claim command exits with
+    a code other than 2 or 0
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Tue, 28 Mar 2023 23:34:05 -0400
+
 potatofs (2.11.1) unstable; urgency=medium
 
   * Set a limit on how many in-memory slabs we can have
