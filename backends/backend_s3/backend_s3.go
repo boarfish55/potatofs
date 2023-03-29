@@ -83,23 +83,27 @@ type Config struct {
 	HintsPreloadQueueSize int    `toml:"hints_preload_queue_size"`
 	MaxPreloadPerHint     int64  `toml:"max_preload_per_hint"`
 	HintSlabMaxAgeSeconds int64  `toml:"hint_slab_max_age_seconds"`
+	HintSlabsMaxOpen      int    `toml:"hint_slabs_max_open"`
 }
 
 func loadConfig(path string) error {
 	if _, err := toml.DecodeFile(path, &config); err != nil {
 		return fmt.Errorf("error decoding configuration: %v", err)
 	}
-	if config.HintsPreloadQueueSize < 10 {
+	if config.HintsPreloadQueueSize < 1 {
 		config.HintsPreloadQueueSize = 10
 	}
 	if config.HintsPreloadQueueSize > 1000000 {
 		config.HintsPreloadQueueSize = 1000000
 	}
-	if config.MaxPreloadPerHint < 10 {
+	if config.MaxPreloadPerHint < 1 {
 		config.MaxPreloadPerHint = 10
 	}
 	if config.HintSlabMaxAgeSeconds < 1 {
-		config.HintSlabMaxAgeSeconds = 1
+		config.HintSlabMaxAgeSeconds = 300
+	}
+	if config.HintSlabsMaxOpen < 1 {
+		config.HintSlabsMaxOpen = 50
 	}
 	return nil
 }
@@ -413,9 +417,13 @@ func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
 	// We don't want to fill our hints for a given parent inode/base
 	// with a bunch of slabs that are loaded in a burst.
 	h.TokenBucket = make(chan struct{}, config.MaxPreloadPerHint/2)
+	sleepInterval := time.Duration(config.HintSlabMaxAgeSeconds/(config.MaxPreloadPerHint/2)) * time.Second
+	if sleepInterval < 1*time.Second {
+		sleepInterval = 1 * time.Second
+	}
 	go func() {
 		for {
-			time.Sleep(time.Duration(config.HintSlabMaxAgeSeconds/(config.MaxPreloadPerHint/2)) * time.Second)
+			time.Sleep(sleepInterval)
 			select {
 			case <-h.TokenBucket:
 			default:
@@ -527,6 +535,23 @@ func (h *HintsDB) AddOpenSlab(ino uint64, base int64) error {
 	h.OpenSlabsMtx.Lock()
 	defer h.OpenSlabsMtx.Unlock()
 
+	// Clear slabs that have been open for longer then the max age
+	for h.OpenSlabs.Len() > 0 {
+		slab := h.OpenSlabs.Peek().(*Slab)
+		if now.Sub(slab.LoadedAt) > (time.Duration(config.HintSlabMaxAgeSeconds) * time.Second) {
+			heap.Pop(&h.OpenSlabs)
+		} else {
+			break
+		}
+	}
+
+	// Limit how many open slabs we can have at a time. Each new hint has
+	// to loop through all of them, so we want to keep that under control.
+	if h.OpenSlabs.Len() >= config.HintSlabsMaxOpen {
+		logger.Noticef("AddOpenSlab: reached hint_slabs_max_open (%d); not tracking new slabs", config.HintSlabsMaxOpen)
+		return nil
+	}
+
 	slab := h.OpenSlabs.Lookup(ino, base)
 	if slab == nil {
 		// If the slab is already in memory, for sure it's already
@@ -551,21 +576,16 @@ func (h *HintsDB) AddOpenSlab(ino uint64, base int64) error {
 
 	heap.Push(&h.OpenSlabs, slab)
 
-	// Clear slabs that have been open for longer then the max age
-	for {
-		slab = h.OpenSlabs.Peek().(*Slab)
-		if now.Sub(slab.LoadedAt) > (time.Duration(config.HintSlabMaxAgeSeconds) * time.Second) {
-			heap.Pop(&h.OpenSlabs)
-			continue
-		}
-		break
-	}
-
 	return nil
 }
 
 func (h *HintsDB) AddHint(ino uint64, base int64) error {
 	now := time.Now()
+	defer func() {
+		elapsed := time.Now().Sub(now)
+		logger.Infof("AddHint: completed in %.6f seconds", elapsed.Seconds())
+	}()
+
 	h.AddOpenSlab(ino, base)
 
 	select {
@@ -779,6 +799,16 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 	return nil
 }
 
+func processHints(ino uint64, base int64) {
+	if err := hintsDB.AddHint(ino, base); err != nil {
+		logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", ino, base, err)
+	}
+
+	if err := hintsDB.PreloadSlabs(ino, base); err != nil {
+		logger.Errf("handleClient: PreloadSlabs(ino=%d, base=%d): %v", ino, base, err)
+	}
+}
+
 func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 	defer wg.Done()
 	start := time.Now()
@@ -842,27 +872,12 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		}
 	case "hint":
 		logger.Infof("slab hint: inode=%d/base=%d", msg.Args.Inode, msg.Args.Base)
-
-		if err := hintsDB.AddHint(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
-		}
-
-		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: PreloadSlabs(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
-		}
-
+		go processHints(msg.Args.Inode, msg.Args.Base)
 		resp = MgrMsgHintResponse{
 			Status: "OK",
 		}
 	case "get":
-		if err := hintsDB.AddHint(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: AddHint(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
-		}
-
-		if err := hintsDB.PreloadSlabs(msg.Args.Inode, msg.Args.Base); err != nil {
-			logger.Errf("handleClient: PreloadSlabs(ino=%d, base=%d): %v", msg.Args.Inode, msg.Args.Base, err)
-		}
-
+		go processHints(msg.Args.Inode, msg.Args.Base)
 		f, err := os.OpenFile(msg.Args.LocalPath, os.O_RDWR|os.O_CREATE, 0600)
 		if err != nil {
 			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)
