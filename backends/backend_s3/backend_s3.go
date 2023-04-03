@@ -299,7 +299,7 @@ func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
 	parent_base int not null,
 	ino int not null,
 	base int not null,
-	hits int not null default 2,
+	hits int not null default 1,
 	load_after_ms int not null,
 	foreign key(parent_ino, parent_base) references slabs(ino, base)
 	on delete cascade)
