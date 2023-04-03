@@ -1,8 +1,9 @@
-potatofs (2.12.0-1) unstable; urgency=medium
+potatofs (2.12.1) unstable; urgency=medium
 
-  * Missing dep for golang LLRB
+  * Default hits to 1
+  * Missing LLRB golang dep
 
- -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 02 Apr 2023 23:37:21 -0400
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 02 Apr 2023 23:40:15 -0400
 
 potatofs (2.12.0) unstable; urgency=medium
 
