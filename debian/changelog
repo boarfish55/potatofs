@@ -1,3 +1,15 @@
+potatofs (2.12.0) unstable; urgency=medium
+
+  * Let the purge command function with a running potatomgr
+  * backend_s3's idle timeout should be greater than hint_slab_max_age_seconds
+    or else we can't track hints long enough.
+  * Keep track of hints using a count of "hits" instead of a timestamp. If a
+    preloaded slab doesn't get a hit within a defined time, decrease "hits" and
+    stop preloading it when it's at zero. Hits can not go beyond 3. Also split
+    off the backend_s3 code a bit for slab queues and the hits tracker.
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 02 Apr 2023 23:34:12 -0400
+
 potatofs (2.11.2) unstable; urgency=medium
 
   * Let backend_s3 know when a "get" is the result of a preload; the backend
