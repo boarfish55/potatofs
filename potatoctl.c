@@ -830,13 +830,18 @@ end:
 int
 do_purge(int argc, char **argv)
 {
-	int             mgr;
+	int             mgr, mgr_started = 1;
 	struct xerr     e;
 	int             status = 0;
 	struct mgr_msg  m;
 
-	if (mgr_start(1, 1) == -1)
-		err(1, "mgr_start");
+	if (mgr_start(1, 1) == -1) {
+		if (errno == EWOULDBLOCK) {
+			mgr_started = 0;
+			warnx("will use active potatomgr for purge instead");
+		} else
+			err(1, "mgr_start");
+	}
 
 	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 		xerr_print(&e);
@@ -859,9 +864,11 @@ do_purge(int argc, char **argv)
 	}
 end:
 	close(mgr);
-	if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
-		xerr_print(&e);
-		return 1;
+	if (mgr_started) {
+		if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
+			xerr_print(&e);
+			return 1;
+		}
 	}
 	return status;
 }

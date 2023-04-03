@@ -22,8 +22,10 @@ There are a few major goals PotatoFS is trying to achieve:
 
      PotatoFS should rely on external commands to compress and/or
      encrypt data before sending it to the backends. If local encryption
-     is desired, it should be done at another layer, e.g. LUKS, or a
-     stackable filesystem.
+     is desired, it should be done at another layer, e.g. LUKS. External
+     commands can also choose to implement some form predictive slab
+     fetches based on past usage history (see backend_s3 for a
+     simplistic approach).
 
   3) As a stretch goal, concurrent mounting:
 
@@ -180,6 +182,3 @@ TODO
   be used by fsck, therefore is optional.
 * fsck should cleanup unreferenced slabs on the backend.
 * potatoctl's code is generally pretty ugly. Needs some cleanup. Tests too.
-* Need to doublecheck all the usage and conversions for ino_t (uint64_t)
-  and off_t (int64_t), blkcnt_t (int64_t).
-* Some format strings have the wrong conversion for tv_nsec, should be "l".

@@ -1,8 +1,9 @@
 # The backend will exit after this many seconds of inactivity. This also
 # limits how far in the future we can make guesses for slab preloading when
 # the backend is idle. Because the backend will exit after this much idle time,
-# the state of which slab was last loaded is lost.
-idle_timeout_seconds = 300
+# the state of which slab was last loaded is lost. This should be greater
+# than hint_slab_max_age_seconds or else we can't track hints long enough.
+idle_timeout_seconds = 600
 
 # The path for the hints database, containing information about the sequence
 # in which slabs are typically loaded. This DB is used to make guesses and
