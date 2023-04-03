@@ -348,11 +348,20 @@ func OpenHintsDB(stop <-chan bool, wg *sync.WaitGroup) (*HintsDB, error) {
 
 	h.OpenSlabs = NewSlabQueue()
 	h.PreloadQueue = NewSlabQueue()
-	wg.Add(1)
-	h.HitTracker = NewSlabHitTracker(stop, wg, h.incrementHintHits, h.decrementHintHits)
 
 	wg.Add(1)
-	go h.ProcessPreloadQueue(stop, wg)
+	stopHitTracker := make(chan bool)
+	h.HitTracker = NewSlabHitTracker(stopHitTracker, wg, h.incrementHintHits, h.decrementHintHits)
+
+	wg.Add(1)
+	stopPreloadQueue := make(chan bool)
+	go h.ProcessPreloadQueue(stopPreloadQueue, wg)
+
+	go func() {
+		<-stop
+		stopHitTracker <- true
+		stopPreloadQueue <- true
+	}()
 
 	return h, nil
 }
