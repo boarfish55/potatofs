@@ -416,7 +416,8 @@ fs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
 
 	if (to_set & (FUSE_SET_ATTR_ATIME_NOW))
 		memcpy(&st.st_atim, &tp, sizeof(st.st_atim));
-	if (to_set & (FUSE_SET_ATTR_MTIME_NOW))
+	if ((to_set & (FUSE_SET_ATTR_MTIME_NOW)) ||
+	    (to_set & FUSE_SET_ATTR_SIZE))
 		memcpy(&st.st_mtim, &tp, sizeof(st.st_mtim));
 
 again:

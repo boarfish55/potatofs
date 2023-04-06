@@ -2162,39 +2162,47 @@ test_fallocate_large()
 struct test_status *
 test_truncate()
 {
-	int              fd, i;
-	char            *p = makepath("truncate");
-	struct stat      st, st_want;
-	char             path[PATH_MAX];
-	char             msg[PATH_MAX + 1024];
-	char             buf[BUFSIZ];
-	struct xerr      e = XLOG_ERR_INITIALIZER;
-	struct slab_key  sk;
-	ssize_t          r;
-	off_t            sz, off;
-	size_t           slab_sz;
-	void            *data;
-	struct slab_hdr  hdr;
-	ino_t            ino;
+	int                 fd, i;
+	char               *p = makepath("truncate");
+	struct stat         st, st_want;
+	char                path[PATH_MAX];
+	char                msg[PATH_MAX + 1024];
+	char                buf[BUFSIZ];
+	struct xerr         e = XLOG_ERR_INITIALIZER;
+	struct slab_key     sk;
+	ssize_t             r;
+	off_t               sz, off;
+	size_t              slab_sz;
+	void               *data;
+	struct slab_hdr     hdr;
+	ino_t               ino;
+	struct timespec     tp;
+	struct test_status *ts;
 
 	sz = slab_get_max_size() * 3;
 	st_want.st_nlink = 1;
 	st_want.st_size = slab_get_max_size() + (slab_get_max_size() / 2);
 
+
 	for (i = 0; i < sizeof(buf); i++)
 		buf[i] = 'a';
 	if ((fd = open(p, O_CREAT|O_RDWR|O_SYNC, 0600)) == -1)
 		return ERR("", errno);
-
 	while (i < sz) {
 		if ((r = write(fd, buf, sizeof(buf))) == -1)
 			return ERR("", errno);
 		i += r;
 	}
+	close(fd);
+
+	clock_gettime_x(CLOCK_REALTIME, &tp);
+	xnanosleep();
 
 	/*
 	 * Truncate halfway through the second slab.
 	 */
+	if ((fd = open(p, O_RDWR|O_SYNC, 0600)) == -1)
+		return ERR("", errno);
 	if (ftruncate(fd, st_want.st_size) == -1)
 		return ERR("", errno);
 
@@ -2254,6 +2262,8 @@ test_truncate()
 		}
 	}
 
+	if ((ts = check_utime_gte(p, &tp, ST_CTIME|ST_MTIME)) != NULL)
+		return ts;
 	return check_stat(p, &st_want, ST_NLINK|ST_SIZE);
 }
 
