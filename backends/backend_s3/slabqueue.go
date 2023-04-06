@@ -105,6 +105,9 @@ func (q *SlabQueue) Lookup(ino uint64, base int64) *SlabHint {
 }
 
 func (q *SlabQueue) AllSlabs() []SlabHint {
+	q.Mtx.Lock()
+	defer q.Mtx.Unlock()
+
 	var allSlabs []SlabHint
 	for _, slab := range q.Items {
 		allSlabs = append(allSlabs, *slab.Slab)
@@ -128,7 +131,7 @@ func (q *SlabQueue) Empty() {
 	q.Mtx.Unlock()
 }
 
-func (q *SlabQueue) Purge(claims chan<- SlabHint) {
+func (q *SlabQueue) Process(claims chan<- SlabHint) {
 	now := time.Now()
 	q.Mtx.Lock()
 	defer q.Mtx.Unlock()
@@ -136,6 +139,21 @@ func (q *SlabQueue) Purge(claims chan<- SlabHint) {
 		slab := q.Peek().(*SlabHint)
 		if now.After(slab.LoadedAt) {
 			claims <- *(heap.Pop(q).(*SlabHint))
+		} else {
+			break
+		}
+	}
+}
+
+func (q *SlabQueue) Purge(maxAge time.Duration) {
+	now := time.Now()
+	q.Mtx.Lock()
+	defer q.Mtx.Unlock()
+
+	for q.Len() > 0 {
+		hint := q.Peek().(*SlabHint)
+		if now.Sub(hint.LoadedAt) > maxAge {
+			heap.Pop(q)
 		} else {
 			break
 		}
