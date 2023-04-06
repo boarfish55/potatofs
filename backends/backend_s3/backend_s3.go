@@ -464,7 +464,7 @@ func (h *HintsDB) ProcessPreloadQueue(stop <-chan bool, wg *sync.WaitGroup) {
 			close(claims)
 			return
 		case <-ticker.C:
-			h.PreloadQueue.Purge(claims)
+			h.PreloadQueue.Process(claims)
 		}
 	}
 }
@@ -483,20 +483,11 @@ func minZero(d time.Duration) time.Duration {
 }
 
 func (h *HintsDB) AddOpenSlab(ino uint64, base int64) error {
-	now := time.Now()
+	h.OpenSlabs.Purge(time.Duration(config.HintSlabMaxAgeSeconds) * time.Second)
 
+	now := time.Now()
 	h.OpenSlabs.Mtx.Lock()
 	defer h.OpenSlabs.Mtx.Unlock()
-
-	// Clear slabs that have been open for longer then the max age
-	for h.OpenSlabs.Len() > 0 {
-		slab := h.OpenSlabs.Peek().(*SlabHint)
-		if now.Sub(slab.LoadedAt) > (time.Duration(config.HintSlabMaxAgeSeconds) * time.Second) {
-			heap.Pop(&h.OpenSlabs)
-		} else {
-			break
-		}
-	}
 
 	// Limit how many open slabs we can have at a time. Each new hint has
 	// to loop through all of them, so we want to keep that under control.
@@ -550,9 +541,7 @@ func (h *HintsDB) AddHint(ino uint64, base int64) error {
 	logger.Infof("AddHint: token bucket at %d", len(h.TokenBucket))
 
 	// Get a copy of the list of loaded slabs to avoid holding the lock
-	h.OpenSlabs.Mtx.Lock()
 	openSlabs := h.OpenSlabs.AllSlabs()
-	h.OpenSlabs.Mtx.Unlock()
 	logger.Infof("%d open slabs", len(openSlabs))
 
 	for _, slab := range openSlabs {
