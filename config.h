@@ -30,7 +30,7 @@
 #define VERSION      "2.12.3"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
-#define FS_DEFAULT_DATA_PATH      "/var/potatofs"
+#define FS_DEFAULT_DATA_DIR       "/var/potatofs/data"
 
 #define DEFAULT_CONFIG_PATH       "/etc/potatofs.conf"
 #define DEFAULT_DB_NAME           "slabs.db"
