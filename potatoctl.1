@@ -1,0 +1,194 @@
+.Dd $Mdocdate$
+.Dt POTATOCTL 1 URM
+.Os POTATOFS
+.Sh NAME
+.Nm potatoctl
+.Nd interact with a PotatoFS filesystem
+.Sh SYNOPSIS
+.Nm
+.Op Fl c Ar <config>
+.Ar subcommand
+.Op subcommand options
+.Sh DESCRIPTION
+The
+.Nm
+utility lets users interact with a
+.Xr potatofs 1
+filesystem. Some commands interact with a mounted filesystem while others
+expect the filesystem to be unmounted.
+
+First, a user must ensure they are interacting with the right instance,
+which can be accomplished by specifying the path to the
+.Xr potatofs 1
+configuration file with the -c option.
+
+Available subcommands are:
+.Bl -tag -width 6n -offset 2n
+.It slab <slab file>
+Prints information about a slab file. The argument is the path to a slab
+on local storage. This subcommand does not require a backend manager running.
+.It dir <inode#>
+Prints information about a directory inode, including its entries. This
+command requires a running instance of
+.Xr potatofs 1
+to work with.
+.It top [delay]
+Prints statistics about a running filesystem, printing a new line every
+[delay] seconds. Values printed are:
+.Bl -tag -width 6n -offset 2n
+.It read/s
+Read operations per second
+.It read MB/s
+Megabytes read per second
+.It write/s
+Write operations per second
+.It write MB/s
+Megabytes written per second
+.It be-r MB/s
+Megabytes read from the backend per second
+.It be-w MB/s
+Megabytes written to the backend per second
+.It errors
+Absolute error count since the filesystem was mounted.
+.El
+.It ctop
+Prints detailed statistics about a running filesystem in a top-like interface.
+To quit the display, hit 'q'. To increase or decrease the delay between
+refreshes, hit the '+' or '-' key. Values printed are:
+.Bl -tag -width 6n -offset 2n
+.It fs instance
+The instance of the running filesystem
+.It Cache usage / slab hit ratio
+The used space on the local cache partition and computed ratio of time when
+a slab was already present on local storage when the filesystem requested it.
+Note that using the claim subcommand described in this page will not cause
+this to increase. Only claims from the filesystem itself will be taken into
+account
+.It Backend usage
+Usage on the backend as reported by the backend executable's df command
+.It reads
+Read operations per second
+.It read MB
+Megabytes read during read operations, per second
+.It writes
+Write operations per second
+.It write MB
+Megabytes written during write operations, per second
+.It be read MB
+Megabytes read from the backend per second
+.It be write MB
+Megabytes written to the backend per second
+.It delay truncs
+Delayed truncations; when a file or directory is truncated but the slab
+isn't in local storage, the filesystem will not attempt to retrieve it but
+instead keep track of the truncation in the slab database. On the next scrub
+operation, it will retrieve the slab and truncate it
+.It open slabs
+How many slabs are currently open; an open slab uses some memory in the
+running filesystem process (a little over 4K) as well as a file descriptor.
+The filesystem keeps an exclusive
+.Xr flock 1
+on each such slab.
+.It open inodes
+How many inodes are currently open; an open inode uses some memory in the
+running filesystem process (a little over 4K). Inode table slabs which host
+open inodes may not be closed until the inode is forgotten by the kernel.
+.It fs purges
+When available space on the local storage partition is getting low, the
+filesystem will more aggressively start closing slabs, before their max age
+is reached. This value shows how many such purges per second are happening.
+If this is frequently above zero it could mean space on the local storage
+partition is too low, which forces the filesystem to close and open slabs
+more aggressively, degrading performance.
+.It mgr purges
+How many slabs did the backend manager delete from local storage. The backend
+manager will never delete local slabs that are marked as "dirty", that is,
+have data that have not yet been scheduled to be sent to the backend.
+.It errors
+How many critical errors occurred since the filesystem was mounted. Anything
+greater than zero is a serious issue. The filesystem should be unmounted
+as soon as possible and the fsck subcommand should be run.
+.It claim cttn
+This value is incremented when the backend manager is attempting to open
+a slab on local storage but another process (possibly another worker) is
+holding the exclusive lock on it for a 10 seconds. This counter should always
+be zero. While there should be no corruption if it increases, it may be
+sign of a bug in the filesystem, or that another command is stuck on a
+claim; make sure there is no other
+.Nm
+running that is attempting to do a claim.
+.El
+
+All other values correspond to the per-second rate of FUSE operations received
+from the kernel. Most of them can be mapped to a specific system call.
+.It counters
+Prints all internal counters in JSON format on STDOUT. The counters are the
+same as displayed by the ctop command without their per-second rate computation.
+The values reflected are since the filesystem was mounted.
+.It status
+Prints information about the running filesystem, if any, as well as the
+info block for the filesystem.
+.It shutdown [grade period]
+Shut down a backend manager instance in case it failed to properly shutdown
+normally. An optional grace period in seconds can be specified to give time
+to the background workers to send all dirty slabs to the backend.
+.It set_clean
+Resets the "clean" flag on the filesystem, in case it was not shutdown
+cleanly. Before using this, it's always recommended to run an fsck to make
+sure there was no corruption.
+.It scrub
+Triggers a scrub pass on the running filesystem. Normally this happens
+automatically at the interval configured in
+.Xr potatofs.conf
+but this command can be used to trigger it immediately.
+.It purge
+Normally the backend manager will only delete local slabs when it needs
+to reclaim space to get back below the purge threshold as configured,
+but if for some reason a user wishes to delete all non-dirty slabs,
+this subcommand can be used. It will use a running filesystem if there is
+one, or else it will temporarily spawn its own backend manager until
+it has completed.
+.It offline
+In normal "online" mode, the filesystem will retry any get/put operation
+from the backend until it succeeds. If the backend requires network access
+and for some reason that is not available, this cause cause applications
+to lock up (uninterruptible "D" sleep) for an indefinite amount of time.
+Setting offline mode will instead cause the filesystem to return an ENOMEDIUM
+error to the application after some amount of time. Well-behaved applications
+will handle this gracefully and abort their operation.
+.It online
+Set the filesystem in online mode, reverting the effect of the offline
+subcommand described above.
+.It fsck [verbose]
+Verifies the integrity of filesystem. This command will never attempt to
+modify the filesystem, only report errors. There is currently no way to
+fix errors.
+.It claim <inode> <offset> [create]
+Trigger a claim for a slab identified by inode/offset. Inode tables always
+have the inode# set to zero. If the slab does not exist, an error will be
+reported, unless the "create" option is specified as the third argument
+to this subcommand. If the slab exists but is not present in local storage,
+a "get" command will be triggered to the backend executable. This is currently
+the supported way of prefetching slabs that we think will be needed in the
+near future. If the slab is already locked by the filesystem, an error will
+be printed and the
+.Nm
+will exit with code 2.
+.It slabdb
+Prints the contents of the slab database.
+.El
+.Sh EXIT STATUS
+.Nm
+exit with 0 on success, 1 on most errors. The claim command will exit with
+code 2 if it failed because the slab to claim is already locked.
+.Sh SEE ALSO
+.Xr potatofs 1
+.Xr potatofs.conf 5
+.Sh BUGS
+When
+.Nm
+starts its own backend manager, it will generally successfully clean it up.
+However in some error situations, that is not always the case. A user may
+have to go issue a
+.Nm
+shutdown command to clean things up manually.

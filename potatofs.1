@@ -1,0 +1,146 @@
+.Dd $Mdocdate$
+.Dt POTATOFS 1 URM
+.Os POTATOFS
+.Sh NAME
+.Nm potatofs
+.Nd a FUSE filesystem suitable for slow storage backends
+.Sh SYNOPSIS
+.Nm
+mountpoint [options]
+.Sh DESCRIPTION
+.Nm
+is a FUSE filesystem using external commands to interact with arbitrary
+backends. It breaks down inode table and file data into "slabs" which have
+a maximum size. Using a manageable slab size allows
+.Nm
+to keep recently used
+slabs in a cache stored on a local filesystem and swap slabs in or out as
+needed, using an external command of the user's choice. The external command,
+referred to as "backend", can be anything as long as its arguments match what
+.Nm
+expects.
+
+Before attempting to mount a
+.Nm
+filesystem, it is necessary to first:
+.Bl -bullet -width 2n
+.It
+Prepare a cache directory on a local (ideally dedicated) filesystem
+.It
+Create a configuration file; see
+.Xr potatofs 5
+.It
+Define a backend executable, which can be a simple shell script; see
+.Xr potatofs-backend 7
+.El
+
+Once the above is done, an entry can be added to
+.Xr fstab 5
+that looks like:
+.Bd -literal -offset 2n
+/usr/bin/potatofs /mnt/potatofs fuse options... 0 0
+.Ed
+
+Common options are:
+.Bl -tag -offset 2n -width 10n
+.It cfg_path=/path
+to specify the configuration path (defaults to /etc/potatofs.conf)
+.It noauto
+to avoid mounting at boot, especially if the backend may be unavailable
+.It nofail
+to avoid reporting errors if mounting this filesystem fails when mounting
+all filesystems
+.It _netdev
+if the backend requires network access to function properly to ensure
+proper mount and unmount ordering
+.It user
+to allow users to mount their own filesystem.
+.El
+
+.Nm
+stores filesystem data into "slabs". Slabs can be of two kinds: file or
+inode table. The first kind stores directory or file data and the latter
+stores the filesystems inodes. In
+.Nm
+inodes are a fixed size of 4K. In addition to standard inode attributes
+(size, permissions, etc.), inodes can store the first 3.5K of file or directory
+data. While this wastes some space, because we expect this filesystem to be
+used with high-latency storage backends (e.g. cloud object storage), this means
+operations on many small files and directories will be much more efficient as
+we can pack over a thousand inodes per inode table slab (when using default
+configuration values). Any excess data ends up stored in file slabs. Files
+larger than the slab size will be broken down into many file slabs.
+
+The end result is that I/O operations will typically never need to wait for
+an entire file or directory to be present on local storage before being able
+to begin. This can be useful with very large files that are not accessed
+sequentially.
+.Sh FILES
+.Bl -tag -offset 2n -width 10n
+.It /etc/potatofs.conf
+default configuration path
+.It /var/potatofs/data
+default directory where local slabs are stored, as well as the filesystem
+info block and the SQLite slab database
+.It /var/potatofs/potatomgr.pid
+default path for the potatomgr (backend manager) PID file, a child process of
+.Nm
+.It /var/potatofs/potatomgr.sock
+default path for the potatomgr local socket, used for interprocess
+communication between the FUSE process and the backend manager.
+.El
+.Sh DIAGNOSTICS
+Operations on the filesystem may return any standard error expected from
+the corresponding system calls. In addition, any filesystem operation may error
+with:
+.Bl -tag -offset 2n -width 10n
+.It EIO
+for any unrecoverable error dealing with data corruption
+.It ENOMEDIUM
+for all retryable errors, such as if the backend times out, fails or if
+some
+.Xr flock 2
+contention happens on local slabs. Note that ENOMEDIUM is only
+ever returned if the user requested that the filesystem be put in "offline"
+mode. By default the filesystem tries to ensure data integrity by retrying
+those operations forever. But if a user expects things to be stalled for a long
+time (e.g. no network), setting offline mode can let
+.Nm
+return this error while trying to preserve data integrity. Note that this
+failure mode is not well tested.
+See also
+.Xr potatoctl 1
+.It EINTR
+similar to ENOMEDIUM, EINTR is returned when SIGINT is sent to a process that
+is stuck retrying a "retryable" operation. This relies on FUSE properly sending
+an INTERRUPT for all blocked file operations from the signaled process
+.It ENOMEM
+for some operations that need heap memory to perform their task. While this is
+to be normally expected from
+.Xr open 2
+for example, some other calls such as
+.Xr write 2
+would normally never return ENOMEM. But in
+.Nm
+here they can. However, it is unlikely to happen unless we are dealing with a
+very, very large amount of inodes open in memory.
+.El
+.Sh SEE ALSO
+.Xr potatoctl 1
+.Xr potatofs-backend 7
+.Xr potatofs.conf 5
+.Xr fstab 5
+.Xr mount.fuse 8
+.Sh AUTHORS
+.An Pascal Lalonde <plalonde@overnet.ca>
+.Sh CAVEATS
+There's some caveats
+.Sh BUGS
+Current known issues, or things that lack proper testing:
+.Bl -bullet -width 2n -compact
+.It
+When potatoctl fsck errors out, it may not always shutdown the backend
+manager
+.It
+Running in low-space conditions isn't well tested. Corruption may occur.
+.El

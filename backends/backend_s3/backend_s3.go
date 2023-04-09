@@ -775,6 +775,14 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		return
 	}
 
+	defer func() {
+		// We're not so sure what can happen inside the S3 functions.
+		// Would be nice to report the error.
+		if r := recover(); r != nil {
+			sendErrResponse(c, "ERR", "%s panicked: %v", msg.Command, r)
+		}
+	}()
+
 	var resp interface{}
 	switch msg.Command {
 	case "df":
@@ -907,7 +915,7 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 }
 
 func die(code int, format string, v ...interface{}) {
-	enc := json.NewEncoder(os.Stderr)
+	enc := json.NewEncoder(os.Stdout)
 	resp := &MgrMsgErrResponse{
 		Status: "ERR",
 		Msg:    fmt.Sprintf(format, v...),
@@ -1025,7 +1033,7 @@ func main() {
 
 	if *confPath == "" {
 		if os.Getenv("POTATOFS_BACKEND_CONFIG") == "" {
-			die(2, "POTATOFS_BACKEND_CONFIG is not set")
+			die(1, "POTATOFS_BACKEND_CONFIG is not set")
 		}
 		cfg = os.Getenv("POTATOFS_BACKEND_CONFIG")
 	} else {
@@ -1034,39 +1042,39 @@ func main() {
 	}
 
 	if err = loadConfig(cfg); err != nil {
-		die(2, "%v", err)
+		die(1, "%v", err)
 	}
 
 	logger, err = NewSysLoggy(syslog.LOG_USER, parseLogLevel(config.LogLevel), program)
 	if err != nil {
-		die(2, "could not initialize logger: %v\n", err)
+		die(1, "could not initialize logger: %v\n", err)
 	}
 
 	if *encrypt {
 		if err = loadSecretKey(); err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		s, err := NewPutStream(os.Stdin, *encryptInode, *encryptBase)
 		if err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		_, err = io.Copy(os.Stdout, s)
 		if err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		os.Exit(0)
 	}
 	if *decrypt {
 		if err = loadSecretKey(); err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		s, err := NewGetStream(os.Stdin)
 		if err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		_, err = io.Copy(os.Stdout, s)
 		if err != nil {
-			die(2, "%v", err)
+			die(1, "%v", err)
 		}
 		os.Exit(0)
 	}
@@ -1098,7 +1106,7 @@ func main() {
 			cmd := exec.Command(os.Args[0], "-server")
 			if err = cmd.Start(); err != nil {
 				logger.Errf("failed to start S3 backend: %v", err)
-				die(2, "failed to start S3 backend: %v\n", err)
+				die(1, "failed to start S3 backend: %v\n", err)
 			}
 		}
 
@@ -1106,7 +1114,7 @@ func main() {
 	}
 	if err != nil {
 		logger.Errf("%v", err)
-		die(2, "%v", err)
+		die(1, "%v", err)
 	}
 
 	var msg MgrMsg
@@ -1120,27 +1128,27 @@ func main() {
 	case "hint":
 		reply = MgrMsgHintResponse{}
 		if err := dec.Decode(&msg.Args); err != nil {
-			die(2, "invalid JSON passed to %q: %v", msg.Command, err)
+			die(1, "invalid JSON passed to %q: %v", msg.Command, err)
 		}
 	case "get":
 		reply = MgrMsgGetResponse{}
 		if err := dec.Decode(&msg.Args); err != nil {
-			die(2, "invalid JSON passed to %q: %v", msg.Command, err)
+			die(1, "invalid JSON passed to %q: %v", msg.Command, err)
 		}
 	case "put":
 		reply = MgrMsgPutResponse{}
 		if err := dec.Decode(&msg.Args); err != nil {
-			die(2, "invalid JSON passed to %q: %v", msg.Command, err)
+			die(1, "invalid JSON passed to %q: %v", msg.Command, err)
 		}
 	default:
 		logger.Errf("unknown command %q", msg.Command)
-		die(2, "unknown command %q", msg.Command)
+		die(1, "unknown command %q", msg.Command)
 	}
 
 	enc := json.NewEncoder(c)
 	if err := enc.Encode(msg); err != nil {
 		logger.Errf("failed to encode JSON for command %q: %v", msg.Command, err)
-		die(2, "failed to encode JSON for command %q: %v", msg.Command, err)
+		die(1, "failed to encode JSON for command %q: %v", msg.Command, err)
 	}
 
 	dec = json.NewDecoder(c)
@@ -1148,13 +1156,13 @@ func main() {
 		reply = MgrMsgErrResponse{}
 		if err := dec.Decode(&reply); err != nil {
 			logger.Errf("Decode: %v", err)
-			die(2, "Decode: %v", err)
+			die(1, "Decode: %v", err)
 		}
 	}
 
 	enc = json.NewEncoder(os.Stdout)
 	if err := enc.Encode(reply); err != nil {
 		logger.Errf("failed to encode JSON for command %q: %v", msg.Command, err)
-		die(2, "failed to encode JSON for command %q: %v", msg.Command, err)
+		die(1, "failed to encode JSON for command %q: %v", msg.Command, err)
 	}
 }

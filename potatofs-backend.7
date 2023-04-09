@@ -1,0 +1,209 @@
+.Dd $Mdocdate$
+.Dt POTATOFS-BACKEND 7 URM
+.Os POTATOFS
+.Sh NAME
+.Nm potatofs-backend
+.Nd specification
+.Sh SYNOPSIS
+.Nm
+[get|put|hint|df]
+.Sh DESCRIPTION
+This manual provides details to enable users to create their own backend
+implementation.
+
+A backend consists of a single executable that must support the operations
+described here. When the backend is invoked, the filesystem will pass the
+desired operation as the first argument. Parameters for the operation are
+sent passed via STDIN in JSON format. Likewise, the filesystem will expect
+to receive the status of the operation on STDOUT, also JSON-formatted.
+
+The operations are:
+.Bl -tag -width 6n -offset 2n
+.It get
+Copy a slab from the backend to local storage
+.It put
+Copy a slab from local storage to the backend
+.It hint
+No-op; the filesystem will issue a hint when it would normally issue a get,
+but the slab was already found locally. This can be useful for the backend
+to record slab usage patterns and attempt to predict which slabs it needs
+to get in advance
+.It df
+Provide the filesystem with the total and used bytes on the backend. This
+is so the output of the local
+.Xr df 1
+command shows decent usage approximations.
+.El
+
+Each operation and the expected JSON payloads are described below.
+
+Note that in case of error, the filesystem will expect a JSON payload on
+STDOUT with the following format:
+
+.Bd -literal -offset 2n
+      {"status": "<error status>",
+       "msg": "<error string>"}
+.Ed
+
+status can be either "ERR" or "ERR_NOSLAB" (for get operations only), and
+"msg" will contain a textual description of the error, which will be logged
+by the filesystem.
+
+.Sh BACKEND_PUT
+The put command expects the following JSON payload on STDIN:
+.Bd -literal -offset 2n
+      {"backend_name": "<slab name>",
+       "local_path": "<local slab path>",
+       "inode": <inode number>,
+       "base": <slab base>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It backend_name
+The name of the slab to be used on the backend. The backend executable can
+opt to alter the name but should do so in a way that is reproducible, because
+when the filesystem will later try to get that slab it will refer to it using
+that same name. For example, if the backend implementation decides to append
+a ".gpg" extension after encrypting, it should not expect the filesystem
+to later request that slab with the ".gpg" extension.
+.It local_path
+The filesystem will provide the absolute path of the slab on local storage,
+so that the backend executable can successfully locate and send it to the
+backend. Note that the backend manager will hold an exclusive
+.Xr flock 1
+on the slab for the entire duration of the operation.
+.It inode
+The inode for which this slab is storing data. If the inode is 0, this slab
+is an inode table. This field is purely informational and the backend
+executable may use it for statistical purposes.
+.It base
+Like inode, this is informational only. It represents either the starting
+offset of file data for the inode, or the first inode stored in the slab
+if it is an inode table.
+.El
+
+The filesystem will expect a response in JSON format on STDOUT like so:
+.Bd -literal -offset 2n
+      {"status": "<status>", "out_bytes": <output bytes>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It status
+Either "OK" or "ERR" if the operation failed.
+.It out_bytes
+How many bytes were saved on the backend. This should ideally reflect the
+number of bytes after any transformation has been applied by the backend
+executable, for instance, compression. This is used for monitoring and will
+show up in the output of the "counters", "top" and "ctop" of the
+.Xr potatoctl 1
+command.
+.El
+.Sh BACKEND_GET
+The get command expects the following JSON payload on STDIN:
+.Bd -literal -offset 2n
+      {"backend_name": "<slab name>",
+       "local_path": "<local slab path>",
+       "inode": <inode number>,
+       "base": <slab base>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It backend_name
+The name of the slab to look for on the backend. See above in BACKEND_GET
+about altering this name.
+.It local_path
+The filesystem will provide the absolute path of where the slab should be
+created on local storage so that it can take over once the get operation
+is complete.
+.It inode
+See above in BACKEND_PUT.
+.It base
+See above in BACKEND_PUT.
+.El
+
+The filesystem will expect a response in JSON format on STDOUT like so:
+.Bd -literal -offset 2n
+      {"status": "<status>", "out_bytes": <output bytes>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It status
+This should be "OK" on success, "ERR_NOSLAB" if the slab could not be
+found on the backend, or "ERR" for any other failure.
+.It in_bytes
+How many bytes were retrieved from the backend. This should ideally reflect the
+number of bytes before any transformation is performed by the backend
+executable, for instance, decompression. This is used for monitoring and will
+show up in the output of the "counters", "top" and "ctop" of the
+.Xr potatoctl 1
+command.
+.El
+.Sh BACKEND_HINT
+The hint command expects the following JSON payload on STDIN:
+.Bd -literal -offset 2n
+      {"inode": <inode number>, "base": <slab base>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It inode
+Same as above in BACKEND_PUT.
+.It base
+Same as above in BACKEND_PUT.
+.El
+
+The filesystem will expect a response in JSON format on STDOUT like so:
+.Bd -literal -offset 2n
+      {"status": "<status>"}
+.Ed
+
+Status will normally be "OK", or will follow the usual error format
+described earlier.
+.Sh BACKEND_DF
+The df command takes no input on STDIN.
+
+The filesystem will expect a response in JSON format on STDOUT like so:
+.Bd -literal -offset 2n
+      {"status": "<status>",
+       "used_bytes": <used bytes>,
+       "total_bytes": <total bytes>}
+.Ed
+.Bl -tag -wdith 6n -offset 2n
+.It status
+This should be "OK" on success or "ERR" on failure.
+.It used_bytes
+How many bytes are currently in use on the backend. This can be an estimate.
+This information is used in to provide useful information to use when they
+use the
+.Xr df 1
+command, or to block writes if usage is getting too close to the limit.
+.It total_bytes
+The total capacity in bytes of the backend. This value can be made up by the
+backend executable in order to limit usage to a certain value, especially
+for storage backend that can have "infinite" bytes, such as many cloud object
+storage services, or when this information is unavailable.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width 6n -offset 2n
+.It POTATOFS_BACKEND_CONFIG
+The filesystem will set this environment variable to the value from the
+backend_config variable from its configuration file. Backend implementation
+can use this variable to locate their own configuration file.
+.El
+.Sh FILES
+.Bl -tag -width 6n -offset 2n
+.It /usr/libexec/potatofs/backend_s3
+A sample backend to interact with S3-compatible cloud object storages.
+.It /usr/share/doc/potatofs/examples/backend_scp.sh
+An example backend executable that uses a remote host as a backend and
+transfers slabs over SSH.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width 6n -offset 2n
+.It 0
+A backend should exit with code 0 on success.
+.It 1
+A backend should exit with code 1 on failure, if it is able to provide
+a reason and message on STDOUT in JSON format.
+.It 2
+A backend should exit with code 2 on failure, if it is unable to provide
+a reason and message on STDOUT in JSON format. Error messages in this case
+should be on STDERR.
+.El
+.Sh SEE ALSO
+.Xr potatofs 1
+.Xr potatofs.conf 5

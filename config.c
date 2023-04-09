@@ -35,7 +35,7 @@ struct fs_config fs_config = {
 	FS_DEFAULT_ENTRY_TIMEOUTS,     /* entry_timeouts */
 	SLAB_MAX_AGE_DEFAULT,          /* slab_max_age */
 	SLAB_SIZE_DEFAULT,             /* slab_size */
-	FS_DEFAULT_DATA_PATH,          /* data_path */
+	FS_DEFAULT_DATA_DIR,           /* data_dir */
 	0,                             /* disable atime if 1 */
 	MGR_DEFAULT_SOCKET_PATH,       /* manager socket path */
 	MGR_DEFAULT_PIDFILE_PATH,      /* PID file path of manager */
