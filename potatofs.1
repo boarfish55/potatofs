@@ -56,6 +56,25 @@ proper mount and unmount ordering
 .It user
 to allow users to mount their own filesystem.
 .El
+
+.Nm
+stores filesystem data into "slabs". Slabs can be of two kinds: file or
+inode table. The first kind stores directory or file data and the latter
+stores the filesystems inodes. In
+.Nm
+inodes are a fixed size of 4K. In addition to standard inode attributes
+(size, permissions, etc.), inodes can store the first 3.5K of file or directory
+data. While this wastes some space, because we expect this filesystem to be
+used with high-latency storage backends (e.g. cloud object storage), this means
+operations on many small files and directories will be much more efficient as
+we can pack over a thousand inodes per inode table slab (when using default
+configuration values). Any excess data ends up stored in file slabs. Files
+larger than the slab size will be broken down into many file slabs.
+
+The end result is that I/O operations will typically never need to wait for
+an entire file or directory to be present on local storage before being able
+to begin. This can be useful with very large files that are not accessed
+sequentially.
 .Sh FILES
 .Bl -tag -offset 2n -width 10n
 .It /etc/potatofs.conf

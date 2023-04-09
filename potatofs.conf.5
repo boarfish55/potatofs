@@ -1,0 +1,170 @@
+.Dd $Mdocdate$
+.Dt POTATOFS.CONF 5 URM
+.Os POTATOFS
+.Sh NAME
+.Nm potatofs.conf
+.Nd Configuration for the PotatoFS FUSE filesystem
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Xr potatofs 1
+uses a configuration file to control many aspects of the filesystem. It
+follows a simple syntax with colon-separate key/value pairs. Leading spaces
+and blank lines are ignored, as well as lines beginning with #, for comments.
+
+While many parameters have sane defaults, some must be specified by the user
+in order to run. In particular:
+.Bl -tag -offset 2n -width 10n
+.It backend
+specifies the path to the backend executable as defined in
+.Xr potatofs-backend 7
+.It backend_config
+specifies the path to the backend executable's configuration file, if any.
+.El
+
+Other parameters, with their default value, are:
+.Bl -tag -offset 2n -width 10n
+.It data_dir
+The base directory where all data will be stored. It's recommended that this
+be on its own partition (Default: /var/potatofs/data)
+.It mgr_socket_path
+The path to the socket used for communication between the FUSE process and
+the backend manager process (Default: /var/potatofs/potatomgr.sock)
+.It pidfile_path
+The path to the file storing the PID of the backend manager. This is also
+used to prevent two backend manager processes from running on the same data
+directory, by using an exclusive file lock, using
+.Xr flock 2
+(Default: /var/potatofs/potatomgr.pid)
+.It log_file_path
+The path to a log file. Use this if you want to store logs in a file
+in addition to syslog. Lines are fflush()'d synchronously so this may
+affect performance, but can be useful for troubleshooting in certain
+situations. (Default: none)
+.It shutdown_grace_period
+How many seconds after receiving the 'shutdown' message should the backend
+manager keep running and flushing slabs.
+
+It's a good idea to leave at least a few seconds so that when the filesystem
+is unmounted, the backend manager has a chance to upload some slabs that were
+open for a long time, as is typical for inode tables.
+
+Unfortunately, FUSE currently does not support blocking on unmount
+(see issue https://github.com/libfuse/libfuse/issues/1) so chances are any
+value greater than zero means the backend manager and its children will
+receive a SIGKILL while trying to flush slabs. Until this is fixed, zero
+remains the recommended value. (Default: 0)
+.It dbg
+Enable debug logging for specific components of the filesystem. This can
+specify a list of comma-separate components. Valid components are:
+
+.Bl -bullet -offset 1n -compact
+.It
+inodes
+.It
+slabs
+.It
+locks
+.It
+ops
+.It
+openfiles
+.It
+slabdb
+.It
+mgr
+.It
+all
+.El
+
+(Default: none)
+.It unpriv_user
+When running at root, the backend manager will drop its privileges and
+become this user. (Default: none)
+(Default: none)
+.It unpriv_group
+When running at root, the backend manager will drop its privileges and
+become this group. (Default: none)
+.It max_open_slabs
+How many slabs can be open at once. When a slab is open, the FUSE process
+keeps an open file descriptor to it, therefore this value must be within
+the configure file ulimit, with some extra for some other database files.
+To be safe, make sure the file ulimit is well above this number.
+(Default: 768)
+.It slab_size
+The filesystem breaks down data into slabs whose size do not exceed the
+value in bytes specified by this value. It will pack as many inode tables it
+can in a slab, or as much file data in the case of file slabs.
+This value must be a power of two between 1048576 (1MB) and
+67108864 (64MB) bytes. Ideally you may want pick a size for which the
+backend can make a slab available within 1 second. (Default: 8388608)
+.It slab_max_age
+Maximum time in seconds that a slab will remain open. After this time has
+passed, the filesystem will write the in-memory contents of the slab to
+local storage and close the slab. This will allow the backend manager to
+send the slab to the backend. Slabs cannot be sent to the backend while they
+are open. Specifying a time that is too short will cause extra work on busy
+slabs by having to frequently close and re-open the file descriptors. Note 
+a inode table slabs may remain open beyond this time if open inodes that live
+in this slab are kept open. This frequently happens due to how FUSE and the
+kernel keep references to open inodes. (Default: 300)
+.It purge_threshold_pct
+When space on the data partition (see data_dir above) reaches this percentage
+of space used, the backend manager will start purging local slabs to make
+room for new ones. (Default: 60)
+.It unclaim_purge_threshold_pct
+When space on the data partition (see data_dir above) reaches this percentage
+of space used, the filesystem will close slabs before slab_max_age is reached
+so that the backend manager can flush them to the backend and free some space.
+(Default: 90)
+.It noatime
+If set to "yes", file atime will not be updated. (Default: no)
+.It backend_get_timeout
+Time in seconds before a backend "get" operation gets interrupted by the
+backend manager. The operation will be retried. (Default: 15)
+.It backend_put_timeout
+Time in seconds before a backend "put" operation gets interrupted by the
+backend manager. The operation will be retried. (Default: 60)
+.It backend_df_timeout
+Time in seconds before a backend "df" operation gets interrupted by the
+backend manager. The operation may not be retried immediately, instead
+waiting for the next interval. (Default: 30)
+.It backend_hint_timeout
+Time in seconds before a backend "hint" operation gets interrupted by the
+backend manager. The operation will not be retried. (Default: 30)
+.It workers
+Workers listen to requests from the FUSE filesystem and the
+.Xr potatoctl 1
+utility. This is effectively a limit on how many backend manager operations
+can be processed concurrently. The default limit of 12 matches how many
+threads the FUSE library will typically spawn when running multithreaded.
+(Default: 12)
+.It bgworkers
+Background workers are responsible for flushing (that is, uploading) dirty
+slabs to the backend. For situations where upload bandwidth is somewhat limited,
+running many concurrent background workers will not help much, and may in fact
+make things worse if trying to use too many. If however upload bandwidth is
+large, having multiple background workers can speed things up if putting slabs
+on the backend has a high overhead. (Default: 1)
+.It df_interval
+How frequently to perform a "df" operation and save the resulting values
+to the local info block. The values are total filesystem space and used bytes.
+(Default: 60)
+.It scrubber_interval
+How frequently should the scrub process run.
+(Default: 3600)
+.It purger_interval
+How frequently should the background threads scan local slabs to find dirty
+closed slabs that can be flushed (aka "put") on the backend.
+(Default: 30)
+.El
+
+.Sh FILES
+.Bl -tag -offset 2n -width 10n
+.It /usr/share/doc/potatofs/examples/potatofs.conf.sample
+Example configuration file with comments
+.El
+.Sh SEE ALSO
+.Xr potatofs 1
+.Xr potatoctl 1
+.Xr potatofs-backend 7

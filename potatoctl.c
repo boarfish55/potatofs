@@ -159,6 +159,7 @@ usage()
 	    "           slab  <slab file>\n"
 	    "           dir   <dir inode#>\n"
 	    "           top   [delay]\n"
+	    "           ctop\n"
 	    "           counters\n"
 	    "           status\n"
 	    "           shutdown [grace period seconds]\n"
@@ -2701,7 +2702,7 @@ main(int argc, char **argv)
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
 
-	while ((opt = getopt(argc, argv, "hvd:D:w:W:e:fc:p:s:T:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvd:w:W:e:fc:p:s:T:")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage();
