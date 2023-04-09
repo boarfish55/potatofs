@@ -1,3 +1,17 @@
+potatofs (2.12.4) unstable; urgency=medium
+
+  * Add the potatofs.1 manpage, adjust config.h/.c to reflect docs
+  * man pages for potatoctl, potatofs-backend, potatofs.conf
+  * Fix typo sladb -> slabdb in xlog.c
+  * Remote bogus -D flag from potatoctl, add missing ctop to usage
+  * Add missing docs from sample backends
+  * backend_s3: log panics in case the aws package causes some
+  * backend_s3: most errors should die with code 1, since they can output
+    a proper JSON error
+  * Remove debian/* unused files
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 09 Apr 2023 17:05:03 -0400
+
 potatofs (2.12.3) unstable; urgency=medium
 
   * Fix bug where we didn't set mtime on fs_truncate()
