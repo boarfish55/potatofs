@@ -1,3 +1,10 @@
+potatofs (2.12.5) unstable; urgency=medium
+
+  * backend_gdrive_curl: Fix error reporting, longer timeout on put
+  * Manpage cleanup
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 09 Apr 2023 22:38:59 -0400
+
 potatofs (2.12.4) unstable; urgency=medium
 
   * Add the potatofs.1 manpage, adjust config.h/.c to reflect docs
