@@ -133,14 +133,9 @@ very, very large amount of inodes open in memory.
 .Xr mount.fuse 8
 .Sh AUTHORS
 .An Pascal Lalonde <plalonde@overnet.ca>
-.Sh CAVEATS
-There's some caveats
 .Sh BUGS
 Current known issues, or things that lack proper testing:
 .Bl -bullet -width 2n -compact
-.It
-When potatoctl fsck errors out, it may not always shutdown the backend
-manager
 .It
 Running in low-space conditions isn't well tested. Corruption may occur.
 .El
