@@ -134,8 +134,9 @@ upload_resumable() {
 		-H "Content-Length: $sz" \
 		-d "$data" \
 		$url
-	if [ $? -ne 0 ]; then
-		fail "curl failed with code $?"
+	status="$?"
+	if [ $status -ne 0 ]; then
+		fail "curl failed with code $status"
 	fi
 	location=$(egrep -i '^location: ' $tmpfile | cut -d' ' -f 2)
 	if [ -z "$location" ]; then
@@ -147,13 +148,14 @@ upload_resumable() {
 	out=$(cat $src | \
 		gzip -c | \
 		openssl enc -aes256 -pbkdf2 -pass file:$passphrase -e | \
-		curl -K $curlrc_head -X PUT --limit-rate $upload_rate \
+		curl -K $curlrc_head -X PUT -m 60 --limit-rate $upload_rate \
 		-o /dev/null -w '%{http_code}:%{size_upload}\n' \
 		--data-binary @- \
 		-H "Content-Type: application/octet-stream" \
 		-K $tmpfile)
-	if [ $? -ne 0 ]; then
-		fail "gzip/openssl/curl: failed with code $? during PUT"
+	status="$?"
+	if [ $status -ne 0 ]; then
+		fail "gzip/openssl/curl: failed with code $status during PUT"
 	fi
 	if [ "${out%%:*}" != "200" ]; then
 		fail "curl: error ${out%%:*} during PUT"
@@ -193,8 +195,9 @@ get_file() {
 		https://www.googleapis.com/drive/v3/files/$id?alt=media 2> $tmpfile | \
 		openssl enc -aes256 -pbkdf2 -pass file:$passphrase -d | \
 		gunzip -c > $dest
-	if [ $? -ne 0 ]; then
-		fail "curl: failed with code $? during GET"
+	status="$?"
+	if [ $status -ne 0 ]; then
+		fail "curl: failed with code $status during GET"
 	fi
 	http_code=$(cat $tmpfile | jq .http_code)
 	sz=$(cat $tmpfile | jq .size_download)
@@ -226,8 +229,9 @@ do_df() {
 	j=$(curl -K $curlrc_head \
 		-G --data-urlencode "fields=storageQuota" \
 		https://www.googleapis.com/drive/v3/about)
-	if [ $? -ne 0 ]; then
-		fail "curl: failed with code $? during GET"
+	status="$?"
+	if [ $status -ne 0 ]; then
+		fail "curl: failed with code $status during GET"
 	fi
 	http_code="$(echo $j | jq -r .error.code)"
 	if [ "$http_code" != "null" ]; then
