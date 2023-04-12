@@ -10,10 +10,11 @@ Package: potatofs
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, jq, libjansson4 (>= 2.13.1), zlib1g, libbsd0 (>= 0.11.3), libfuse2 (>= 2.9.9), libsqlite3-0 (>= 3.34.1), libuuid1 (>= 2.36.1), libncursesw6 (>= 6)
 Description: FUSE filesystem for high-latency backends
- PotatoFS is a FUSE filesystem implementation that aims to to store data on
- high-lacency backends, for instance one of the many cloud storage options.
- It then uses local, lower-lacenty storage to cache data and perform I/O
- operations on portions of cached data.
+ PotatoFS is a FUSE filesystem implementation using external commands to
+ interact with arbitrary backends. It is well-suited for high-latency backends
+ such as cloud object storage providers. It also uses local, lower-lacenty
+ local storage to cache data and perform I/O operations on portions of cached
+ data.
 
 Package: potatofs-backend-s3
 Architecture: any
