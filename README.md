@@ -37,9 +37,7 @@ Non-goals:
 
   1) Portability. Though I would like this to work on all BSDs, there is
      a dependency on low-level FUSE, which not all BSDs support.
-     On-disk format is architecture-dependent. We'll likely never attempt
-     to stick to a specific endianness to have a specific filesystem
-     instance usable by machines of a different architecture.
+     On-disk format is architecture-dependent.
 
   2) Disaster recovery. PotatoFS may not sync local slabs to the high-latency
      backend on a frequent basis. Therefore, local storage should still be
@@ -48,11 +46,6 @@ Non-goals:
      non-zero lookup count (see FUSE low-level docs). This may be improved a
      bit in the future (possibly by snapshotting inode tables in a
      consistent state).
-
-  3) Find a cool unique name. Finding a free 5-letter acronym ending in
-     "-FS" is next to impossible these days. So meet PotatoFS. Potatoes are
-     nourishing and can easily complement a wide variety of dishes.
-
 
 Author: Pascal Lalonde <plalonde@overnet.ca>
 
