@@ -529,16 +529,16 @@ fs_destroy(void *unused)
 
 	LK_WRLOCK(&fs_tree_lock);
 
-	xlog(LOG_DEBUG, NULL, "freeing inodes");
+	xlog(LOG_INFO, NULL, "freeing inodes");
 	inode_shutdown();
 
-	xlog(LOG_DEBUG, NULL, "freeing slabs");
+	xlog(LOG_INFO, NULL, "freeing slabs");
 	if (slab_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
 	}
 
-	xlog(LOG_DEBUG, NULL, "freeing counters");
+	xlog(LOG_INFO, NULL, "freeing counters");
 	if (counter_shutdown(xerrz(&e)) == -1) {
 		xlog(LOG_CRIT, &e, __func__);
 		fs_error_set();
@@ -546,7 +546,7 @@ fs_destroy(void *unused)
 
 	LK_UNLOCK(&fs_tree_lock);
 
-	xlog(LOG_DEBUG, NULL, "sending shutdown to potatomgr");
+	xlog(LOG_INFO, NULL, "sending shutdown to potatomgr");
 	if (mgr_send_shutdown(fs_config.shutdown_grace_period, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 
