@@ -2680,8 +2680,10 @@ mgr_start(int workers, int bgworkers)
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &act, NULL) == -1 ||
+	if (sigaction(SIGHUP, &act, NULL) == -1 ||
 	    sigaction(SIGINT, &act, NULL) == -1 ||
+	    sigaction(SIGPIPE, &act, NULL) == -1 ||
+	    sigaction(SIGQUIT, &act, NULL) == -1 ||
 	    sigaction(SIGTERM, &act, NULL) == -1) {
 		xlog_strerror(LOG_ERR, errno, "sigaction");
 	}
