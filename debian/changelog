@@ -1,3 +1,16 @@
+potatofs (2.12.6-1) unstable; urgency=medium
+
+  * Update description
+  * Fix reference from potatofs(1) -> potatofs.conf(5)
+  * cleanup
+  * Adjust logging and ignore some more signals.
+    The unmount sequence still seems problematic when the OS it shutting down.
+    Increase logging in fs_destroy() and block some more signals just in case
+    we're getting something unexpected.
+  * Follow Debian's version scheme; this is a non-native package
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sat, 15 Apr 2023 16:41:22 -0400
+
 potatofs (2.12.5) unstable; urgency=medium
 
   * backend_gdrive_curl: Fix error reporting, longer timeout on put
