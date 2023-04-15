@@ -27,7 +27,7 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
-#define VERSION      "2.12.5"
+#define VERSION      "2.12.6"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_DIR       "/var/potatofs/data"
