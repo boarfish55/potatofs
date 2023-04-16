@@ -1,9 +1,3 @@
-DISCLAIMER
-==========
-This is a work in progress. Data loss and/or corruption may occur. Do not
-use to store anything you're not prepared to lose!
-
-
 OVERVIEW
 ========
 PotatoFS is a FUSE filesystem implementation that aims to to store data on
@@ -73,13 +67,19 @@ $ make
 
 Then, create yourself a partition (or use an existing one, though this is not
 recommended), typically /var/potatofs. Grant the user who will mount this
-filesystem access to that partition. An example init script is provided.
+filesystem access to that partition:
+
+```
+# mkdir /var/potatofs
+# chown <uid>:<gid> /var/potatofs
+```
 
 You'll need to select a backend and tweak your configuration file. Look
 at the example backends to see how to come up with your own. Essentially a
-backend script needs to support the `get`, `put` and `df` commands and return
-specific error codes. The `backend_cp.sh` script is the simplest one to
-use as a starting point.
+backend script needs to support the `get`, `put`, `hint` and `df`
+commands and return specific error codes. The `backends/backend_cp.sh` script
+is the simplest one to use as a starting point. See also the
+`potatofs-backend(7)` manpage.
 
 Then you'll need to put the configuration file somewhere and adjust the
 backend's path and data path. See `potatofs.conf.sample` for an example

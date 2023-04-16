@@ -27,6 +27,19 @@
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
+
+/*
+ * Version loosely follows SemVer (semver.org). MAJOR must be updated
+ * whenever:
+ *   - SLAB_VERSION is incremented in slabs.h
+ *   - SLABDB_VERSION is incremented in slabdb.h
+ *   - a new dir inode format is introduced and defaulted to in dirinodes.h
+ *     (see DIRINODE_FORMAT).
+ *
+ * MINOR should be updated whenever backward-compatible feature updates
+ * are committed, and PATCH for any other backward-compatible change
+ * (usually bug fix or minor updates that do not alter functionality).
+ */
 #define VERSION      "2.12.6"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
