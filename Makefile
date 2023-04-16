@@ -1,9 +1,11 @@
 DEPDIR := .deps
 CC := gcc
 CFLAGS := -Wall -g -DFUSE_USE_VERSION=26 \
-	$(shell pkg-config --cflags fuse uuid libbsd-overlay)
+	$(shell pkg-config --cflags fuse uuid libbsd-overlay) \
+	-fstack-protector-strong
 LDFLAGS := $(shell pkg-config --libs fuse uuid 'jansson >= 2.9' \
-	libbsd-overlay libbsd-ctor sqlite3 zlib)
+	libbsd-overlay libbsd-ctor sqlite3 zlib) \
+	-Wl,-z,relro -Wl,-z,now
 EXTRA_CFLAGS :=
 
 DEPFLAGS = -MMD -MP -MF $(DEPDIR)/$@.d
