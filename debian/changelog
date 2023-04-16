@@ -1,3 +1,11 @@
+potatofs (2.12.7-1) unstable; urgency=medium
+
+  * Not using DEB_BUILD_MAINT_OPTIONS; comment out again
+  * typo
+  * Add hardening build options
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 16 Apr 2023 11:37:45 -0400
+
 potatofs (2.12.6-2) unstable; urgency=medium
 
   * Set hardening during build; remove unused readme
