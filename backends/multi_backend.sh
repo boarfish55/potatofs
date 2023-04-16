@@ -18,7 +18,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-# The primary backend will be used to get/df commands, put is sent to all.
+# The primary backend will be used to get/hint/df commands, put is sent to all.
 primary_backend="$HOME/.potatofs/backends/backend1.sh"
 secondary_backend="$HOME/.potatofs/backends/backend2.sh"
 

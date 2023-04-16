@@ -18,6 +18,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 if [ ! -d "$BACKEND_DATA_PATH" ]; then
+	# Obviously, this is only for testing. Data stored here will be
+	# wiped at system shutdown or reboot.
 	BACKEND_DATA_PATH="/dev/shm/potatofs_backend"
 fi
 
