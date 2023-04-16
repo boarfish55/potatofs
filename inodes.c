@@ -1008,7 +1008,7 @@ inode_write(struct oinode *oi, off_t offset, const void *buf,
 
 	if (oi->oflags & INODE_ORO)
 		return XERRF(e, XLOG_FS, EBADF,
-		    "write attemped on read-only open inode %lu",
+		    "write attempt on read-only open inode %lu",
 		    oi->ino.v.f.inode);
 
 	if (offset < INODE_INLINE_BYTES) {
@@ -1257,7 +1257,7 @@ inode_splice_begin_write(struct inode_splice_bufvec *si,
 
 	if (oi->oflags & INODE_ORO)
 		return XERRF(e, XLOG_FS, EBADF,
-		    "write attemped on read-only open inode %lu",
+		    "write attempt on read-only open inode %lu",
 		    oi->ino.v.f.inode);
 
 	si->oi = oi;
