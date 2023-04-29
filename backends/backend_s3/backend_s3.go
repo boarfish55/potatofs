@@ -653,7 +653,6 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		Rollback(tx)
 		return err
 	}
-	defer rows.Close()
 
 	var n int64
 	for rows.Next() {
@@ -663,6 +662,7 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 		var hits int64
 		err = rows.Scan(&childIno, &childBase, &hits, &loadAfterMs)
 		if err != nil {
+			rows.Close()
 			Rollback(tx)
 			return err
 		}
@@ -682,13 +682,14 @@ func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
 			Base:     childBase,
 			LoadedAt: time.Now().Add(minZero((time.Duration(loadAfterMs) * time.Millisecond) - skew)),
 		})
-
 	}
 	err = rows.Err()
 	if err != nil {
+		rows.Close()
 		Rollback(tx)
 		return err
 	}
+	rows.Close()
 
 	if n > config.MaxPreloadPerHint {
 		s = `
