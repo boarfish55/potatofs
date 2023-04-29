@@ -113,7 +113,7 @@ find_file() {
 	name="$2"
 	curl -K $curlrc_head \
 		-G --data-urlencode "q=name=\"$2\" and \"$parent\" in parents and trashed=false" \
-		https://www.googleapis.com/drive/v3/files | jq -r .files[].id
+		https://www.googleapis.com/drive/v3/files | jq -r .files[0].id
 }
 
 upload_resumable() {
@@ -130,7 +130,7 @@ upload_resumable() {
 
 	id=$(find_file $parent "$name.crypt")
 
-	if [ -z "$id" ]; then
+	if [ -z "$id"  -o "$id" = "null" ]; then
 		method="POST"
 		data="{\"name\": \"$name.crypt\", \"parents\": [\"$parent\"]}"
 		url="https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
@@ -197,7 +197,7 @@ get_file() {
 	fi
 
 	id=$(find_file $parent "$name.crypt")
-	if [ -z "$id" ]; then
+	if [ -z "$id" -o "$id" = "null" ]; then
 		echo "{\"status\": \"ERR_NOSLAB\", \"msg\": \"no such file\"}"
 		exit 1
 	fi
@@ -234,7 +234,7 @@ find_folder() {
 	id="$1"
 	curl -K $curlrc_head \
 		-G --data-urlencode "q=name=\"$1\" and mimeType=\"application/vnd.google-apps.folder\"" \
-		https://www.googleapis.com/drive/v3/files | jq -r .files[].id
+		https://www.googleapis.com/drive/v3/files | jq -r .files[0].id
 }
 
 do_df() {
