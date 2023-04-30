@@ -1,3 +1,12 @@
+potatofs (2.12.8-1) unstable; urgency=medium
+
+  * Close rows immediately after we are finished with them, don't wait for
+    defer to do its thing. We want to release that lock asap.
+  * Handle cases where multiple files have the same name. While this shouldn't
+    happen, we should be ready for it.
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 30 Apr 2023 15:48:42 -0400
+
 potatofs (2.12.7-1) unstable; urgency=medium
 
   * Not using DEB_BUILD_MAINT_OPTIONS; comment out again
