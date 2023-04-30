@@ -40,7 +40,7 @@
  * are committed, and PATCH for any other backward-compatible change
  * (usually bug fix or minor updates that do not alter functionality).
  */
-#define VERSION      "2.12.8-dev"
+#define VERSION      "2.12.8"
 
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_DIR       "/var/potatofs/data"
