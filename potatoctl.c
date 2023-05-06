@@ -61,6 +61,7 @@ static int  do_flush(int, char **);
 static int  do_purge(int, char **);
 static int  do_offline(int, char **);
 static int  do_online(int, char **);
+static int  do_wait(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *, int *);
 static int  write_dir(int, char *, struct inode *);
@@ -89,6 +90,7 @@ struct subc {
 	{ "purge", &do_purge, 0 },
 	{ "offline", &do_offline, 0 },
 	{ "online", &do_online, 0 },
+	{ "wait", &do_wait, 0 },
 	{ "inode_tables", &inode_tables, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -957,6 +959,19 @@ do_online(int argc, char **argv)
 
 	warnx("offline mode off");
 
+	return 0;
+}
+
+int
+do_wait(int argc, char **argv)
+{
+	int fd;
+
+	if ((fd = open(fs_config.pidfile_path, O_RDONLY)) == -1)
+		err(1, "open");
+	if (flock(fd, LOCK_EX) == -1)
+		err(1, "flock");
+	close(fd);
 	return 0;
 }
 
