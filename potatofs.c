@@ -2292,9 +2292,10 @@ main(int argc, char **argv)
 	struct fuse_args  args = FUSE_ARGS_INIT(argc, argv);
 	struct fuse_chan *ch;
 	char             *mountpoint;
-	int               status = -1;
+	int               st = -1;
 	struct sigaction  act;
 	int               foreground;
+	int               multithreaded;
 	struct fs_info    fs_info;
 	struct xerr       e;
 
@@ -2330,7 +2331,8 @@ main(int argc, char **argv)
 		goto kill_mgr;
 	}
 
-	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) == -1)
+	if (fuse_parse_cmdline(&args, &mountpoint,
+	    &multithreaded, &foreground) == -1)
 		goto kill_mgr;
 
 	if (mgr_fs_info(1, &fs_info, xerrz(&e)) == -1) {
@@ -2350,8 +2352,12 @@ main(int argc, char **argv)
 		if (se != NULL) {
 			if (fuse_set_signal_handlers(se) != -1) {
 				fuse_session_add_chan(se, ch);
-				if (fuse_daemonize(foreground) == 0)
-					status = fuse_session_loop_mt(se);
+				if (fuse_daemonize(foreground) == 0) {
+					if (multithreaded)
+						st = fuse_session_loop_mt(se);
+					else
+						st = fuse_session_loop(se);
+				}
 				fuse_remove_signal_handlers(se);
 				fuse_session_remove_chan(ch);
 			}
@@ -2361,7 +2367,7 @@ main(int argc, char **argv)
 	}
 	fuse_opt_free_args(&args);
 
-	return status ? 1 : 0;
+	return st ? 1 : 0;
 kill_mgr:
 	if (mgr_send_shutdown(0, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
