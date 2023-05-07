@@ -46,7 +46,8 @@ enum {
 	OPT_HELP,
 	OPT_VERSION,
 	OPT_FOREGROUND,
-	OPT_NOATIME
+	OPT_NOATIME,
+	OPT_ASYNC
 };
 
 static int
@@ -98,6 +99,7 @@ static struct fuse_opt fs_opts[] = {
 	FUSE_OPT_KEY("-V", OPT_VERSION),
 	FUSE_OPT_KEY("-f", OPT_FOREGROUND),
 	FUSE_OPT_KEY("noatime", OPT_NOATIME),
+	FUSE_OPT_KEY("async", OPT_ASYNC),
 	FS_OPT("cfg_path=%s", cfg_path, 0),
 	FUSE_OPT_END
 };
@@ -232,6 +234,9 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		break;
 	case OPT_NOATIME:
 		fs_config.noatime = 1;
+		break;
+	case OPT_ASYNC:
+		fs_config.async = 1;
 		break;
 	}
 	return 1;
@@ -566,14 +571,15 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if (counter_init(xerrz(&e)) == -1)
 		goto fail;
 
-	if (slab_configure(c->max_open_slabs, c->slab_max_age, xerrz(&e)) == -1)
+	if (slab_configure(c->max_open_slabs, c->slab_max_age,
+	    c->async, xerrz(&e)) == -1)
 		goto fail;
 
-	if (inode_startup(&e) == -1)
+	if (inode_startup(c->async, &e) == -1)
 		goto fail;
 
-	xlog(LOG_NOTICE, NULL, "noatime is %s",
-	    (c->noatime) ? "set" : "unset");
+	xlog(LOG_NOTICE, NULL, "noatime is %s", (c->noatime) ? "set" : "unset");
+	xlog(LOG_NOTICE, NULL, "async is %s", (c->async) ? "set" : "unset");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL) {
 		if (!xerr_is(&e, XLOG_FS, ENOENT))

@@ -212,7 +212,7 @@ ino_t   inode_ino(struct oinode *);
 int     inode_splice_end_read(struct inode_splice_bufvec *, struct xerr *);
 off_t   inode_getsize(struct oinode *);
 void    inode_shutdown();
-int     inode_startup();
+int     inode_startup(int, struct xerr *);
 
 /*
  * The following must be called in inode write-lock context.

@@ -206,7 +206,7 @@ struct oslab {
 #define OSLAB_NOHINT    0x00000010
 };
 
-int slab_configure(rlim_t, time_t, struct xerr *);
+int slab_configure(rlim_t, time_t, int, struct xerr *);
 int slab_shutdown(struct xerr *);
 int slab_make_dirs(struct xerr *);
 

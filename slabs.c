@@ -77,6 +77,7 @@ static struct {
 };
 
 static pthread_t slab_purger;
+static int       async_writes = 0;
 
 static int
 slab_cmp(struct oslab *b1, struct oslab *b2)
@@ -420,11 +421,12 @@ slab_make_dirs(struct xerr *e)
 }
 
 int
-slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
+slab_configure(rlim_t max_open, time_t max_age, int async, struct xerr *e)
 {
 	int           r;
 	struct rlimit nofile, locks;
 
+	async_writes = async;
 	owned_slabs.max_open = max_open;
 
 	/*
@@ -483,7 +485,7 @@ slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 	struct oslab         *b;
 	struct slab_itbl_hdr *ihdr;
 
-	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL) {
+	if ((b = slab_load(sk, (async_writes) ? 0 : OSLAB_SYNC, e)) == NULL) {
 		XERR_PREPENDFN(e);
 		return NULL;
 	}

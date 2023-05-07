@@ -37,6 +37,7 @@ struct fs_config fs_config = {
 	SLAB_SIZE_DEFAULT,             /* slab_size */
 	FS_DEFAULT_DATA_DIR,           /* data_dir */
 	0,                             /* disable atime if 1 */
+	0,                             /* aynsc if 1 */
 	MGR_DEFAULT_SOCKET_PATH,       /* manager socket path */
 	MGR_DEFAULT_PIDFILE_PATH,      /* PID file path of manager */
 	MGR_DEFAULT_BACKEND_EXEC,      /* manager backend executable */
@@ -133,6 +134,13 @@ config_read()
 				fs_config.noatime = 0;
 			else
 				warnx("noatime must be 'yes' or 'no'");
+		} else if (strcmp(p, "async") == 0) {
+			if (strcmp(v, "yes") == 0)
+				fs_config.async = 1;
+			else if (strcmp(v, "no") == 0)
+				fs_config.async = 0;
+			else
+				warnx("async must be 'yes' or 'no'");
 		} else if (strcmp(p, "slab_max_age") == 0) {
 			if ((fs_config.slab_max_age =
 			    strtoull(v, NULL, 10)) == ULLONG_MAX)

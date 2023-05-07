@@ -134,6 +134,7 @@ struct fs_config {
 	size_t    slab_size;
 	char      data_dir[PATH_MAX];
 	int       noatime;
+	int       async;
 	char      mgr_sock_path[PATH_MAX];
 	char      pidfile_path[PATH_MAX];
 	char      mgr_exec[PATH_MAX];

@@ -41,6 +41,7 @@ slab_max_age: 1
 unclaim_purge_threshold_pct: 100
 purge_threshold_pct: 100
 noatime: no
+async: no
 workers: 1
 bgworkers: 1
 scrubber_interval: 0
@@ -88,7 +89,7 @@ fi
 echo ""
 
 
-echo "*** Single-thread tests ***"
+echo "*** Single-thread tests; VSZ max is 100 KB ***"
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
 # Set a limit on virtual memory to test ENOMEM errors
 old_v_ulimit="$(ulimit -S -v)"
