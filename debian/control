@@ -8,7 +8,7 @@ Rules-Requires-Root: no
 
 Package: potatofs
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, jq, libjansson4 (>= 2.13.1), zlib1g, libbsd0 (>= 0.11.3), libfuse2 (>= 2.9.9), libsqlite3-0 (>= 3.34.1), libuuid1 (>= 2.36.1), libncursesw6 (>= 6)
+Depends: ${shlibs:Depends}, ${misc:Depends}, fuse3, jq, libjansson4 (>= 2.13.1), zlib1g, libbsd0 (>= 0.11.3), libfuse2 (>= 2.9.9), libsqlite3-0 (>= 3.34.1), libuuid1 (>= 2.36.1), libncursesw6 (>= 6)
 Description: FUSE filesystem for high-latency backends
  PotatoFS is a FUSE filesystem implementation using external commands to
  interact with arbitrary backends. It is well-suited for high-latency backends
