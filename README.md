@@ -45,6 +45,15 @@ Author: Pascal Lalonde <plalonde@overnet.ca>
 
 See the COPYING file for licensing information.
 
+DISCLAIMER
+==========
+PotatoFS hasn't seen widespread use and testing. Like any filesystem
+with little testing, data loss and/or corruption may occur. Use at your
+own risk.
+
+INSTALLATION & USAGE
+====================
+
 Dependencies / license (not including backends):
 - pkg-config
 - libuuid (BSD-3)
@@ -57,9 +66,6 @@ Dependencies / license (not including backends):
 Recommended:
 - jq (for sample backends)
 
-
-INSTALLATION & USAGE
-====================
 
 ```
 $ make

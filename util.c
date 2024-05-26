@@ -286,16 +286,17 @@ clock_gettime_x(clockid_t clockid, struct timespec *tp)
 }
 
 /*
- * If wait_seconds is 0, don't set LOCK_NB. We behave like plain open() + flock().
- * If wait_seconds is >0, we will sleep for a maximum of this many seconds in
- * 10ms increments until we can either grab the lock or run out of time. We try
- * to re-open the file every time in case the previous lock holder unlink'd it.
+ * If wait_seconds is 0, don't set LOCK_NB. We behave like plain open() +
+ * flock().  If wait_seconds is >0, we will sleep for a maximum of this many
+ * seconds in 1ms increments until we can either grab the lock or run out of
+ * time. We try to re-open the file every time in case the previous lock holder
+ * unlink'd it.
  */
 int
 open_wflock(const char *path, int flags, mode_t mode, int lk,
     uint32_t wait_seconds)
 {
-	int    fd = -1, retries;
+	int             fd = -1, retries;
 	struct timespec tp = {0, 1000000}, req, rem;  /* 1ms */
 
 	if (wait_seconds > 0)
