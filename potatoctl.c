@@ -1647,6 +1647,8 @@ ctop(int argc, char **argv)
 	struct xerr      e;
 	pid_t            mgr_pid;
 
+	// TODO: add the number of outgoing slabs, and maybe incoming?
+
 	bzero(&fs_info, sizeof(fs_info));
 	if (read_info(&fs_info, &mgr_pid, version_string,
 	    sizeof(version_string), &e) == -1) {

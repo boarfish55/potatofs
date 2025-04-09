@@ -106,7 +106,7 @@ mgr_recv(int mgr, int *fd, struct mgr_msg *m, struct xerr *e)
 	msg.msg_iovlen = 1;
 
 again:
-	if ((r = recvmsg(mgr, &msg, 0)) == -1) {
+	if ((r = recvmsg(mgr, &msg, MSG_WAITALL)) == -1) {
 		if (errno == EINTR)
 			goto again;
 		return XERRF(e, XLOG_ERRNO, errno, "recvmsg");
