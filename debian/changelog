@@ -1,3 +1,9 @@
+potatofs (2.12.10-1) unstable; urgency=medium
+
+  * Build backend_s3 from root Makefile
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 16:44:32 -0400
+
 potatofs (2.12.9-2) unstable; urgency=medium
 
   * Build backend_s3 as part of main release
