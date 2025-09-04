@@ -1,3 +1,9 @@
+potatofs (2.12.11-4) unstable; urgency=medium
+
+  * control syntax
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 17:00:56 -0400
+
 potatofs (2.12.11-3) unstable; urgency=medium
 
   * control desc fix
