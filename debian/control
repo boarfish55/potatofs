@@ -20,4 +20,10 @@ Package: potatofs-backend-s3
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: S3 backend for PotatoFS
- S3 backend for PotatoFS
+ PotatoFS is a FUSE filesystem implementation using external commands to
+ interact with arbitrary backends. It is well-suited for high-latency backends
+ such as cloud object storage providers. It uses local storage to cache
+ fixed-sized portions of data from the backend in order to speed up I/O
+ operations on data that's used more frequently.
+
+ This package lets PotatoFS use S3 as a storage backend.
