@@ -1,3 +1,9 @@
+potatofs (2.12.11-3) unstable; urgency=medium
+
+  * control desc fix
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 16:57:27 -0400
+
 potatofs (2.12.11-2) unstable; urgency=medium
 
   * deb lint fixes
