@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2024 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -1683,9 +1683,10 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col1, "read MB     :");
 	mvprintw(row++, col1, "writes      :");
 	mvprintw(row++, col1, "write MB    :");
+	mvprintw(row++, col1, "be gets     :");
+	mvprintw(row++, col1, "be puts     :");
 	mvprintw(row++, col1, "be read MB  :");
 	mvprintw(row++, col1, "be write MB :");
-	row++;
 	mvprintw(row++, col1, "getattr     :");
 	mvprintw(row++, col1, "setattr     :");
 	mvprintw(row++, col1, "opendir     :");
@@ -1710,7 +1711,7 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col2, "readlink    :");
 	mvprintw(row++, col2, "rename      :");
 	mvprintw(row++, col2, "statfs      :");
-	row++;
+	mvprintw(row++, col2, "slow mgr cx :");
 	mvprintw(row++, col2, "delay truncs:");
 	mvprintw(row++, col2, "open slabs  :");
 	mvprintw(row++, col2, "open inodes :");
@@ -1819,6 +1820,12 @@ again:
 		mvprintw(row++, col1, "%8.1f/s",
 		    counters_delta[COUNTER_WRITE_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
+
+		mvprintw(row++, col1, "%6lu",
+		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+		mvprintw(row++, col1, "%6lu",
+		    mgr_counters_now[MGR_COUNTER_BACKEND_PUTS]);
+
 		mvprintw(row++, col1, "%8.1f/s",
 		    mgr_counters_delta[MGR_COUNTER_BACKEND_IN_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
@@ -1826,7 +1833,6 @@ again:
 		    mgr_counters_delta[MGR_COUNTER_BACKEND_OUT_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
 
-		row++;
 		mvprintw(row++, col1, "%8.1f/s",
 		    counters_delta[COUNTER_FS_GETATTR] / delta_s);
 		mvprintw(row++, col1, "%8.1f/s",
@@ -1874,7 +1880,8 @@ again:
 		mvprintw(row++, col2, "%8.1f/s",
 		    counters_delta[COUNTER_FS_STATFS] / delta_s);
 
-		row++;
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[COUNTER_SLOW_MGR_CONNECTS]);
 		mvprintw(row++, col2, "%6lu",
 		    counters_now[COUNTER_FS_DELAYED_TRUNCATE]);
 		mvprintw(row++, col2, "%6lu",

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2024 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -24,6 +24,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "config.h"
+#include "counters.h"
 #include "mgr.h"
 
 int
@@ -32,9 +33,12 @@ mgr_connect(int retry, struct xerr *e)
 	int                 mgr;
 	struct sockaddr_un  mgr_addr;
 	struct timespec     tp = {1, 0};
+	struct timespec     start, end;
 	int                 refused_count = 0;
 	int                 nosock_count = 0;
+	time_t              delta_ns;
 
+	clock_gettime_x(CLOCK_REALTIME, &start);
 	for (;;) {
 		if ((mgr = socket(AF_LOCAL, SOCK_STREAM, 0)) == -1) {
 			xlog_strerror(LOG_ERR, errno, "%s: socket", __func__);
@@ -73,6 +77,11 @@ mgr_connect(int retry, struct xerr *e)
 			}
 			goto fail;
 		}
+		clock_gettime_x(CLOCK_REALTIME, &end);
+		delta_ns = ((end.tv_sec * 1000000000) + end.tv_nsec) -
+		    ((start.tv_sec * 1000000000) + start.tv_nsec);
+		if (delta_ns > 5000000)
+			counter_incr(COUNTER_SLOW_MGR_CONNECTS);
 		return mgr;
 fail:
 		if (mgr != -1)

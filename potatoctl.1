@@ -180,7 +180,9 @@ Prints the contents of the slab database.
 .Sh EXIT STATUS
 .Nm
 exit with 0 on success, 1 on most errors. The claim command will exit with
-code 2 if it failed because the slab to claim is already locked.
+code 2 if it failed because the slab to claim is already locked. The status
+command will exit with code 2 if no potatomgr instance was found to be
+running.
 .Sh SEE ALSO
 .Xr potatofs 1
 .Xr potatofs.conf 5
