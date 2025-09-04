@@ -1,3 +1,10 @@
+potatofs (2.12.9-2) unstable; urgency=medium
+
+  * Build backend_s3 as part of main release
+  * Don't build golang part as an override
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 16:17:08 -0400
+
 potatofs (2.12.9-1) unstable; urgency=medium
 
   * v2.12.9
