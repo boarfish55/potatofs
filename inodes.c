@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -44,6 +44,7 @@ static struct oinodes {
 };
 
 static char *slab_zeroes;
+static int   async_writes = 0;
 
 static int
 inode_cmp(struct oinode *i1, struct oinode *i2)
@@ -165,8 +166,9 @@ alloc_inode(ino_t *inode, struct xerr *e)
 }
 
 int
-inode_startup(struct xerr *e)
+inode_startup(int async, struct xerr *e)
 {
+	async_writes = async;
 	if ((slab_zeroes = calloc(slab_get_max_size(), 1)) == NULL)
 		return XERRF(e, XLOG_ERRNO, errno,
 		    "calloc: failed to allocate zeroes");
@@ -671,7 +673,7 @@ inode_create(ino_t ino, uint32_t oflags, uid_t uid, gid_t gid, mode_t mode,
 		}
 	}
 
-	if (oi->ino.v.f.mode & S_IFDIR)
+	if (!async_writes && (oi->ino.v.f.mode & S_IFDIR))
 		oi->oflags |= INODE_OSYNC;
 
 	if (LK_LOCK_INIT(&oi->lock, xerrz(e)) == -1)

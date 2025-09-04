@@ -2995,246 +2995,375 @@ test_backend_timeout_interrupt()
 	return success();
 }
 
+struct test_status *
+test_enomem()
+{
+	char  path[PATH_MAX];
+	char *d = makepath("many_inodes_for_enomem");
+	int   i, n_inodes = 100000;
+	int  *fds;
+	int   errno_save = 0;
+	char  msg[LINE_MAX];
+
+	if ((fds = malloc(sizeof(int) * n_inodes)) == NULL)
+		return ERR("", errno);
+
+	if (mkdir(d, 0700) == -1)
+		return ERR("", errno);
+
+	for (i = 0; i < n_inodes; i++) {
+		snprintf(path, sizeof(path), "%s/%d", d, i);
+		if ((fds[i] = open(path, O_CREAT|O_RDWR, 0600)) == -1) {
+			errno_save = errno;
+			break;
+		}
+	}
+
+	if (errno_save == ENOMEM) {
+		errno_save = 0;
+		/*
+		 * We exhausted memory creating inodes, therefore testing for
+		 * out-of-memory conditions on fs_create / inode creation.
+		 * Now try to exhaust memory on openfile creation.
+		 */
+		snprintf(path, sizeof(path), "%s/%d", d, i - 1);
+		for (; i < n_inodes; i++) {
+			if ((fds[i] = open(path, O_RDONLY)) == -1) {
+				errno_save = errno;
+				break;
+			}
+		}
+		if (errno_save == 0) {
+			snprintf(msg, sizeof(msg),
+			    "expected ENOMEM while opening fds, "
+			    "but did not error");
+		}
+	} else if (errno_save == 0) {
+		snprintf(msg, sizeof(msg),
+		    "expected ENOMEM while creating inodes, but did not error");
+	}
+
+	for (i--; i >= 0; i--) {
+		if (close(fds[i]) == -1)
+			warn("close");
+	}
+
+	free(fds);
+
+	switch (errno_save) {
+	case 0:
+		return FLAKY(msg, 0);
+	case ENOMEM:
+		return success();
+	default:
+		return ERR("", errno_save);
+	}
+}
+
 struct potatofs_test {
 	char                description[256];
+	int                 default_set;
 	struct test_status *(*fn)();
 } tests[] = {
 	{
 		"slab size",
+		1,
 		&test_slab_size
 	},
 	{
 		"clock_gettime",
+		1,
 		&test_clock_gettime
 	},
 	{
 		"long (truncated) error message",
+		1,
 		&test_xlog_over_line_max
 	},
 	{
 		"mounted",
+		1,
 		&test_mounted
 	},
 	{
 		"mkdir and stat",
+		1,
 		&test_mkdir
 	},
 	{
 		"mknod and stat",
+		1,
 		&test_mknod
 	},
 	{
 		"file name > FS_NAME_MAX",
+		1,
 		&test_name_max
 	},
 	{
 		"path >= FS_PATH_MAX",
+		1,
 		&test_path_max
 	},
 	{
 		"mknod fails with EEXIST",
+		1,
 		&test_mknod_exists
 	},
 	{
 		"utimes file",
+		1,
 		&test_utimes_file
 	},
 	{
 		"atime",
+		1,
 		&test_atime
 	},
 	{
 		"chmod",
+		1,
 		&test_chmod
 	},
 	{
 		"mtime on parent after make_inode",
+		1,
 		&test_parent_mtime_after_mknod
 	},
 	{
 		"unlink and stat",
+		1,
 		&test_unlink
 	},
 	{
 		"mtime on parent after rmnod",
+		1,
 		&test_parent_mtime_after_rmnod
 	},
 	{
 		"file size and mtime",
+		1,
 		&test_file_size_and_mtime
 	},
 	{
 		"rmdir",
+		1,
 		&test_rmdir
 	},
 	{
 		"rmdir on non-empty dir, or non-directory",
+		1,
 		&test_rmdir_notempty_notdir
 	},
 	{
 		"rmdir on non-empty dir that contains another dir",
+		1,
 		&test_rmdir_contains_dir
 	},
 	{
 		"symlink",
+		1,
 		&test_symlink
 	},
 	{
 		"symlink target >= FSPATH_MAX",
+		1,
 		&test_readlink_path_max
 	},
 	{
 		"hard link",
+		1,
 		&test_hardlink
 	},
 	{
 		"link max > FS_LINK_MAX",
+		1,
 		&test_link_max
 	},
 	{
 		"ctime on hard link",
+		1,
 		&test_ctime_after_link
 	},
 	{
 		"mtime on parent after link",
+		1,
 		&test_parent_mtime_after_link
 	},
 	{
 		"hard link dir",
+		1,
 		&test_hardlink_dir
 	},
 	{
 		"rename, same parent",
+		1,
 		&test_rename
 	},
 	{
 		"rename to self fails",
+		1,
 		&test_rename_to_self
 	},
 	{
 		"rename w/replace, same parent",
+		1,
 		&test_rename_replace
 	},
 	{
 		"rename, cross dir",
+		1,
 		&test_rename_crossdir
 	},
 	{
 		"rename dir, cross dir",
+		1,
 		&test_rename_dir_crossdir
 	},
 	{
 		"rename w/replace, cross dir",
+		1,
 		&test_rename_replace_crossdir
 	},
 	{
 		"rename to descendant",
+		1,
 		&test_rename_to_descendant
 	},
 	{
 		"rename to ancestor",
+		1,
 		&test_rename_to_ancestor
 	},
 	{
 		"rename, fails on non-dir to dir with EISDIR",
+		1,
 		&test_rename_nondir_to_dir
 	},
 	{
 		"rename, fails on dir to non-dir with ENOTDIR",
+		1,
 		&test_rename_dir_to_nondir
 	},
 	{
 		"rename, fails on non-dir to dir with EISDIR, cross directory",
+		1,
 		&test_rename_crossdir_nondir_to_dir
 	},
 	{
 		"rename, fails on dir to non-dir with ENOTDIR, cross directory",
+		1,
 		&test_rename_crossdir_dir_to_nondir
 	},
 	{
 		"rename dir over another empty dir",
+		1,
 		&test_rename_dir_to_existing_emtpy_dir
 	},
 	{
 		"rename dir over another non-empty dir",
+		1,
 		&test_rename_dir_to_existing_nonemtpy_dir
 	},
 	{
 		"rename, to/from root inode fails with EBUSY / EXDEV",
+		1,
 		&test_rename_root_inode
 	},
 	{
 		"mtime on parents after rename",
+		1,
 		&test_parents_mtime_after_rename
 	},
 	{
 		"create file with 2 full slabs, check slab contents",
+		1,
 		&test_file_content
 	},
 	{
 		"fallocate",
+		1,
 		&test_fallocate
 	},
 	{
 		"fallocate file spanning multiple slabs",
+		1,
 		&test_fallocate_large
 	},
 	{
 		"truncate file spanning multiple slabs",
+		1,
 		&test_truncate
 	},
 	{
 		"truncate file spanning multiple slabs, "
 		    "to a size less than an inode's inline bytes",
+		1,
 		&test_truncate_less_than_inline
 	},
 	{
 		"delayed truncation spanning multiple slabs",
+		1,
 		&test_delayed_truncate_large
 	},
 	{
 		"inode reuse increases generation",
+		1,
 		&inode_reuse
 	},
 	{
 		"many inodes (beyond a single inode table)",
+		1,
 		&test_many_inodes
 	},
 	{
 		"claim from backend",
+		1,
 		&test_claim_from_backend
 	},
 	{
 		"timeout from backend during claim",
+		1,
 		&test_backend_timeout_interrupt
 	},
 	{
 		"test readdir on v2 dirs at maximum hash tree depth",
+		1,
 		&test_readdir_max_v2_dir_depth
 	},
 	{
 		"test lookup on v2 dirs at maximum hash tree depth",
+		1,
 		&test_lookup_max_v2_dir_depth
 	},
 	{
 		"test lookup for . and ..",
+		1,
 		&test_lookup_dot_dotdot
 	},
 	{
 		"test unlink on v2 dirs at maximum hash tree depth",
+		1,
 		&test_unlink_max_v2_dir_depth
 	},
 	{
 		"test dir freelist",
+		1,
 		&test_dir_freelist
 	},
 	{
 		"test v2 dir mkdirent filling first chained leaf",
+		1,
 		&test_mkdirent_fill_first_chained_leaf_max_v2_dir_depth
+	},
+	{
+		"test ENOMEM condition",
+		0,
+		&test_enomem
 	},
 
 	/* End */
-	{ "", NULL }
+	{ "", 0, NULL }
 };
 
 void
@@ -3318,6 +3447,9 @@ main(int argc, char **argv)
 
 	umask(0);
 	for (t = tests; t->fn != NULL; t++) {
+		if (argc == optind && !t->default_set)
+			continue;
+
 		if (argc > optind &&
 		    strstr(t->description, argv[optind]) == NULL)
 			continue;

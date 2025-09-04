@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -61,6 +61,7 @@ static int  do_flush(int, char **);
 static int  do_purge(int, char **);
 static int  do_offline(int, char **);
 static int  do_online(int, char **);
+static int  do_wait(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *, int *);
 static int  write_dir(int, char *, struct inode *);
@@ -89,6 +90,7 @@ struct subc {
 	{ "purge", &do_purge, 0 },
 	{ "offline", &do_offline, 0 },
 	{ "online", &do_online, 0 },
+	{ "wait", &do_wait, 0 },
 	{ "inode_tables", &inode_tables, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -960,6 +962,19 @@ do_online(int argc, char **argv)
 	return 0;
 }
 
+int
+do_wait(int argc, char **argv)
+{
+	int fd;
+
+	if ((fd = open(fs_config.pidfile_path, O_RDONLY)) == -1)
+		err(1, "open");
+	if (flock(fd, LOCK_EX) == -1)
+		err(1, "flock");
+	close(fd);
+	return 0;
+}
+
 /*
  * The error will be set if we ecountered an error that could
  * prevent us from checking other inode tables. If no error
@@ -1632,6 +1647,8 @@ ctop(int argc, char **argv)
 	struct xerr      e;
 	pid_t            mgr_pid;
 
+	// TODO: add the number of outgoing slabs, and maybe incoming?
+
 	bzero(&fs_info, sizeof(fs_info));
 	if (read_info(&fs_info, &mgr_pid, version_string,
 	    sizeof(version_string), &e) == -1) {
@@ -1666,9 +1683,10 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col1, "read MB     :");
 	mvprintw(row++, col1, "writes      :");
 	mvprintw(row++, col1, "write MB    :");
+	mvprintw(row++, col1, "be gets     :");
+	mvprintw(row++, col1, "be puts     :");
 	mvprintw(row++, col1, "be read MB  :");
 	mvprintw(row++, col1, "be write MB :");
-	row++;
 	mvprintw(row++, col1, "getattr     :");
 	mvprintw(row++, col1, "setattr     :");
 	mvprintw(row++, col1, "opendir     :");
@@ -1693,7 +1711,7 @@ ctop(int argc, char **argv)
 	mvprintw(row++, col2, "readlink    :");
 	mvprintw(row++, col2, "rename      :");
 	mvprintw(row++, col2, "statfs      :");
-	row++;
+	mvprintw(row++, col2, "slow mgr cx :");
 	mvprintw(row++, col2, "delay truncs:");
 	mvprintw(row++, col2, "open slabs  :");
 	mvprintw(row++, col2, "open inodes :");
@@ -1802,6 +1820,12 @@ again:
 		mvprintw(row++, col1, "%8.1f/s",
 		    counters_delta[COUNTER_WRITE_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
+
+		mvprintw(row++, col1, "%6lu",
+		    mgr_counters_now[MGR_COUNTER_BACKEND_GETS]);
+		mvprintw(row++, col1, "%6lu",
+		    mgr_counters_now[MGR_COUNTER_BACKEND_PUTS]);
+
 		mvprintw(row++, col1, "%8.1f/s",
 		    mgr_counters_delta[MGR_COUNTER_BACKEND_IN_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
@@ -1809,7 +1833,6 @@ again:
 		    mgr_counters_delta[MGR_COUNTER_BACKEND_OUT_BYTES] /
 		    1024.0 / 1024.0 / delta_s);
 
-		row++;
 		mvprintw(row++, col1, "%8.1f/s",
 		    counters_delta[COUNTER_FS_GETATTR] / delta_s);
 		mvprintw(row++, col1, "%8.1f/s",
@@ -1857,7 +1880,8 @@ again:
 		mvprintw(row++, col2, "%8.1f/s",
 		    counters_delta[COUNTER_FS_STATFS] / delta_s);
 
-		row++;
+		mvprintw(row++, col2, "%6lu",
+		    counters_now[COUNTER_SLOW_MGR_CONNECTS]);
 		mvprintw(row++, col2, "%6lu",
 		    counters_now[COUNTER_FS_DELAYED_TRUNCATE]);
 		mvprintw(row++, col2, "%6lu",

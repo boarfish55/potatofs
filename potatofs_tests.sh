@@ -41,6 +41,7 @@ slab_max_age: 1
 unclaim_purge_threshold_pct: 100
 purge_threshold_pct: 100
 noatime: no
+async: no
 workers: 1
 bgworkers: 1
 scrubber_interval: 0
@@ -53,6 +54,10 @@ EOF
 
 mkdir "$mountpoint" "$datapath" || fatal "failed to create directories"
 
+# Make sure we have enough fds to complete our tests
+ulimit -S -n 128000
+
+echo "*** Multi-thread tests ***"
 echo "*** Mounting $mountpoint; waiting for mount complete ***"
 ./potatofs -f -o cfg_path="$conf" "$mountpoint" &
 for i in 1 2 3 4 5; do
@@ -72,24 +77,58 @@ echo ""
 echo "*** Unmounting ***"
 fusermount -u "$mountpoint"
 wait
+./potatoctl -c $conf wait
 echo ""
 
 echo "*** fsck ***"
-while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
-	sleep 1
-done
 ./potatoctl -c "$conf" fsck
 if [ $? -ne 0 ]; then
 	st=$?
 fi
+./potatoctl -c $conf wait
+echo ""
+
+
+echo "*** Single-thread tests; VSZ max is 100 KB ***"
+echo "*** Mounting $mountpoint; waiting for mount complete ***"
+# Set a limit on virtual memory to test ENOMEM errors
+old_v_ulimit="$(ulimit -S -v)"
+ulimit -S -v 100000
+
+./potatofs -s -f -o cfg_path="$conf" "$mountpoint" &
+for i in 1 2 3 4 5; do
+	if [ "$(stat -c '%i' "$mountpoint")" = "1" ]; then
+		break
+	fi
+	[ $i -eq 5 ] && fatal "timeout while mounting"
+	sleep 1
+done
+echo ""
+
+ulimit -S -v $old_v_ulimit
+
+echo "*** Running tests ***"
+./potatofs_tests -c "$conf" "$mountpoint" ENOMEM
+st=$?
+echo ""
+
+echo "*** Unmounting ***"
+fusermount -u "$mountpoint"
+wait
+./potatoctl -c $conf wait
+echo ""
+
+echo "*** fsck ***"
+./potatoctl -c "$conf" fsck
+if [ $? -ne 0 ]; then
+	st=$?
+fi
+./potatoctl -c $conf wait
 echo ""
 
 read -p "Press any key to cleanup..." PAUSE
 
 echo "*** cleanup ***"
-while $binpath/potatoctl -c $conf status >/dev/null 2>&1; do
-	sleep 1
-done
 if [ $st -eq 0 ]; then
 	rm -rf "$basepath"
 	rm -rf "$BACKEND_DATA_PATH"

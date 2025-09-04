@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -46,7 +46,8 @@ enum {
 	OPT_HELP,
 	OPT_VERSION,
 	OPT_FOREGROUND,
-	OPT_NOATIME
+	OPT_NOATIME,
+	OPT_ASYNC
 };
 
 static int
@@ -98,6 +99,7 @@ static struct fuse_opt fs_opts[] = {
 	FUSE_OPT_KEY("-V", OPT_VERSION),
 	FUSE_OPT_KEY("-f", OPT_FOREGROUND),
 	FUSE_OPT_KEY("noatime", OPT_NOATIME),
+	FUSE_OPT_KEY("async", OPT_ASYNC),
 	FS_OPT("cfg_path=%s", cfg_path, 0),
 	FUSE_OPT_END
 };
@@ -232,6 +234,9 @@ fs_opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
 		break;
 	case OPT_NOATIME:
 		fs_config.noatime = 1;
+		break;
+	case OPT_ASYNC:
+		fs_config.async = 1;
 		break;
 	}
 	return 1;
@@ -566,14 +571,15 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	if (counter_init(xerrz(&e)) == -1)
 		goto fail;
 
-	if (slab_configure(c->max_open_slabs, c->slab_max_age, xerrz(&e)) == -1)
+	if (slab_configure(c->max_open_slabs, c->slab_max_age,
+	    c->async, xerrz(&e)) == -1)
 		goto fail;
 
-	if (inode_startup(&e) == -1)
+	if (inode_startup(c->async, &e) == -1)
 		goto fail;
 
-	xlog(LOG_NOTICE, NULL, "noatime is %s",
-	    (c->noatime) ? "set" : "unset");
+	xlog(LOG_NOTICE, NULL, "noatime is %s", (c->noatime) ? "set" : "unset");
+	xlog(LOG_NOTICE, NULL, "async is %s", (c->async) ? "set" : "unset");
 
 	if ((oi = inode_load(FS_ROOT_INODE, 0, xerrz(&e))) == NULL) {
 		if (!xerr_is(&e, XLOG_FS, ENOENT))
@@ -2292,9 +2298,10 @@ main(int argc, char **argv)
 	struct fuse_args  args = FUSE_ARGS_INIT(argc, argv);
 	struct fuse_chan *ch;
 	char             *mountpoint;
-	int               status = -1;
+	int               st = -1;
 	struct sigaction  act;
 	int               foreground;
+	int               multithreaded;
 	struct fs_info    fs_info;
 	struct xerr       e;
 
@@ -2330,7 +2337,8 @@ main(int argc, char **argv)
 		goto kill_mgr;
 	}
 
-	if (fuse_parse_cmdline(&args, &mountpoint, NULL, &foreground) == -1)
+	if (fuse_parse_cmdline(&args, &mountpoint,
+	    &multithreaded, &foreground) == -1)
 		goto kill_mgr;
 
 	if (mgr_fs_info(1, &fs_info, xerrz(&e)) == -1) {
@@ -2350,8 +2358,12 @@ main(int argc, char **argv)
 		if (se != NULL) {
 			if (fuse_set_signal_handlers(se) != -1) {
 				fuse_session_add_chan(se, ch);
-				if (fuse_daemonize(foreground) == 0)
-					status = fuse_session_loop_mt(se);
+				if (fuse_daemonize(foreground) == 0) {
+					if (multithreaded)
+						st = fuse_session_loop_mt(se);
+					else
+						st = fuse_session_loop(se);
+				}
 				fuse_remove_signal_handlers(se);
 				fuse_session_remove_chan(ch);
 			}
@@ -2361,7 +2373,7 @@ main(int argc, char **argv)
 	}
 	fuse_opt_free_args(&args);
 
-	return status ? 1 : 0;
+	return st ? 1 : 0;
 kill_mgr:
 	if (mgr_send_shutdown(0, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);

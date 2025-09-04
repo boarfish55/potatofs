@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -206,7 +206,7 @@ struct oslab {
 #define OSLAB_NOHINT    0x00000010
 };
 
-int slab_configure(rlim_t, time_t, struct xerr *);
+int slab_configure(rlim_t, time_t, int, struct xerr *);
 int slab_shutdown(struct xerr *);
 int slab_make_dirs(struct xerr *);
 

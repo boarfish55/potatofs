@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -53,7 +53,8 @@ const char *counter_names[] = {
 	"fs_n_open_inodes",    /* COUNTER_N_OPEN_INODES */
 	"fs_slabs_purged",     /* COUNTER_N_SLABS_PURGED */
 	"fs_read_bytes",       /* COUNTER_READ_BYTES */
-	"fs_write_bytes"       /* COUNTER_WRITE_BYTES */
+	"fs_write_bytes",      /* COUNTER_WRITE_BYTES */
+	"fs_slow_mgr_connects" /* COUNTER_SLOW_MGR_CONNECTS */
 };
 
 const char *mgr_counter_names[] = {

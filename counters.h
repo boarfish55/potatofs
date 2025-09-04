@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -58,6 +58,7 @@ enum {
 	COUNTER_SLABS_PURGED,
 	COUNTER_READ_BYTES,
 	COUNTER_WRITE_BYTES,
+	COUNTER_SLOW_MGR_CONNECTS,
 	COUNTER_LAST
 };
 

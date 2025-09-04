@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -77,6 +77,7 @@ static struct {
 };
 
 static pthread_t slab_purger;
+static int       async_writes = 0;
 
 static int
 slab_cmp(struct oslab *b1, struct oslab *b2)
@@ -332,8 +333,12 @@ slab_loop_files(void (*fn)(const char *), struct xerr *e)
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "bad inode table dir; too long");
 
-	if ((dir = opendir(path)) == NULL)
-		return XERRF(e, XLOG_ERRNO, errno, "opendir");
+	if ((dir = opendir(path)) == NULL) {
+		if (errno == ENOMEM)
+			return XERRF(e, XLOG_FS, errno, "opendir");
+		else
+			return XERRF(e, XLOG_ERRNO, errno, "opendir");
+	}
 	while ((de = readdir(dir))) {
 		if (de->d_name[0] == '.')
 			continue;
@@ -351,8 +356,12 @@ slab_loop_files(void (*fn)(const char *), struct xerr *e)
 		    fs_config.data_dir, i) >= sizeof(path))
 			return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 			    "bad slab dir; too long");
-		if ((dir = opendir(path)) == NULL)
-			return XERRF(e, XLOG_ERRNO, errno, "opendir");
+		if ((dir = opendir(path)) == NULL) {
+			if (errno == ENOMEM)
+				return XERRF(e, XLOG_FS, errno, "opendir");
+			else
+				return XERRF(e, XLOG_ERRNO, errno, "opendir");
+		}
 		while ((de = readdir(dir))) {
 			if (de->d_name[0] == '.')
 				continue;
@@ -412,11 +421,12 @@ slab_make_dirs(struct xerr *e)
 }
 
 int
-slab_configure(rlim_t max_open, time_t max_age, struct xerr *e)
+slab_configure(rlim_t max_open, time_t max_age, int async, struct xerr *e)
 {
 	int           r;
 	struct rlimit nofile, locks;
 
+	async_writes = async;
 	owned_slabs.max_open = max_open;
 
 	/*
@@ -475,7 +485,7 @@ slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 	struct oslab         *b;
 	struct slab_itbl_hdr *ihdr;
 
-	if ((b = slab_load(sk, OSLAB_SYNC, e)) == NULL) {
+	if ((b = slab_load(sk, (async_writes) ? 0 : OSLAB_SYNC, e)) == NULL) {
 		XERR_PREPENDFN(e);
 		return NULL;
 	}
@@ -988,8 +998,12 @@ slab_itbls(off_t *bases, size_t n, struct xerr *e)
 	    fs_config.data_dir, ITBL_DIR) >= sizeof(path))
 		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
 		    "bad inode table name; too long");
-	if ((itbl_dir = opendir(path)) == NULL)
-		return XERRF(e, XLOG_ERRNO, errno, "opendir");
+	if ((itbl_dir = opendir(path)) == NULL) {
+		if (errno == ENOMEM)
+			return XERRF(e, XLOG_FS, errno, "opendir");
+		else
+			return XERRF(e, XLOG_ERRNO, errno, "opendir");
+	}
 	while (i < n && (de = readdir(itbl_dir))) {
 		if (de->d_name[0] == '.')
 			continue;

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2020-2023 Pascal Lalonde <plalonde@overnet.ca>
+ *  Copyright (C) 2020-2025 Pascal Lalonde <plalonde@overnet.ca>
  *
  *  This file is part of PotatoFS, a FUSE filesystem implementation.
  *
@@ -30,7 +30,7 @@
  * the signed int64. However, we still store uint64 in many of the fields.
  * This is fine with type casting as long as we don't expect sqlite to be
  * able to successfully perform comparisons on the larger values in those
- * columns. Therefore, many case must be taken when writing queries that
+ * columns. Therefore, care must be taken when writing queries that
  * deal with those columns.
  */
 
