@@ -1,3 +1,9 @@
+potatofs (2.12.11-1) unstable; urgency=medium
+
+  * Don't build go exec with debug symbols
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 16:51:33 -0400
+
 potatofs (2.12.10-2) unstable; urgency=medium
 
   * Add dh-golang build dep
