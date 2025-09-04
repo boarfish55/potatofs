@@ -24,6 +24,7 @@ TESTSRCS = potatofs_tests.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c \
 TESTOBJS = $(TESTSRCS:.c=.o)
 
 all: potatofs potatoctl potatofs_tests
+	GOCACHE=/tmp/.go_cache make -C backends/backend_s3
 
 potatofs: $(OBJS)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatofs $(OBJS) $(LDFLAGS)
