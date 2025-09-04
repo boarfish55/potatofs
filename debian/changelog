@@ -1,3 +1,24 @@
+potatofs (2.12.9-1) unstable; urgency=medium
+
+  * v2.12.9
+  * Add a "wait" command that waits for the pid lock to be released.
+    This can be used to ensure the potatofs instance is fully shut off
+  * Report opendir() ENOMEM errors as normal fs errors to the user
+  * Support single-threaded operation; this can be useful to test
+    out-of-memory errors without interfering with libfuse operation
+  * Add a test for some ENOMEM conditions; run these tests in a separate
+    potatofs instance running single-threaded to avoid fuse thread creation
+    errors
+  * New async option to disable sync writes to directories and inode tables
+  * Added missing fuse3 dependency
+  * Comments & readme fixes
+  * bugfix with recvmsg, comments
+  * Fix description
+  * Added a counter for slow mgr connects
+  * More ctop counters
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Thu, 04 Sep 2025 15:54:16 -0400
+
 potatofs (2.12.8-1) unstable; urgency=medium
 
   * Close rows immediately after we are finished with them, don't wait for
