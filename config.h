@@ -53,8 +53,8 @@
 #define MGR_DEFAULT_UNPRIV_USER       "potatomgr"
 #define MGR_DEFAULT_UNPRIV_GROUP      "potatomgr"
 #define MGR_DEFAULT_BACKEND_EXEC      "/usr/local/bin/potato_backend.sh"
-#define MGR_DEFAULT_WORKERS           12
-#define MGR_DEFAULT_BGWORKERS         1
+#define MGR_DEFAULT_WORKERS           14
+#define MGR_DEFAULT_BGWORKERS         2
 #define MGR_DEFAULT_PURGER_INTERVAL   30
 #define MGR_DEFAULT_SCRUBBER_INTERVAL 3600
 #define MGR_DEFAULT_DF_INTERVAL       60
