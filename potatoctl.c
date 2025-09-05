@@ -56,6 +56,7 @@ static int  dump_config(int, char **);
 static int  fs_status(int, char **);
 static int  do_shutdown(int, char **);
 static int  set_clean(int, char **);
+static int  is_clean(int, char **);
 static int  do_scrub(int, char **);
 static int  do_flush(int, char **);
 static int  do_purge(int, char **);
@@ -85,6 +86,7 @@ struct subc {
 	{ "status", &fs_status, 0 },
 	{ "shutdown", &do_shutdown, 0 },
 	{ "set_clean", &set_clean, 0 },
+	{ "is_clean", &is_clean, 0 },
 	{ "scrub", &do_scrub, 0 },
 	{ "flush", &do_flush, 0 },
 	{ "purge", &do_purge, 0 },
@@ -166,6 +168,7 @@ usage()
 	    "           status\n"
 	    "           shutdown [grace period seconds]\n"
 	    "           set_clean\n"
+	    "           is_clean\n"
 	    "           scrub\n"
 	    "           flush\n"
 	    "           purge\n"
@@ -1478,6 +1481,35 @@ set_clean(int argc, char **argv)
 		xerr_print(&e);
 		exit(1);
 	}
+
+	return 0;
+}
+
+int
+is_clean(int argc, char **argv)
+{
+	struct xerr    e;
+	struct fs_info fs_info;
+	int            mgr;
+	uint64_t       counters[COUNTER_LAST];
+	uint64_t       mgr_counters[MGR_COUNTER_LAST];
+
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
+		if (fs_info_read(&fs_info, xerrz(&e)) == -1) {
+			xerr_print(&e);
+			exit(1);
+		}
+
+		if (fs_info.clean == 0 && fs_info.error > 0)
+			return 1;
+
+		return 0;
+	}
+	close(mgr);
+
+	read_metrics(counters, mgr_counters);
+	if (counters[COUNTER_FS_ERROR] > 0)
+		return 1;
 
 	return 0;
 }
