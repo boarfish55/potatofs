@@ -1718,8 +1718,8 @@ is_clean(int argc, char **argv)
 			exit(1);
 		}
 
-		if (fs_info.clean == 0 && fs_info.error > 0)
-			return 1;
+		if (fs_info.clean == 0 || fs_info.error > 0)
+			return 2;
 
 		return 0;
 	}
@@ -1727,7 +1727,7 @@ is_clean(int argc, char **argv)
 
 	read_metrics(counters, mgr_counters);
 	if (counters[COUNTER_FS_ERROR] > 0)
-		return 1;
+		return 2;
 
 	return 0;
 }
