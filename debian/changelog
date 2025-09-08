@@ -1,3 +1,21 @@
+potatofs (3.0.0-1) unstable; urgency=medium
+
+  * Fixed potential bug in n_free tracking in slabs
+  * Fixed size check in inode_inspect
+  * Let fsck fix bad n_free count on itbl
+  * Additional validation on inodes in fsck
+  * Fixed inode command
+  * error logging fix in backend_s3, worker count default increase
+  * Added is_clean command to potatoctl for scripts
+  * README updates
+  * Remove unused function prototype
+  * Added a find_inode_dir to locate the directory's inode where another
+    inode is contained
+  * Made load_dir() more reusable
+  * Add a convenience tag script, use tags to determine version
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 08 Sep 2025 17:09:17 -0400
+
 potatofs (2.12.11-4) unstable; urgency=medium
 
   * control syntax
