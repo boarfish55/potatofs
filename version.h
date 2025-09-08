@@ -32,6 +32,8 @@
  * are committed, and PATCH for any other backward-compatible change
  * (usually bug fix or minor updates that do not alter functionality).
  */
+#ifndef VERSION
 #define VERSION "3.0.0"
+#endif
 
 #endif
