@@ -24,6 +24,7 @@
 #include <sys/resource.h>
 #include <stdint.h>
 #include <limits.h>
+#include "version.h"
 
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
