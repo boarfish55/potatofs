@@ -861,11 +861,11 @@ find_inode_dir(int mgr, ino_t search, int nonblock, struct xerr *e)
 					if (a.found)
 						found = 1;
 				} else {
-					free(dir);
-					free(data);
 					return XERRF(e, XLOG_APP, XLOG_IO,
 					    "invalid directory format %d for "
 					    "inode %lu", ((struct dir_hdr *)dir)->dirinode_format, ino);
+					free(dir);
+					free(data);
 				}
 				free(dir);
 			}
