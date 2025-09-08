@@ -40,8 +40,9 @@ static int      db_version = 0;
 
 const int   qry_busy_timeout = 15000;
 
+#define TO_STR(x) #x
 const char *qry_create_version_table = "create table if not exists version"
-	        " as select " SLABDB_VERSION " as version";
+	        " as select " TO_STR(SLABDB_VERSION) " as version";
 const char *qry_check_version = "select version from version";
 
 const char *qry_create_table = "create table if not exists slabs("
@@ -754,7 +755,7 @@ slabdb_init(uuid_t id, struct xerr *e)
 		goto fail;
 	}
 
-	if (db_version != atoi(SLABDB_VERSION)) {
+	if (db_version != SLABDB_VERSION) {
 		XERRF(e, XLOG_APP, XLOG_INVAL,
 		    "mismatching db_version; current=%d, wanted=%d",
 		    db_version, SLABDB_VERSION);

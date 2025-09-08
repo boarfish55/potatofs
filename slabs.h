@@ -257,7 +257,6 @@ ssize_t       slab_itbls(off_t *, size_t, struct xerr *);
 
 /* Must be called while the slab lock is held */
 int   slab_itbl_is_free(struct oslab *, ino_t);
-ino_t slab_find_free_inode(struct oslab *);
 ino_t slab_itbl_find_unallocated(struct oslab *);
 void  slab_itbl_dealloc(struct oslab *, ino_t);
 void  slab_itbl_alloc(struct oslab *, ino_t);

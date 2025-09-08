@@ -1400,7 +1400,7 @@ inode_inspect(int mgr, ino_t ino, struct inode *inode, int nonblock,
 		goto fail;
 	}
 
-	if ((data + (ino - b.hdr.v.f.key.base) + sizeof(struct inode) >
+	if ((data + ((ino - b.hdr.v.f.key.base) * sizeof(struct inode) + 1) >
 	    data + data_sz)) {
 		XERRF(e, XLOG_APP, XLOG_IO,
 		    "short read while reading inode %lu", ino);

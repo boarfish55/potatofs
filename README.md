@@ -139,7 +139,7 @@ See: https://marc.info/?l=fuse-devel&m=150640983731277&w=2
 	filesystems."
 
 Currently the filesystem uses O_SYNC for directory data and inode tables.
-Maybe one day we can add journaling or soft updates.
+Maybe one day we can add journaling.
 
 Inode struct is 4K. The reasoning behind this is that since we expect the
 backend to be *really* slow, we want to get the most of our fetching slabs.
@@ -166,7 +166,7 @@ TODO
   most read-only operations should be safe, though this is not thoroughly
   verified.
 * Refactor fuse ops handling as a queue so we can implement nice things
-  like interrupting in flight operations, or journaling/soft updates.
+  like interrupting in flight operations, or journaling.
 * Add a potatoctl backup command, which does an online backup of the
   slab db, uploads it to the backend, as well as the stats fs_info file.
   See: https://www.sqlite.org/backup.html

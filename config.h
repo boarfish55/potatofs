@@ -28,20 +28,6 @@
 #define PROGNAME     "potatofs"
 #define MGR_PROGNAME "potatomgr"
 
-/*
- * Version loosely follows SemVer (semver.org). MAJOR must be updated
- * whenever:
- *   - SLAB_VERSION is incremented in slabs.h
- *   - SLABDB_VERSION is incremented in slabdb.h
- *   - a new dir inode format is introduced and defaulted to in dirinodes.h
- *     (see DIRINODE_FORMAT).
- *
- * MINOR should be updated whenever backward-compatible feature updates
- * are committed, and PATCH for any other backward-compatible change
- * (usually bug fix or minor updates that do not alter functionality).
- */
-#define VERSION      "2.12.11"
-
 #define FS_DEFAULT_ENTRY_TIMEOUTS 120
 #define FS_DEFAULT_DATA_DIR       "/var/potatofs/data"
 
@@ -53,8 +39,8 @@
 #define MGR_DEFAULT_UNPRIV_USER       "potatomgr"
 #define MGR_DEFAULT_UNPRIV_GROUP      "potatomgr"
 #define MGR_DEFAULT_BACKEND_EXEC      "/usr/local/bin/potato_backend.sh"
-#define MGR_DEFAULT_WORKERS           12
-#define MGR_DEFAULT_BGWORKERS         1
+#define MGR_DEFAULT_WORKERS           14
+#define MGR_DEFAULT_BGWORKERS         2
 #define MGR_DEFAULT_PURGER_INTERVAL   30
 #define MGR_DEFAULT_SCRUBBER_INTERVAL 3600
 #define MGR_DEFAULT_DF_INTERVAL       60

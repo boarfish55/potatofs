@@ -46,6 +46,7 @@ static int  slabdb(int, char **);
 static int  claim(int, char **);
 static int  show_slab(int, char **);
 static int  show_dir(int, char **);
+static int  do_find_inode_dir(int, char **);
 static int  show_inode(int, char **);
 static int  inode_tables(int, char **);
 static int  fsck(int, char **);
@@ -56,6 +57,7 @@ static int  dump_config(int, char **);
 static int  fs_status(int, char **);
 static int  do_shutdown(int, char **);
 static int  set_clean(int, char **);
+static int  is_clean(int, char **);
 static int  do_scrub(int, char **);
 static int  do_flush(int, char **);
 static int  do_purge(int, char **);
@@ -63,7 +65,7 @@ static int  do_offline(int, char **);
 static int  do_online(int, char **);
 static int  do_wait(int, char **);
 static void usage();
-static int  load_dir(int, char **, struct inode *, int *);
+static int  load_dir(int, char **, struct inode *, int *, struct xerr *);
 static int  write_dir(int, char *, struct inode *);
 static void print_inode(struct inode *, int);
 static void print_slab_hdr(struct slab_hdr *, const uint32_t *);
@@ -77,6 +79,7 @@ struct subc {
 	{ "claim", &claim, 0 },
 	{ "slab", &show_slab, 1 },
 	{ "dir", &show_dir, 0 },
+	{ "find_inode_dir", &do_find_inode_dir, 0 },
 	{ "inode", &show_inode, 0 },
 	{ "top", &top, 0 },
 	{ "ctop", &ctop, 0 },
@@ -85,6 +88,7 @@ struct subc {
 	{ "status", &fs_status, 0 },
 	{ "shutdown", &do_shutdown, 0 },
 	{ "set_clean", &set_clean, 0 },
+	{ "is_clean", &is_clean, 0 },
 	{ "scrub", &do_scrub, 0 },
 	{ "flush", &do_flush, 0 },
 	{ "purge", &do_purge, 0 },
@@ -160,12 +164,15 @@ usage()
 	    "Usage: potatoctl [options] <subcommand> <args...>\n"
 	    "           slab  <slab file>\n"
 	    "           dir   <dir inode#>\n"
+	    "           inode <inode#>\n"
 	    "           top   [delay]\n"
+	    "           find_inode_dir <inode#>\n"
 	    "           ctop\n"
 	    "           counters\n"
 	    "           status\n"
 	    "           shutdown [grace period seconds]\n"
 	    "           set_clean\n"
+	    "           is_clean\n"
 	    "           scrub\n"
 	    "           flush\n"
 	    "           purge\n"
@@ -374,18 +381,33 @@ validate_dir_v1(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	return dirty;
 }
 
+struct print_dirent_v2_args {
+	ino_t match;
+	ino_t parent;
+	int   found;
+};
+
 void
-print_dirent_v2(struct dir_entry_v2 *de_v2)
+print_dirent_v2(struct dir_entry_v2 *de_v2, void *args)
 {
-	printf("    inode:  %lu\n", de_v2->inode);
-	printf("    name:   %.*s\n\n", de_v2->length, de_v2->name);
+	struct print_dirent_v2_args *a;
+
+	if (args != NULL) {
+		a = (struct print_dirent_v2_args *)args;
+		if (a->match != de_v2->inode)
+			return;
+		a->found = 1;
+		printf("    parend:  %lu\n", a->parent);
+	}
+	printf("    inode:   %lu\n", de_v2->inode);
+	printf("    name:    %.*s\n\n", de_v2->length, de_v2->name);
 }
 
 int
 validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
     off_t b_off, int depth, uint8_t *dir_blocks,
-    struct fsck_stats *stats, void(*print_fn)(struct dir_entry_v2 *),
-    struct xerr *e)
+    struct fsck_stats *stats, void(*print_fn)(struct dir_entry_v2 *, void *),
+    void *args, struct xerr *e)
 {
 	struct dir_block_v2 *b = (struct dir_block_v2 *)(dir + b_off);
 	struct dir_entry_v2  de_v2;
@@ -463,7 +485,7 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 					continue;
 				}
 				if (print_fn != NULL)
-					print_fn(&de_v2);
+					print_fn(&de_v2, args);
 			}
 
 			if (i != b->v.leaf.entries) {
@@ -505,7 +527,7 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 
 		if (validate_dir_block_v2(mgr, ino, dir, dir_sz,
 		    b->v.idx.buckets[bucket], depth + 1,
-		    dir_blocks, stats, print_fn, e) == -1)
+		    dir_blocks, stats, print_fn, args, e) == -1)
 			return XERR_PREPENDFN(e);
 	}
 	return 0;
@@ -513,8 +535,8 @@ validate_dir_block_v2(int mgr, ino_t ino, char *dir, size_t dir_sz,
 
 int
 validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
-    struct fsck_stats *stats, void(*print_fn)(struct dir_entry_v2 *),
-    struct xerr *e)
+    struct fsck_stats *stats, void(*print_fn)(struct dir_entry_v2 *, void *),
+    void *args, struct xerr *e)
 {
 	int                  dirty = 0;
 	struct dir_hdr_v2   *hdr = (struct dir_hdr_v2 *)dir;
@@ -522,10 +544,18 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 	size_t               dir_blocks_sz;
 	struct dir_block_v2 *b;
 
-	if (!valid_inode(mgr, hdr->v.h.inode)) {
+	/*
+	 * At this point we assume the current dir inode has itself
+	 * already been validated, so just make sure it's the right
+	 * inode number.
+	 */
+	if (ino != hdr->v.h.inode) {
+		warnx("dir inode number doesn't match what we expect: "
+		    "expected=%lu, actual=%lu", ino, hdr->v.h.inode);
 		if (stats != NULL)
 			stats->errors++;
 	}
+
 	if (add_found_inode(hdr->v.h.inode, e) == -1)
 		return XERR_PREPENDFN(e);
 	if (stats != NULL)
@@ -560,7 +590,7 @@ validate_dir_v2(int mgr, ino_t ino, char *dir, size_t *dir_sz,
 
 	if (validate_dir_block_v2(mgr, hdr->v.h.inode, dir, *dir_sz,
 	    sizeof(struct dir_hdr_v2), 0, dir_blocks, stats,
-	    print_fn, e) == -1) {
+	    print_fn, args, e) == -1) {
 		free(dir_blocks);
 		return XERR_PREPENDFN(e);
 	}
@@ -614,15 +644,17 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 
 	fsck_printf("  inode: %lu", ino);
 	if (unallocated) {
-		if (inode == NULL) {
+		if (inode == NULL)
 			return 0;
-		} else if (inode->v.f.nlink > 0) {
+
+		if (inode->v.f.nlink > 0) {
 			warnx("leaked inode %lu; bitmap says it's free, "
 			    "but nlink is %lu", ino, inode->v.f.nlink);
 			if (stats != NULL)
 				stats->errors++;
 			return -1;
 		}
+
 		return 0;
 	} else {
 		if (inode == NULL) {
@@ -631,9 +663,47 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			if (stats != NULL)
 				stats->errors++;
 			return -1;
-		} else if (inode->v.f.nlink == 0) {
+		}
+
+		if (inode->v.f.inode != ino) {
+			warnx("inode number mismatch: found %lu in the inode "
+			    "structure where it should be %lu based on the "
+			    "bitmap index", inode->v.f.inode, ino);
+			if (stats != NULL)
+				stats->errors++;
+			return -1;
+		}
+
+		if (inode->v.f.nlink == 0) {
 			warnx("unlinked inode %lu; bitmap says it's allocated, "
 			    "but nlink is 0", ino);
+			if (stats != NULL)
+				stats->errors++;
+			return -1;
+		}
+
+		switch (inode->v.f.mode & S_IFMT) {
+		case S_IFSOCK:
+		case S_IFLNK:
+		case S_IFREG:
+		case S_IFBLK:
+		case S_IFDIR:
+		case S_IFCHR:
+		case S_IFIFO:
+			break;
+		default:
+			warnx("inode %lu has invalid mode file type: %x",
+			    ino, inode->v.f.mode & S_IFMT);
+			if (stats != NULL)
+				stats->errors++;
+			return -1;
+		}
+
+		if ((inode->v.f.blocks > 0 || inode->v.f.size > 0) &&
+		    (inode->v.f.blocks != inode->v.f.size / 512 + 1)) {
+			warnx("inode %lu mismatching size/blocks: "
+			    "size=%lu, blocks=%lu",
+			    ino, inode->v.f.size, inode->v.f.blocks);
 			if (stats != NULL)
 				stats->errors++;
 			return -1;
@@ -665,7 +735,7 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	if (stats != NULL)
 		stats->n_dirs++;
 
-	if (load_dir(mgr, &dir, inode, &dirty) == -1) {
+	if (load_dir(mgr, &dir, inode, &dirty, e) == -1) {
 		if (stats != NULL)
 			stats->errors++;
 		return -1;
@@ -679,7 +749,8 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 			return XERR_PREPENDFN(e);
 		}
 	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
-		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats, NULL, e);
+		dirty = validate_dir_v2(mgr, ino, dir, &dir_sz, stats,
+		    NULL, NULL, e);
 		if (dirty == -1) {
 			free(dir);
 			return XERR_PREPENDFN(e);
@@ -698,6 +769,114 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 	}
 
 	free(dir);
+	return 0;
+}
+
+int
+find_inode_dir(int mgr, ino_t search, int nonblock, struct xerr *e)
+{
+	ino_t                        base, ino;
+	struct inode                *ip;
+	int                          i;
+	struct oslab                 b;
+	struct slab_key              sk;
+	struct slab_itbl_hdr        *ihdr;
+	char                        *data;
+	size_t                       data_sz;
+	int                          found = 0;
+	char                        *dir = NULL;
+	size_t                       dir_sz;
+	uint32_t                    *p;
+	uint32_t                     mask;
+	uint32_t                     oflags =
+	    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
+	struct print_dirent_v2_args  a;
+
+	if (nonblock)
+		oflags |= OSLAB_NONBLOCK;
+
+	for (base = 1; base < SLAB_KEY_MAX && !found;
+	    base += slab_inode_max()) {
+		if ((data = slab_inspect(mgr, slab_key(&sk, 0, base),
+		    oflags, &b.hdr, &data_sz, xerrz(e))) == NULL) {
+			/*
+			 * We've reached the last inode table slab
+			 * so we stop here.
+			 */
+			if (xerr_is(e, XLOG_APP, XLOG_NOSLAB))
+				break;
+
+			return XERR_PREPENDFN(e);
+		}
+
+		ip = (struct inode *)data;
+
+		ihdr = (struct slab_itbl_hdr *)slab_hdr_data(&b);
+		for (p = ihdr->bitmap;
+		    p - ihdr->bitmap < (slab_inode_max() / 32); p++) {
+			if (*p == 0x00000000)
+				continue;
+
+			for (i = 1; i <= 32; i++, ip++) {
+				mask = 1 << (32 - i);
+				if ((*p & mask) == 0)
+					continue;
+
+				ino = (p - ihdr->bitmap) * 32 + i +
+				    (b.hdr.v.f.key.base - 1);
+
+				if (ip + 1 > (struct inode *)(data + data_sz)) {
+					free(data);
+					return XERRF(e, XLOG_APP, XLOG_IO,
+					    "short read while reading inode "
+					    "%lu from slab data", ino);
+				}
+
+				if (!(ip->v.f.mode & S_IFDIR))
+					continue;
+
+				if (load_dir(mgr, &dir, ip, NULL, e) == -1) {
+					free(data);
+					return XERR_PREPENDFN(e);
+				}
+				dir_sz = ip->v.f.size;
+
+				if (((struct dir_hdr *)dir)->dirinode_format == 1) {
+					// TODO: implement print_fn for v1 too
+					if (validate_dir_v1(mgr, ino, dir, &dir_sz, NULL, e)) {
+						free(dir);
+						free(data);
+						return XERR_PREPENDFN(e);
+					}
+				} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
+					a.match = search;
+					a.parent = ino;
+					a.found = 0;
+					if (validate_dir_v2(mgr, ino, dir, &dir_sz, NULL,
+					    &print_dirent_v2, &a, e)) {
+						free(dir);
+						free(data);
+						return XERR_PREPENDFN(e);
+					}
+					if (a.found)
+						found = 1;
+				} else {
+					free(dir);
+					free(data);
+					return XERRF(e, XLOG_APP, XLOG_IO,
+					    "invalid directory format %d for "
+					    "inode %lu", ((struct dir_hdr *)dir)->dirinode_format, ino);
+				}
+				free(dir);
+			}
+		}
+		free(data);
+	}
+
+	if (!found)
+		return XERRF(e, XLOG_APP, XLOG_NOTFOUND,
+		    "inode not found or is unallocated");
+
 	return 0;
 }
 
@@ -815,6 +994,45 @@ do_flush(int argc, char **argv)
 	}
 
 	if (start_flush(mgr, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		status = 1;
+		close(mgr);
+		goto end;
+	}
+
+	close(mgr);
+end:
+	if (mgr_send_shutdown(0, xerrz(&e)) == -1) {
+		xerr_print(&e);
+		return 1;
+	}
+	return status;
+}
+
+int
+do_find_inode_dir(int argc, char **argv)
+{
+	int         mgr;
+	struct xerr e;
+	int         status = 0;
+	ino_t       ino;
+
+	if (argc < 1) {
+		usage();
+		exit(1);
+	}
+	ino = strtoul(argv[0], NULL, 10);
+
+	if (mgr_start(1, 1) == -1)
+		err(1, "mgr_start");
+
+	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
+		xerr_print(&e);
+		status = 1;
+		goto end;
+	}
+
+	if (find_inode_dir(mgr, ino, 1, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		status = 1;
 		close(mgr);
@@ -1077,6 +1295,98 @@ end:
 	return itbl;
 }
 
+static int
+fsck_slab_write(int mgr, struct oslab *b, void *data, size_t data_sz,
+    struct xerr *e)
+{
+	struct mgr_msg  m;
+	ssize_t         r;
+	int             fd;
+	struct slab_hdr hdr;
+	int             status = 0;
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_CLAIM;
+	slab_key(&m.v.claim.key, b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
+
+	if (mgr_send(mgr, -1, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (mgr_recv(mgr, &fd, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (m.m == MGR_MSG_CLAIM_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_CLAIM_OK) {
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "mgr_recv: unexpected response: %d", m.m);
+		return XERR_PREPENDFN(e);
+	}
+
+	b->fd = fd;
+
+	/* Keep a copy so we can overwrite what we read */
+	memcpy(&hdr, &b->hdr, sizeof(hdr));
+
+	if (slab_read_hdr(b, e) == -1) {
+		XERR_PREPENDFN(e);
+		goto fail;
+	}
+
+	if (b->hdr.v.f.key.ino != m.v.claim.key.ino ||
+	    b->hdr.v.f.key.base != m.v.claim.key.base) {
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "slab header's ino/base (%lu / %lu) does not match "
+		    "what the slabdb contains (%lu / %lu)",
+		    b->hdr.v.f.key.ino, b->hdr.v.f.key.base,
+		    m.v.claim.key.ino, m.v.claim.key.base);
+		goto fail;
+	}
+
+	if (b->hdr.v.f.slab_version != SLAB_VERSION) {
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "unrecognized data format version: base=%lu, "
+		    "version=%u", b->hdr.v.f.key.base,
+		    b->hdr.v.f.slab_version);
+		goto fail;
+	}
+
+	if (verify_checksum(b->fd, &b->hdr, e) == -1)
+		goto fail;
+
+	memcpy(&b->hdr, &hdr, sizeof(hdr));
+	if ((r = slab_write_hdr(b, e)) == -1) {
+		XERR_PREPENDFN(e);
+		goto fail;
+	}
+	if (data != NULL &&
+	    ((r = slab_write(b, data, 0, data_sz, e)) < data_sz)) {
+		XERRF(e, XLOG_APP, XLOG_IO, "short write on slab %lu/%lu",
+		    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+		goto fail;
+	}
+	goto end;
+fail:
+	status = 1;
+end:
+	m.m = MGR_MSG_UNCLAIM;
+	memcpy(&m.v.unclaim.key, &b->hdr.v.f.key, sizeof(struct slab_key));
+	if (mgr_send(mgr, b->fd, &m, e) != -1 &&
+	    mgr_recv(mgr, NULL, &m, e) != -1 &&
+	    m.m != MGR_MSG_UNCLAIM_OK) {
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			memcpy(e, &m.v.err, sizeof(struct xerr));
+			XERR_PREPENDFN(e);
+		} else
+			XERRF(e, XLOG_APP, XLOG_MGRERROR,
+			    "mgr_recv: unexpected response: %d", m.m);
+	}
+	close(b->fd);
+	return status;
+}
+
 int
 fsck(int argc, char **argv)
 {
@@ -1151,12 +1461,29 @@ fsck(int argc, char **argv)
 			if (is_free)
 				n_free++;
 		}
+		// TODO: so seems like we really just compare the bitmap vs.
+		// the n_free count; how could we get a mismatch? Should
+		// we just overwrite the value here when fsck_fix is set??
 		if (ihdr->n_free != n_free) {
 			warnx("%s: incorrect free inode count in "
 			    "inode table base %lu (n_free=%u, actual=%lu)",
 			    __func__, b.hdr.v.f.key.base,
 			    ihdr->n_free, n_free);
 			stats.errors++;
+
+			if (fsck_fix) {
+				warnx("%s: fixing invalid n_free in "
+				    "itbl base %lu", __func__,
+				    b.hdr.v.f.key.base);
+				ihdr->n_free = n_free;
+				if (fsck_slab_write(mgr, &b, NULL,
+				    0, xerrz(&e)) == -1) {
+					// TODO: maybe rewrite/rename?
+					warnx("%s: error while writing slab",
+					    __func__);
+					xerr_print(&e);
+				}
+			}
 		}
 		free(itbl);
 	}
@@ -1478,6 +1805,35 @@ set_clean(int argc, char **argv)
 		xerr_print(&e);
 		exit(1);
 	}
+
+	return 0;
+}
+
+int
+is_clean(int argc, char **argv)
+{
+	struct xerr    e;
+	struct fs_info fs_info;
+	int            mgr;
+	uint64_t       counters[COUNTER_LAST];
+	uint64_t       mgr_counters[MGR_COUNTER_LAST];
+
+	if ((mgr = mgr_connect(0, xerrz(&e))) == -1) {
+		if (fs_info_read(&fs_info, xerrz(&e)) == -1) {
+			xerr_print(&e);
+			exit(1);
+		}
+
+		if (fs_info.clean == 0 || fs_info.error > 0)
+			return 2;
+
+		return 0;
+	}
+	close(mgr);
+
+	read_metrics(counters, mgr_counters);
+	if (counters[COUNTER_FS_ERROR] > 0)
+		return 2;
 
 	return 0;
 }
@@ -2271,7 +2627,7 @@ fail:
  * all slabs tied to that inode.
  */
 int
-load_dir(int mgr, char **data, struct inode *inode, int *dirty)
+load_dir(int mgr, char **data, struct inode *inode, int *dirty, struct xerr *e)
 {
 	off_t           r_offset, w_offset, slab_sz, dir_sz;
 	ssize_t         r;
@@ -2281,12 +2637,11 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 	struct oslab   *b;
 	char            path[PATH_MAX];
 	char           *d;
-	struct xerr     e = XLOG_ERR_INITIALIZER;
 
 	// TODO: properly return an error, don't err()
 
 	if ((d = malloc(inode->v.f.size)) == NULL)
-		err(1, "malloc");
+		return XERRF(e, XLOG_ERRNO, errno, "malloc");
 
 	r_offset = (inode->v.f.size < INODE_INLINE_BYTES)
 	    ? inode->v.f.size
@@ -2298,7 +2653,7 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 
 	if (((struct dir_hdr *)d)->dirinode_format > DIRINODE_FORMAT ||
 	    ((struct dir_hdr *)d)->dirinode_format == 0) {
-		warnx("%s: unsupposed dirinode format %u",
+		warnx("%s: unsupported dirinode format %u",
 		    __func__, ((struct dir_hdr *)d)->dirinode_format);
 		free(d);
 		return -1;
@@ -2315,56 +2670,59 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		slab_key(&m.v.claim.key, ino, r_offset);
 		m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
 
-		if (mgr_send(mgr, -1, &m, &e) == -1) {
-			xerr_print(&e);
+		if (mgr_send(mgr, -1, &m, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail;
 		}
 
-		if (mgr_recv(mgr, &fd, &m, &e) == -1) {
-			xerr_prepend(&e, __func__);
-			xerr_print(&e);
+		if (mgr_recv(mgr, &fd, &m, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail;
 		}
 
 		if (m.m == MGR_MSG_CLAIM_ERR) {
-			memcpy(&e, &m.v.err, sizeof(struct xerr));
-			xerr_prepend(&e, __func__);
-			xerr_print(&e);
+			memcpy(e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(e, __func__);
 			goto fail;
 		} else if (m.m != MGR_MSG_CLAIM_OK) {
-			warnx("%s: mgr_recv: unexpected response: %d",
+			XERRF(e, XLOG_APP, XLOG_MGRERROR,
+			    "%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			goto fail;
 		}
 
-		if ((b = malloc(sizeof(struct oslab))) == NULL)
-			err(1, "malloc");
+		if ((b = malloc(sizeof(struct oslab))) == NULL) {
+			XERRF(e, XLOG_ERRNO, errno, "malloc");
+			goto fail;
+		}
 		bzero(b, sizeof(struct oslab));
 
 		b->fd = fd;
-		if (slab_read_hdr(b, &e) == -1) {
-			xerr_print(&e);
+		if (slab_read_hdr(b, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 
 		if (b->hdr.v.f.slab_version != SLAB_VERSION) {
-			warnx("unrecognized data format version: %u",
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "unrecognized data format version: %u",
 			    b->hdr.v.f.slab_version);
 			goto fail_free_slab;
 		}
 
-		if (verify_checksum(b->fd, &b->hdr, &e) == -1) {
-			xerr_print(&e);
+		if (verify_checksum(b->fd, &b->hdr, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 
-		if ((slab_sz = slab_size(b, &e)) == ULONG_MAX) {
-			xerr_print(&e);
+		if ((slab_sz = slab_size(b, e)) == ULONG_MAX) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 
 		if ((b->hdr.v.f.flags & SLAB_REMOVED) && slab_sz > 0) {
-			warnx("slab %s is removed, but size is larger than %lu",
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "slab %s is removed, but size is larger than %lu",
 			    path, sizeof(struct slab_hdr));
 			goto fail_free_slab;
 		}
@@ -2373,8 +2731,8 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		    r_offset % slab_get_max_size(),
 		    ((dir_sz - w_offset < slab_get_max_size())
 		    ? dir_sz - w_offset
-		    : slab_get_max_size()), &e)) == -1) {
-			xerr_print(&e);
+		    : slab_get_max_size()), e)) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 		w_offset += r;
@@ -2383,24 +2741,23 @@ load_dir(int mgr, char **data, struct inode *inode, int *dirty)
 		m.m = MGR_MSG_UNCLAIM;
 		memcpy(&m.v.unclaim.key, &b->hdr.v.f.key,
 		    sizeof(struct slab_key));
-		if (mgr_send(mgr, b->fd, &m, &e) == -1) {
-			xerr_print(&e);
+		if (mgr_send(mgr, b->fd, &m, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 
-		if (mgr_recv(mgr, NULL, &m, &e) == -1) {
-			xerr_prepend(&e, __func__);
-			xerr_print(&e);
+		if (mgr_recv(mgr, NULL, &m, e) == -1) {
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		}
 
 		if (m.m == MGR_MSG_UNCLAIM_ERR) {
-			memcpy(&e, &m.v.err, sizeof(struct xerr));
-			xerr_prepend(&e, __func__);
-			xerr_print(&e);
+			memcpy(e, &m.v.err, sizeof(struct xerr));
+			xerr_prepend(e, __func__);
 			goto fail_free_slab;
 		} else if (m.m != MGR_MSG_UNCLAIM_OK) {
-			warnx("%s: mgr_recv: unexpected response: %d",
+			XERRF(e, XLOG_APP, XLOG_MGRERROR,
+			    "%s: mgr_recv: unexpected response: %d",
 			    __func__, m.m);
 			goto fail_free_slab;
 		}
@@ -2438,7 +2795,8 @@ show_inode(int argc, char **argv)
 	size_t           slab_sz;
 	char             path[PATH_MAX];
 	struct slab_key  sk;
-	int              mgr;
+	int              mgr, mgr_not_started = 0;
+	int              status = 0;
 
 	if (argc < 1) {
 		usage();
@@ -2448,16 +2806,21 @@ show_inode(int argc, char **argv)
 	if ((ino = strtoull(argv[0], NULL, 10)) == ULLONG_MAX)
 		errx(1, "inode provided is invalid");
 
+	if (mgr_start(1, 1) == -1) {
+		mgr_not_started = 1;
+		warn("mgr_start");
+	}
+
 	if ((mgr = mgr_connect(1, &e)) == -1) {
 		xerr_print(&e);
-		exit(1);
+		goto fail;
 	}
 
 	if (inode_inspect(mgr, ino, &inode, 1, &e) == -1) {
 		if (xerr_is(&e, XLOG_FS, ENOENT))
-			errx(1, "inode is not allocated");
+			errx(1, "inode %lu is not allocated", ino);
 		xerr_print(&e);
-		exit(1);
+		goto fail;
 	}
 
 	printf("inode: %lu\n", ino);
@@ -2468,14 +2831,14 @@ show_inode(int argc, char **argv)
 		if (slab_path(path, sizeof(path),
 		    slab_key(&sk, ino, i), 1, &e) == -1) {
 			xerr_print(&e);
-			exit(1);
+			goto fail;
 		}
 
 		if ((data = slab_inspect(mgr, slab_key(&sk, ino, i),
 		    OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT,
 		    &hdr, &slab_sz, &e)) == NULL) {
 			xerr_print(&e);
-			exit(1);
+			goto fail;
 		}
 		free(data);
 
@@ -2498,11 +2861,17 @@ show_inode(int argc, char **argv)
 		printf("\n");
 	}
 
-	close(mgr);
-
 	if (i < inode.v.f.size)
 		warnx("  ** inode is truncated; data might be incomplete");
-	return 0;
+	goto end;
+fail:
+	status = 1;
+end:
+	if (mgr != -1)
+		close(mgr);
+	if (!mgr_not_started && mgr_send_shutdown(0, xerrz(&e)) == -1)
+		xerr_print(&e);
+	return status;
 }
 
 int
@@ -2552,12 +2921,11 @@ show_dir(int argc, char **argv)
 	printf("inode: %lu\n", ino);
 	printf("  dirents:\n");
 
-	if (load_dir(mgr, &dir, &inode, NULL) == -1) {
-		warnx("load_dir failed");
+	if (load_dir(mgr, &dir, &inode, NULL, xerrz(&e)) == -1) {
+		xerr_print(&e);
 		goto fail;
 	}
 	dir_sz = inode.v.f.size;
-
 
 	if (((struct dir_hdr *)dir)->dirinode_format == 1) {
 		if (validate_dir_v1(mgr, ino, dir, &dir_sz, &stats, &e)) {
@@ -2566,7 +2934,7 @@ show_dir(int argc, char **argv)
 		}
 	} else if (((struct dir_hdr *)dir)->dirinode_format == 2) {
 		if (validate_dir_v2(mgr, ino, dir, &dir_sz, &stats,
-		    &print_dirent_v2, &e)) {
+		    &print_dirent_v2, NULL, &e)) {
 			xerr_print(&e);
 			goto fail;
 		}

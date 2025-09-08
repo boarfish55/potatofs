@@ -418,7 +418,7 @@ func (h *HintsDB) decrementHintHits(parentIno uint64, parentBase int64, ino uint
 		return
 	}
 	defer stmt.Close()
-	stmt.Exec(parentIno, parentBase, ino, base)
+	_, err = stmt.Exec(parentIno, parentBase, ino, base)
 	if err != nil {
 		logger.Errf("decrementHintHits: %v", err)
 		return
@@ -437,7 +437,7 @@ func (h *HintsDB) incrementHintHits(parentIno uint64, parentBase int64, ino uint
 		return
 	}
 	defer stmt.Close()
-	stmt.Exec(parentIno, parentBase, ino, base)
+	_, err = stmt.Exec(parentIno, parentBase, ino, base)
 	if err != nil {
 		logger.Errf("incrementHintHits: %v", err)
 	}
@@ -506,7 +506,7 @@ func (h *HintsDB) AddOpenSlab(ino uint64, base int64) error {
 			return err
 		}
 		defer stmt.Close()
-		stmt.Exec(ino, base)
+		_, err = stmt.Exec(ino, base)
 		if err != nil {
 			return err
 		}

@@ -38,6 +38,7 @@ enum xerr_code {
 	XLOG_IO,           /* Something abnormal happened during I/O op */
 	XLOG_NAMETOOLONG,  /* File name too long */
 	XLOG_EOF,          /* End-of-file */
+	XLOG_NOTFOUND,     /* Item not found */
 
 	/* The following are temporary and the operation may be retried. */
 	XLOG_NOSLAB,       /* Requested slab doesn't exist */

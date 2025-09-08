@@ -551,6 +551,8 @@ void
 slab_itbl_alloc(struct oslab *b, ino_t ino)
 {
 	struct slab_itbl_hdr *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
+	if (!slab_itbl_is_free(b, ino))
+		return;
 	ihdr->bitmap[(ino - b->hdr.v.f.key.base) / 32] |=
 	    (1 << (32 - ino % 32));
 	ihdr->n_free--;
@@ -560,6 +562,8 @@ void
 slab_itbl_dealloc(struct oslab *b, ino_t ino)
 {
 	struct slab_itbl_hdr *ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
+	if (slab_itbl_is_free(b, ino))
+		return;
 	ihdr->bitmap[(ino - b->hdr.v.f.key.base) / 32] &=
 	    ~(1 << (32 - ino % 32));
 	ihdr->n_free++;
@@ -782,6 +786,24 @@ fail:
 }
 
 /*
+ * Loads a slab from our in-memory list or from the backend. If the slab
+ * is not present in-memory, a slab structure is allocated and a claim
+ * is issued to the slab manager (mgr). The following open flags can be set:
+ *
+ *   - OSLAB_NOCREATE: NOENT will be returned if the slab does not already
+ *     exist
+ *   - OSLAB_SYNC: the file will be open with the O_SYNC open(2) flag
+ *   - OSLAB_EPHEMERAL: normally locally cached slabs are evicted in LRU
+ *     fashion; setting this flag will ensure those slabs are always considered
+ *     "unused" and can be evicted first (by setting their use time to epoch)
+ *   - OSLAB_NONBLOCK: return immediately from mgr claim if the slab is
+ *     already locked by another process; this is useful for potatoctl which
+ *     can attempt to claim slabs while the filesystem is mounted to avoid
+ *     blocking the command
+ *   - OSLAB_NOHINT: don't tell the backend to record a preload hint; this
+ *     is useful during things like an fsck to avoid messing up our preload
+ *     hints.
+ *
  * Notable errors from this function are:
  *
  *   XLOG_APP / XLOG_BUSY: timed out trying to acquire slab lock
