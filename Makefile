@@ -1,8 +1,10 @@
 DEPDIR := .deps
 CC := gcc
+VERSION := $(shell git describe --tags --exact-match || \
+	   echo $(shell git describe --abbrev=0)-dev)
 CFLAGS := -Wall -g -DFUSE_USE_VERSION=26 \
 	$(shell pkg-config --cflags fuse uuid libbsd-overlay) \
-	-fstack-protector-strong
+	-fstack-protector-strong -DVERSION=\"$(VERSION)\"
 LDFLAGS := $(shell pkg-config --libs fuse uuid 'jansson >= 2.9' \
 	libbsd-overlay libbsd-ctor sqlite3 zlib) \
 	-Wl,-z,relro -Wl,-z,now
