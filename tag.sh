@@ -44,6 +44,9 @@ echo "$cur => $major.$minor.$patch"
 read -p "Tag it? (y/N) " RESP
 
 if [ "$RESP" = "y" -o "$RESP" = "Y" ]; then
+	sed -i "s/^#define VERSION \".*\"$/#define VERSION \"$major.$minor.$patch\"/" version.h
+	git add version.h
+	git commit -m "$major.$minor.$patch"
 	git tag -m "v$major.$minor.$patch" "$major.$minor.$patch"
 fi
 
