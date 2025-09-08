@@ -14,7 +14,7 @@ potatofs (3.0.0-1) unstable; urgency=medium
   * Made load_dir() more reusable
   * Add a convenience tag script, use tags to determine version
 
- -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 08 Sep 2025 19:00:51 -0400
+ -- Pascal Lalonde <plalonde@overnet.ca>  Mon, 08 Sep 2025 19:30:02 -0400
 
 potatofs (2.12.11-4) unstable; urgency=medium
 
