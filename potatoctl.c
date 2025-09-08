@@ -1295,6 +1295,98 @@ end:
 	return itbl;
 }
 
+static int
+fsck_slab_write(int mgr, struct oslab *b, void *data, size_t data_sz,
+    struct xerr *e)
+{
+	struct mgr_msg  m;
+	ssize_t         r;
+	int             fd;
+	struct slab_hdr hdr;
+	int             status = 0;
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_CLAIM;
+	slab_key(&m.v.claim.key, b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+	m.v.claim.oflags = OSLAB_NOCREATE|OSLAB_EPHEMERAL|OSLAB_NOHINT;
+
+	if (mgr_send(mgr, -1, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (mgr_recv(mgr, &fd, &m, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (m.m == MGR_MSG_CLAIM_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_CLAIM_OK) {
+		XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "mgr_recv: unexpected response: %d", m.m);
+		return XERR_PREPENDFN(e);
+	}
+
+	b->fd = fd;
+
+	/* Keep a copy so we can overwrite what we read */
+	memcpy(&hdr, &b->hdr, sizeof(hdr));
+
+	if (slab_read_hdr(b, e) == -1) {
+		XERR_PREPENDFN(e);
+		goto fail;
+	}
+
+	if (b->hdr.v.f.key.ino != m.v.claim.key.ino ||
+	    b->hdr.v.f.key.base != m.v.claim.key.base) {
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "slab header's ino/base (%lu / %lu) does not match "
+		    "what the slabdb contains (%lu / %lu)",
+		    b->hdr.v.f.key.ino, b->hdr.v.f.key.base,
+		    m.v.claim.key.ino, m.v.claim.key.base);
+		goto fail;
+	}
+
+	if (b->hdr.v.f.slab_version != SLAB_VERSION) {
+		XERRF(e, XLOG_APP, XLOG_IO,
+		    "unrecognized data format version: base=%lu, "
+		    "version=%u", b->hdr.v.f.key.base,
+		    b->hdr.v.f.slab_version);
+		goto fail;
+	}
+
+	if (verify_checksum(b->fd, &b->hdr, e) == -1)
+		goto fail;
+
+	memcpy(&b->hdr, &hdr, sizeof(hdr));
+	if ((r = slab_write_hdr(b, e)) == -1) {
+		XERR_PREPENDFN(e);
+		goto fail;
+	}
+	if (data != NULL &&
+	    ((r = slab_write(b, data, 0, data_sz, e)) < data_sz)) {
+		XERRF(e, XLOG_APP, XLOG_IO, "short write on slab %lu/%lu",
+		    b->hdr.v.f.key.ino, b->hdr.v.f.key.base);
+		goto fail;
+	}
+	goto end;
+fail:
+	status = 1;
+end:
+	m.m = MGR_MSG_UNCLAIM;
+	memcpy(&m.v.unclaim.key, &b->hdr.v.f.key, sizeof(struct slab_key));
+	if (mgr_send(mgr, b->fd, &m, e) != -1 &&
+	    mgr_recv(mgr, NULL, &m, e) != -1 &&
+	    m.m != MGR_MSG_UNCLAIM_OK) {
+		if (m.m == MGR_MSG_UNCLAIM_ERR) {
+			memcpy(e, &m.v.err, sizeof(struct xerr));
+			XERR_PREPENDFN(e);
+		} else
+			XERRF(e, XLOG_APP, XLOG_MGRERROR,
+			    "mgr_recv: unexpected response: %d", m.m);
+	}
+	close(b->fd);
+	return status;
+}
+
 int
 fsck(int argc, char **argv)
 {
@@ -1378,6 +1470,20 @@ fsck(int argc, char **argv)
 			    __func__, b.hdr.v.f.key.base,
 			    ihdr->n_free, n_free);
 			stats.errors++;
+
+			if (fsck_fix) {
+				warnx("%s: fixing invalid n_free in "
+				    "itbl base %lu", __func__,
+				    b.hdr.v.f.key.base);
+				ihdr->n_free = n_free;
+				if (fsck_slab_write(mgr, &b, NULL,
+				    0, xerrz(&e)) == -1) {
+					// TODO: maybe rewrite/rename?
+					warnx("%s: error while writing slab",
+					    __func__);
+					xerr_print(&e);
+				}
+			}
 		}
 		free(itbl);
 	}
