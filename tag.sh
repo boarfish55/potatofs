@@ -10,9 +10,10 @@ cur=${cur#v}
 slab_version=$(egrep "^#define +SLAB_VERSION +[0-9]+" slabs.h | awk '{print $3}')
 slabdb_version=$(egrep "^#define +SLABDB_VERSION +[0-9]+" slabdb.h | awk '{print $3}')
 dirinode_format=$(egrep "^#define +DIRINODE_FORMAT +[0-9]+" dirinodes.h | awk '{print $3}')
+fsinfo_version=$(egrep "^#define +FS_INFO_VERSION +[0-9]+" fs_info.h | awk '{print $3}')
 
-# We subtract 5 to avoid a big version jump since starting to use this script
-major=$(($slab_version + $slabdb_version + $dirinode_format - 5))
+# We subtract 6 to avoid a big version jump since starting to use this script
+major=$(($slab_version + $slabdb_version + $dirinode_format + $fsinfo_version - 6))
 minor=$(echo $cur | cut -d. -f 2)
 patch=$(echo $cur | cut -d. -f 3)
 
