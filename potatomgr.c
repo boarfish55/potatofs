@@ -1480,6 +1480,9 @@ end:
 	uuid_copy(v.owner, instance_id);
 	v.flags |= SLABDB_FLAG_LOCAL;
 
+	// TODO: if we're truncating to zero, don't go through the
+	// trouble of downloading the slab above, just write the empty
+	// on like we do here.
 	if (v.flags & SLABDB_FLAG_TRUNCATE) {
 		if (pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "%s: pread_x");
