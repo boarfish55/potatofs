@@ -630,6 +630,12 @@ func (h *HintsDB) AddHint(ino uint64, base int64) error {
 }
 
 func (h *HintsDB) PreloadSlabs(ino uint64, base int64) error {
+	now := time.Now()
+	defer func() {
+		elapsed := time.Now().Sub(now)
+		logger.Infof("PreloadSlabs: completed in %.6f seconds", elapsed.Seconds())
+	}()
+
 	var preloads []*SlabHint
 	tx, err := h.Db.Begin()
 	if err != nil {
@@ -839,35 +845,85 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		}
 		defer f.Close()
 
+		logger.Infof("s3c.GetObjectWithContext: bucket=%v, backend=%v", config.S3Bucket, msg.Args.BackendName)
 		out, err := s3c.GetObjectWithContext(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(config.S3Bucket),
 			Key:    aws.String(msg.Args.BackendName),
 		})
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok && aerr.Code() == request.CanceledErrorCode {
+				logger.Errf("s3c.GetObjectWithContext: canceled: %v", err)
 				sendErrResponse(c, "ERR", "download canceled for %q: %v", msg.Args.LocalPath, err)
 			} else if reqErr, ok := err.(awserr.RequestFailure); ok && reqErr.StatusCode() == 404 {
+				logger.Errf("s3c.GetObjectWithContext: failed: %v", err)
 				sendErrResponse(c, "ERR_NOSLAB", "download failed for %q: %v", msg.Args.LocalPath, err)
 			} else {
+				logger.Errf("s3c.GetObjectWithContext: failed(unknown): %v", err)
 				sendErrResponse(c, "ERR", "download failed for %q: %v", msg.Args.LocalPath, err)
 			}
 			return
 		}
 
+		// This should never happen, but I don't trust this SDK; see
+		// why below
+		if out == nil {
+			logger.Errf("NewGetStream: failed: S3 output stream is null")
+			sendErrResponse(c, "ERR", "NewGetStream: S3 output stream is null")
+			return
+		}
+		if out.Body == nil {
+			logger.Errf("NewGetStream: failed: S3 output stream body is null")
+			sendErrResponse(c, "ERR", "NewGetStream: S3 output stream body is null")
+			return
+		}
+
 		gs, err := NewGetStream(out.Body)
 		if err != nil {
+			logger.Errf("NewGetStream: failed: %v", err)
 			sendErrResponse(c, "ERR", "NewGetStream: %v", err)
 			return
 		}
 
+		// This should never happen, but I don't trust this SDK; see
+		// why below
+		if gs == nil {
+			logger.Errf("NewGetStream: failed: get stream is null")
+			sendErrResponse(c, "ERR", "NewGetStream: get stream is null")
+			return
+		}
+
 		if _, err := io.Copy(f, gs); err != nil {
+			logger.Errf("io.Copy: failed: %v", err)
 			sendErrResponse(c, "ERR", "io.Copy: %v", err)
 			return
 		}
 
+		// This should never happen, but, troubleshooting...
+		var clen int64
+		if out.ContentLength == nil {
+			// fallback to stat()'ing the file instead; apparently
+			// somtimes ContentLength can be nil. Observed on
+			// CloudFlare.
+			logger.Errf("NewGetStream: failed: out.ContentLength is null")
+			if err := f.Sync(); err != nil {
+				logger.Errf("f.Sync: failed: %v", err)
+				sendErrResponse(c, "ERR", "f.Sync: %v", err)
+				return
+			}
+			if st, err := f.Stat(); err != nil {
+				logger.Errf("f.Stat: failed: %v", err)
+				sendErrResponse(c, "ERR", "f.Stat: %v", err)
+				return
+			} else {
+				clen = st.Size()
+			}
+		} else {
+			clen = *out.ContentLength
+		}
+
 		resp = MgrMsgGetResponse{
 			Status:  "OK",
-			InBytes: *out.ContentLength,
+			InBytes: clen,
 		}
 	case "put":
 		f, err := os.Open(msg.Args.LocalPath)
@@ -907,6 +963,7 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 		}
 	}
 
+	logger.Infof("encoding response to client")
 	enc := json.NewEncoder(c)
 	if err := enc.Encode(resp); err != nil {
 		logger.Errf("Encode: %v", err)
