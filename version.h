@@ -33,7 +33,7 @@
  * (usually bug fix or minor updates that do not alter functionality).
  */
 #ifndef VERSION
-#define VERSION "3.0.1"
+#define VERSION "3.0.2"
 #endif
 
 #endif
