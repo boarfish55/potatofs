@@ -1,3 +1,12 @@
+potatofs (3.0.2-1) unstable; urgency=medium
+
+  * Also track fs_info format in our major version changes
+  * Apparently ContentLength can sometimes be nil on a S3 GetObject(), so
+    fallback to doing a Stat() ourselves when that happens. Observed on
+    Cloudflare. Doesn't seem like the AWS S3 SDK planned for this.
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Fri, 30 Jan 2026 09:37:07 -0500
+
 potatofs (3.0.1-1) unstable; urgency=medium
 
   * Use after free
