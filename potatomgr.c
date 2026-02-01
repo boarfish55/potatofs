@@ -2398,6 +2398,9 @@ worker(int lsock)
 			continue;
 		}
 
+		// TODO: occasional zombie; eventually gets reaped if
+		// the worker gets a new request.
+
 		while (c > -1) {
 			while (waitpid(-1, NULL, WNOHANG) > 0);
 			if (mgr_recv(c, &fd, &m, xerrz(&e)) == -1) {
@@ -2497,6 +2500,7 @@ mgr_start(int workers, int bgworkers)
 	char                pid_line[32];
 	struct passwd      *pw;
 	struct group       *gr;
+	// TODO: use config
 	char               *unpriv_user = MGR_DEFAULT_UNPRIV_USER;
 	char               *unpriv_group = MGR_DEFAULT_UNPRIV_GROUP;
 	int                 lsock, lsock_flags;

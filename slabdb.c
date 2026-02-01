@@ -40,9 +40,8 @@ static int      db_version = 0;
 
 const int   qry_busy_timeout = 15000;
 
-#define TO_STR(x) #x
 const char *qry_create_version_table = "create table if not exists version"
-	        " as select " TO_STR(SLABDB_VERSION) " as version";
+	        " as select %d as version";
 const char *qry_check_version = "select version from version";
 
 const char *qry_create_table = "create table if not exists slabs("
@@ -723,6 +722,7 @@ int
 slabdb_init(uuid_t id, struct xerr *e)
 {
 	char path[PATH_MAX];
+	char vtable_sql[1024];
 	int  r;
 
 	uuid_copy(instance_id, id);
@@ -744,7 +744,14 @@ slabdb_init(uuid_t id, struct xerr *e)
 		goto fail;
 	}
 
-	if ((r = sqlite3_exec(db, qry_create_version_table, NULL, NULL, NULL))) {
+	if (snprintf(vtable_sql, sizeof(vtable_sql), qry_create_version_table,
+	    SLABDB_VERSION) >= sizeof(vtable_sql)) {
+		XERRF(e, XLOG_APP, XLOG_INVAL, "SLABDB_VERSION is too long "
+		    "to fit in buffer");
+		goto fail;
+	}
+
+	if ((r = sqlite3_exec(db, vtable_sql, NULL, NULL, NULL))) {
 		XERRF(e, XLOG_DB, r, "sqlite3_exec: %s", sqlite3_errmsg(db));
 		goto fail;
 	}
