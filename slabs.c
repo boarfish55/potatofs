@@ -819,6 +819,7 @@ slab_load(const struct slab_key *sk, uint32_t oflags, struct xerr *e)
 {
 	struct oslab    *b, needle;
 	struct timespec  t = {1, 0};
+	int              retries = 0;
 
 	if (slab_key_valid(sk, e) == -1) {
 		XERR_PREPENDFN(e);
@@ -831,10 +832,29 @@ error_retry:
 	if ((b = SPLAY_FIND(slab_tree, &owned_slabs.head, &needle)) == NULL) {
 		if (counter_get(COUNTER_N_OPEN_SLABS) >= owned_slabs.max_open) {
 			MTX_UNLOCK(&owned_slabs.lock);
-			xlog(LOG_NOTICE, NULL, "%s: cache full; "
+			xlog(LOG_NOTICE, NULL, "%s: max_open_slabs reached; "
 			    "waiting for purge thread", __func__);
-			nanosleep(&t, NULL);
-			goto error_retry;
+			/*
+			 * This is tricky. We can try looping for a bit but we
+			 * may be in a situation where we cannot unload more
+			 * slabs, for example if they're all actively
+			 * referenced (that is, the purge thread cannot free
+			 * anymore). In this case we don't have much of a
+			 * choice or else we may just deadlock.
+			 * So let's just log a warning after a few tries and
+			 * let us go above our max. We stall for a solid
+			 * minute; it's fine if the user notices that, we
+			 * want them to.
+			 */
+			if (retries < 60) {
+				nanosleep(&t, NULL);
+				retries++;
+				goto error_retry;
+			}
+			xlog(LOG_WARNING, NULL, "%s: max_open_slabs "
+			    "reached, but purge thread still did not "
+			    "free any other slabs; proceeding beyond "
+			    "configured maximum", __func__);
 		}
 
 		if ((b = malloc(sizeof(struct oslab))) == NULL) {
