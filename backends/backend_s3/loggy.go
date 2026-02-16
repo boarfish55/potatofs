@@ -25,6 +25,8 @@ import (
 	"log/syslog"
 )
 
+// TODO: need throttled logging
+
 type Loggy struct {
 	io.Writer
 	s       *syslog.Writer

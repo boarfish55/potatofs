@@ -178,7 +178,7 @@ usage()
 	    "           purge\n"
 	    "           online\n"
 	    "           offline\n"
-	    "           fsck  [verbose]\n"
+	    "           fsck [verbose]\n"
 	    "           claim <inode> <offset> [create]\n"
 	    "           slabdb\n"
 	    "\n"
@@ -729,6 +729,9 @@ fsck_inode(int mgr, ino_t ino, int unallocated, struct inode *inode,
 		stats->n_inodes++;
 
 	if (!(inode->v.f.mode & S_IFDIR))
+		// TODO: *optionally* download all slabs for that inode,
+		// compare the crc, checksum, revision against what we
+		// have in the slabdb.
 		return 0;
 
 	fsck_printf("  inode:   => dir");
@@ -1496,7 +1499,8 @@ fsck(int argc, char **argv)
 	close(mgr);
 
 	if (fsck_verbose)
-		printf("Checking for missing inodes; tables=%d, dirents=%d\n",
+		printf("Checking for missing inodes; table entries=%d, "
+		    "dirent entries=%d\n",
 		    scanned_inodes.count, scanned_dirent_inodes.count);
 
 	for (fino = RB_MIN(scanned_inode_tree, &scanned_inodes.head);

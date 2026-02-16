@@ -27,6 +27,12 @@ data_dir: /var/potatofs/data
 backend: /usr/local/bin/backend.sh
 backend_config: /usr/local/etc/backend.conf
 
+# How many slabs can be open at once in-memory; each requires an open file
+# handle which counts against RLIMIT_NOFILE. Each slab can be up to the max
+# slab size (8MB by default). The cache partition must be at least this amount
+# times the max slab size, otherwise we can get in a deadlock situation.
+max_open_slabs: 1024
+
 # See config.h for explanations
 slab_max_age: 300
 unclaim_purge_threshold_pct: 90
