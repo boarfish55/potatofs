@@ -1,3 +1,15 @@
+potatofs (3.1.0-1) unstable; urgency=medium
+
+  * More sane defaults for backend_s3
+  * Log when we put a slab
+  * Add diagnostic data to logging, fsync slab after writing it to the
+    outgoing dir in case we crash.
+  * Our max_open_slabs is now a soft limit, otherwise we could get into
+    deadlock situations
+  * Show the syslog priority on our log lines; add a bit more diagnostic info
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Sun, 15 Feb 2026 20:04:52 -0500
+
 potatofs (3.0.3-1) unstable; urgency=medium
 
   * Fix version table creation with SLABDB_VERSION as default value
