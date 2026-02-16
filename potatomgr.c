@@ -489,6 +489,8 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 	char            buf[8192];
 	struct slab_hdr dst_hdr;
 	ssize_t         r;
+	size_t          sz;
+	uint32_t        header_crc;
 
 	if (slab_path(name, sizeof(name), sk, 1, e) == -1)
 		return -1;
@@ -519,6 +521,7 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		XERRF(e, XLOG_ERRNO, errno, "lseek");
 		goto fail;
 	}
+	sz = sizeof(struct slab_hdr);
 
 	memcpy(&dst_hdr, hdr, sizeof(struct slab_hdr));
 	dst_hdr.v.f.checksum = crc32_z(0L, Z_NULL, 0);
@@ -545,18 +548,30 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 				XERRF(e, XLOG_ERRNO, errno, "write");
 			goto fail;
 		}
+		sz += r;
 	}
 
 	uuid_copy(dst_hdr.v.f.last_owner, instance_id);
 	dst_hdr.v.f.revision++;
 	dst_hdr.v.f.flags &= ~SLAB_DIRTY;
+	header_crc = crc32_z(0L, (Bytef *)&dst_hdr, sizeof(dst_hdr));
 
 	if (pwrite_x(dst_fd, &dst_hdr, sizeof(dst_hdr), 0) < sizeof(dst_hdr)) {
 		XERRF(e, XLOG_ERRNO, errno, "short write on slab header");
 		goto fail;
 	}
+	if (fsync(dst_fd)) {
+		XERRF(e, XLOG_ERRNO, errno, "fsync: %s", dst);
+		goto fail;
+	}
 	memcpy(hdr, &dst_hdr, sizeof(dst_hdr));
 	CLOSE_X(dst_fd);
+
+	xlog(LOG_INFO, NULL, "ino/base=%lu/%lu (%lu bytes, "
+	    "revision=%u, header_crc=%u, crc=%u)",
+	    __func__, sk->ino, sk->base, sz, dst_hdr.v.f.revision,
+	    header_crc, dst_hdr.v.f.checksum);
+
 	return 0;
 fail:
 	if (unlink(dst) == -1)
@@ -1817,6 +1832,8 @@ bg_flush()
 	int              fd;
 	struct xerr      e;
 	struct slab_key  sk;
+	struct slab_hdr  hdr;
+	uint32_t         header_crc;
 
 	if (snprintf(outgoing_dir, sizeof(outgoing_dir), "%s/%s",
 	    fs_config.data_dir, OUTGOING_DIR) >= sizeof(path)) {
@@ -1860,18 +1877,29 @@ bg_flush()
 			continue;
 		}
 
+		if (pread_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
+			CLOSE_X(fd);
+			xlog(LOG_ERR, NULL,
+			    "%s: short read on slab header: %s",
+			    __func__, path);
+			continue;
+		}
+
+		header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 		out_bytes = 0;
 		if (backend_put(path, basename(path), &out_bytes,
 		    &sk, xerrz(&e)) == -1) {
-			xlog(LOG_ERR, &e, "%s: failed but will retry",
-			    __func__);
+			xlog(LOG_ERR, &e, "%s: failed but will retry: %s",
+			    __func__, path);
 			CLOSE_X(fd);
 			continue;
 		}
 		mgr_counter_add(MGR_COUNTER_BACKEND_OUT_BYTES, out_bytes);
 
-		xlog(LOG_INFO, NULL, "%s: backend_put: %s (%lu bytes)",
-		    __func__, path, out_bytes);
+		xlog(LOG_INFO, NULL, "%s: backend_put: %s (%lu bytes, "
+		    "revision=%u, header_crc=%u, crc=%u)",
+		    __func__, path, out_bytes, hdr.v.f.revision,
+		    header_crc, hdr.v.f.checksum);
 
 		if (unlink(path) == -1)
 			xlog_strerror(LOG_ERR, errno, "%s: unlink %s",
@@ -1948,7 +1976,7 @@ scrub_local_slab(const char *path)
 		 * This slab was unclaimed but not written to outgoing.
 		 * A common reason for this could be a delayed truncation.
 		 */
-		xlog(LOG_INFO, NULL, "%s: slab %s was dirty despite "
+		xlog(LOG_NOTICE, NULL, "%s: slab %s was dirty despite "
 		    "being unclaimed; incrementing revision and sending "
 		    "to outgoing now", __func__, path);
 		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {

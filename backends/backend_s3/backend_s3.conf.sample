@@ -18,7 +18,7 @@ hint_skew_ms = 15000
 # How many hints can be queued for preloading. This is mostly to keep memory
 # usage under control and possibly avoid trying to preload too many things
 # when a large chain of slab hints is triggered.
-hints_preload_queue_size = 10000
+hints_preload_queue_size = 1000
 
 # Maximum number of hints per slab. This is so we keep a cap on the database
 # size and don't trigger more than this many preloads anytime to load a slab.
@@ -26,7 +26,15 @@ hints_preload_queue_size = 10000
 # hints we accept over time. We allow bursting up to 50% of that value, then
 # the token bucket refills at one per
 # hint_slab_max_age_seconds/(max_preload_per_hint/2) second.
-max_preload_per_hint = 100
+#
+# For each slab that this backend has seen, we can estimate the DB will grow
+# by ~128 bytes. This means that, in the worst case where slabs are randomly
+# loaded after any other slab, the DB could reach a size of:
+# Nslabs * 128b * max_preload_per_hint.
+#
+# The database will never shrink on its own. The fixed record size also means
+# vacuuming is unlikely to prove useful.
+max_preload_per_hint = 50
 
 # How many slabs to keep in memory for the purpose of updating their hints.
 # Hints may be updated for this many slabs each time we get a get/hint request.
@@ -37,9 +45,9 @@ hint_slabs_max_open = 50
 
 # How long to keep track of open slabs. As long as a slab is consideredis
 # in-memory, any new coming hint will be added to the "tree" of hints for
-# preloading. This should ideally match the "slab_max_age" configuration
-# directive for the fs.
-hint_slab_max_age_seconds = 300
+# preloading. In other words, preloading will be limited to sequences of slabs
+# that are loaded at this interval, at most.
+hint_slab_max_age_seconds = 120
 
 s3_endpoint = "some.s3.endpoint"
 s3_bucket = "some_bucket"

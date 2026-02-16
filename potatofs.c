@@ -285,7 +285,7 @@ static void
 fs_err(int *reply_sent, fuse_req_t req, const struct xerr *e, const char *fn)
 {
 	fs_error_set();
-	xlog(LOG_ERR, e, fn);
+	xlog(LOG_ERR, e, "%s: %s", __func__, fn);
 	if (!*reply_sent) {
 		check_fuse_reply(fuse_reply_err(req, EIO), fn, __func__);
 		*reply_sent = 1;

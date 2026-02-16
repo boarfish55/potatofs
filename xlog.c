@@ -48,6 +48,31 @@ locale_t            log_locale;
 FILE               *log_file = NULL;
 static int          log_level = LOG_INFO;
 
+static const char *
+prio_to_str(int prio)
+{
+	switch (prio) {
+	case LOG_EMERG:
+		return "EMERG";
+	case LOG_ALERT:
+		return "ALERT";
+	case LOG_CRIT:
+		return "CRIT";
+	case LOG_ERR:
+		return "ERR";
+	case LOG_WARNING:
+		return "WARNING";
+	case LOG_NOTICE:
+		return "NOTICE";
+	case LOG_INFO:
+		return "INFO";
+	case LOG_DEBUG:
+		return "DEBUG";
+	default:
+		return "UNKNOWN";
+	}
+}
+
 struct xerr *
 xerrz(struct xerr *e)
 {
@@ -225,8 +250,8 @@ xlog_dbg(xlog_mask_t module, const char *fmt, ...)
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 
-	syslog(LOG_DEBUG, "[thread=%lu]: %s", pthread_self(), msg);
-	xlog_fprintf("[thread=%lu]: %s", pthread_self(), msg);
+	syslog(LOG_DEBUG, "DBG: [thread=%lu]: %s", pthread_self(), msg);
+	xlog_fprintf("DBG: [thread=%lu]: %s", pthread_self(), msg);
 }
 
 void
@@ -244,8 +269,8 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 			va_start(ap, fmt);
 			vsnprintf(msg, sizeof(msg), fmt, ap);
 			va_end(ap);
-			syslog(priority, "%s", msg);
-			xlog_fprintf("%s", msg);
+			syslog(priority, "%s: %s", prio_to_str(priority), msg);
+			xlog_fprintf("%s: %s", prio_to_str(priority), msg);
 		}
 		return;
 	}
@@ -261,33 +286,38 @@ xlog(int priority, const struct xerr *e, const char *fmt, ...)
 
 	if (e->sp == XLOG_ERRNO && e->code != 0) {
 		if (fmt) {
-			syslog(priority, "[thread=%lu, sp=%d, code=%d]: "
-			    "%s: %s: %s",
+			syslog(priority, "%s: [thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s: %s", prio_to_str(priority),
 			    pthread_self(), e->sp, e->code, msg, e->msg,
 			    strerror_l(e->code, log_locale));
-			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: "
-			    "%s: %s: %s",
+			xlog_fprintf("%s: [thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s: %s", prio_to_str(priority),
 			    pthread_self(), e->sp, e->code, msg, e->msg,
 			    strerror_l(e->code, log_locale));
 		} else {
-			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
-			    pthread_self(), e->sp, e->code, e->msg,
+			syslog(priority, "%s: [thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s", prio_to_str(priority), pthread_self(),
+			    e->sp, e->code, e->msg,
 			    strerror_l(e->code, log_locale));
-			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s: %s",
-			    pthread_self(), e->sp, e->code, e->msg,
-			    strerror_l(e->code, log_locale));
+			xlog_fprintf("%s: [thread=%lu, sp=%d, code=%d]: %s: %s",
+			    prio_to_str(priority), pthread_self(), e->sp,
+			    e->code, e->msg, strerror_l(e->code, log_locale));
 		}
 	} else {
 		if (fmt) {
-			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s: %s",
+			syslog(priority, "%s: [thread=%lu, sp=%d, code=%d]: "
+			    "%s: %s", prio_to_str(priority),
 			    pthread_self(), e->sp, e->code, msg, e->msg);
-			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s: %s",
-			    pthread_self(), e->sp, e->code, msg, e->msg);
+			xlog_fprintf("%s: [thread=%lu, sp=%d, code=%d]: %s: %s",
+			    prio_to_str(priority), pthread_self(), e->sp,
+			    e->code, msg, e->msg);
 		} else {
-			syslog(priority, "[thread=%lu, sp=%d, code=%d]: %s",
-			    pthread_self(), e->sp, e->code, e->msg);
-			xlog_fprintf("[thread=%lu, sp=%d, code=%d]: %s",
-			    pthread_self(), e->sp, e->code, e->msg);
+			syslog(priority, "%s: [thread=%lu, sp=%d, code=%d]: %s",
+			    prio_to_str(priority), pthread_self(),
+			    e->sp, e->code, e->msg);
+			xlog_fprintf("%s: [thread=%lu, sp=%d, code=%d]: %s",
+			    prio_to_str(priority), pthread_self(), e->sp,
+			    e->code, e->msg);
 		}
 	}
 }
@@ -307,8 +337,10 @@ xlog_strerror(int priority, int err, const char *fmt, ...)
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 
-	syslog(priority, "%s: %s", msg, strerror_l(err, log_locale));
-	xlog_fprintf("%s: %s", msg, strerror_l(err, log_locale));
+	syslog(priority, "%s: %s: %s", prio_to_str(priority), msg,
+	    strerror_l(err, log_locale));
+	xlog_fprintf("%s: %s: %s", prio_to_str(priority), msg,
+	    strerror_l(err, log_locale));
 }
 
 void

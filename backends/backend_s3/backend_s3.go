@@ -926,6 +926,7 @@ func handleClient(c net.Conn, s3c *s3.S3, wg *sync.WaitGroup) {
 			InBytes: clen,
 		}
 	case "put":
+		logger.Infof("slab put: inode=%d/base=%d", msg.Args.Inode, msg.Args.Base)
 		f, err := os.Open(msg.Args.LocalPath)
 		if err != nil {
 			sendErrResponse(c, "ERR", "failed to open file: %q, %v", msg.Args.LocalPath, err)

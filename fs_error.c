@@ -16,11 +16,11 @@ fs_error_set()
 	struct xerr     e;
 	struct timespec tp = {1, 0};
 
+	xlog(LOG_CRIT, NULL, "%s: incrementing error counter", __func__);
 	counter_incr(COUNTER_FS_ERROR);
 	LK_WRLOCK(&fs_error.lk);
 	fs_error.error = 1;
 	LK_UNLOCK(&fs_error.lk);
-
 again:
 	if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 		xlog(LOG_ERR, &e, __func__);
