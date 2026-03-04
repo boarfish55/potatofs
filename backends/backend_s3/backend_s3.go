@@ -589,11 +589,11 @@ func (h *HintsDB) AddHint(ino uint64, base int64) error {
 
 				if err := tx.Commit(); err != nil {
 					Rollback(tx)
-					logger.Errf("AddHint: inserting new hint: %v")
+					logger.Errf("AddHint: inserting new hint: %v", err)
 				}
 			} else {
 				Rollback(tx)
-				logger.Errf("AddHint: %v")
+				logger.Errf("AddHint: %v", err)
 			}
 			continue
 		}
