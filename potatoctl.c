@@ -2257,7 +2257,7 @@ again:
 		mvprintw(row++, col2, "%6lu",
 		    mgr_counters_now[MGR_COUNTER_CLAIM_CONTENTION]);
 		mvprintw(row++, col2, "%6lu",
-		    mgr_counters_now[COUNTER_OPEN_FILES]);
+		    counters_now[COUNTER_OPEN_FILES]);
 
 		refresh();
 	}
