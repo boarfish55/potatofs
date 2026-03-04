@@ -1,3 +1,17 @@
+potatofs (3.2.0-1) unstable; urgency=medium
+
+  * Increase soft limit for openfiles since we ran in situations where we
+    couldn't receive new file descriptors from the manager, causing fs errors.
+    Also add a counter to get how many open files we have which could be
+    useful in getting a better estimate.
+  * Fix formats
+  * Don't block on claim when we are opening a slab that's already local. This
+    should avoid so much mgr contention during preloading. Also lower the
+    scrub interval to cleanup clean slabs faster that we failed to purge
+    before.
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Wed, 04 Mar 2026 11:59:46 -0500
+
 potatofs (3.1.0-1) unstable; urgency=medium
 
   * More sane defaults for backend_s3
