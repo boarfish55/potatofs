@@ -20,6 +20,7 @@
 #include <sys/file.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -42,10 +43,16 @@ static pthread_mutex_t counters_shutdown_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *
 counter_flush(void *unused)
 {
-	struct timespec t = {1, 0};
-	int             c, mgr, do_shutdown = 0;
-	struct xerr     e;
-	struct mgr_msg  m;
+	struct timespec  t = {1, 0};
+	int              c, mgr, do_shutdown = 0;
+	struct xerr      e;
+	struct mgr_msg   m;
+	uint64_t         openfiles;
+	DIR             *d;
+	struct dirent   *de;
+	char             fd_dir[PATH_MAX];
+
+	snprintf(fd_dir, sizeof(fd_dir), "/proc/%d/fd", getpid());
 
 	for (;;) {
 		MTX_LOCK(&counters_shutdown_lock);
@@ -54,6 +61,31 @@ counter_flush(void *unused)
 		MTX_UNLOCK(&counters_shutdown_lock);
 		if (do_shutdown)
 			break;
+
+		/*
+		 * Get how many openfiles we have before we connect
+		 * and report all our current counter states.
+		 */
+		openfiles = 0;
+		if ((d = opendir(fd_dir)) == NULL) {
+			xlog_strerror(LOG_ERR, errno, "%s: opendir: %s",
+			    __func__, fd_dir);
+		} else {
+			errno = 0;
+			while ((de = readdir(d)) != NULL) {
+				if (strcmp(de->d_name, ".") == 0 ||
+				    strcmp(de->d_name, "..") == 0)
+					continue;
+				openfiles++;
+			}
+			if (errno != 0) {
+				openfiles = 0;
+				xlog_strerror(LOG_ERR, errno, "%s: readdir",
+				    __func__);
+			}
+			closedir(d);
+			counter_set(COUNTER_OPEN_FILES, openfiles);
+		}
 
 		if ((mgr = mgr_connect(1, xerrz(&e))) == -1) {
 			xlog(LOG_ERR, &e, __func__);
@@ -176,4 +208,13 @@ counter_get(int c)
 	v = counters[c].count;
 	pthread_mutex_unlock(&counters[c].mtx);
 	return v;
+}
+
+void
+counter_set(int c, uint64_t v)
+{
+	if (pthread_mutex_lock(&counters[c].mtx) != 0)
+		xlog(LOG_ERR, NULL, "failed to acquire counter lock");
+	counters[c].count = v;
+	pthread_mutex_unlock(&counters[c].mtx);
 }

@@ -30,7 +30,8 @@ backend_config: /usr/local/etc/backend.conf
 # How many slabs can be open at once in-memory; each requires an open file
 # handle which counts against RLIMIT_NOFILE. Each slab can be up to the max
 # slab size (8MB by default). The cache partition must be at least this amount
-# times the max slab size, otherwise we can get in a deadlock situation.
+# times the max slab size. Though this is a soft limit, going above it should
+# be avoided as much as possible.
 max_open_slabs: 1024
 
 # See config.h for explanations
