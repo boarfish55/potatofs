@@ -439,8 +439,8 @@ slab_configure(rlim_t max_open, time_t max_age, int async, struct xerr *e)
 		return XERRF(e, XLOG_ERRNO, errno,
 		    "failed to get RLIMIT_NOFILE");
 	if (nofile.rlim_cur != RLIM_INFINITY &&
-	    nofile.rlim_cur < owned_slabs.max_open + 100) {
-		nofile.rlim_cur = owned_slabs.max_open + 100;
+	    nofile.rlim_cur < owned_slabs.max_open + 512) {
+		nofile.rlim_cur = owned_slabs.max_open + 512;
 		if (setrlimit(RLIMIT_NOFILE, &nofile) == -1) {
 			return XERRF(e, XLOG_ERRNO, errno,
 			    "could not increase RLIMIT_NOFILE to %lu",

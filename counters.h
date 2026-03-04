@@ -59,6 +59,7 @@ enum {
 	COUNTER_READ_BYTES,
 	COUNTER_WRITE_BYTES,
 	COUNTER_SLOW_MGR_CONNECTS,
+	COUNTER_OPEN_FILES,
 	COUNTER_LAST
 };
 
@@ -86,6 +87,7 @@ void     counter_add(int, uint64_t);
 void     counter_decr(int);
 void     counter_reset(int);
 uint64_t counter_get(int);
+void     counter_set(int, uint64_t);
 int      counter_shutdown(struct xerr *);
 
 #endif

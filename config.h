@@ -43,7 +43,7 @@
 #define MGR_DEFAULT_WORKERS           14
 #define MGR_DEFAULT_BGWORKERS         2
 #define MGR_DEFAULT_PURGER_INTERVAL   30
-#define MGR_DEFAULT_SCRUBBER_INTERVAL 3600
+#define MGR_DEFAULT_SCRUBBER_INTERVAL 1800
 #define MGR_DEFAULT_DF_INTERVAL       60
 
 #define ITBL_DIR      "itbl"
@@ -102,7 +102,11 @@
  */
 #define SLAB_MAX_AGE_DEFAULT    300
 
-/* This should fit in most default ulimits and leave extra room. */
+/*
+ * This should fit in most default ulimits and leave extra room. Note that
+ * this is a soft limit, which we may go over to avoid deadlocks, even if
+ * this poses some risk.
+ */
 #define SLAB_MAX_OPEN_DEFAULT   768
 
 #define FS_PATH_MAX 4096

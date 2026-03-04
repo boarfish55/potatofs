@@ -158,6 +158,9 @@ KNOWN ISSUES
 
 TODO
 ====
+* Limit how many outgoing slabs we can have to make space usage more
+  predictable. Also maybe tune the number of slabs and outgoing slabs
+  based on available space in the partition.
 * Retryable failures are not well tested or even supported in many
   dirinode operations. Need to review the failure path in each of the
   fs_* functions. What may be best is to wrap each such function

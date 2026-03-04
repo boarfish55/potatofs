@@ -1209,26 +1209,6 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	if (slab_key_valid(sk, e) == -1)
 		return XERR_PREPENDFN(e);
 
-	for (;;) {
-		if (statvfs(fs_config.data_dir, &stv) == -1)
-			return XERRF(e, XLOG_APP, XLOG_IO,
-			    "statvfs: %s", strerror(errno));
-
-		if (stv.f_bfree >= stv.f_blocks *
-		    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
-			break;
-
-		/*
-		 * We are tight on space, we should avoid filling the
-		 * partition to prevent the slabdb from breaking.
-		 */
-		xlog(LOG_WARNING, NULL, "%s: free space is below "
-		    "%lu%%, blocking on claim() for sk=%lu/%ld",
-		    __func__, fs_config.unclaim_purge_threshold_pct,
-		    sk->ino, sk->base);
-		sleep(1);
-	}
-
 	/*
 	 * Check existence in DB, if owned by another instance, otherwise
 	 * a new entry will be allocated and returned.
@@ -1390,6 +1370,34 @@ new_slab_again:
 	}
 
 	/*
+	 * We wait this late to check for free space on our cache partition
+	 * because everything before this point didn't actually download
+	 * a new slab, so the 'claim' wouldn't amount to any immediate
+	 * significant space usage. From this point on, we know the slab
+	 * is not local and so we'll need space before we download it.
+	 * If we don't have enough, stall until we purge slabs.
+	 */
+	for (;;) {
+		if (statvfs(fs_config.data_dir, &stv) == -1)
+			return XERRF(e, XLOG_APP, XLOG_IO,
+			    "statvfs: %s", strerror(errno));
+
+		if (stv.f_bfree >= stv.f_blocks *
+		    (100 - fs_config.unclaim_purge_threshold_pct) / 100)
+			break;
+
+		/*
+		 * We are tight on space, we should avoid filling the
+		 * partition to prevent the slabdb from breaking.
+		 */
+		xlog(LOG_WARNING, NULL, "%s: free space is below "
+		    "%lu%%, blocking on claim() for sk=%lu/%ld",
+		    __func__, fs_config.unclaim_purge_threshold_pct,
+		    sk->ino, sk->base);
+		sleep(1);
+	}
+
+	/*
 	 * See if we still have the slab in our outgoing dir to avoid having to
 	 * pull it from the backend.
 	 */
@@ -1497,7 +1505,7 @@ end:
 
 	// TODO: if we're truncating to zero, don't go through the
 	// trouble of downloading the slab above, just write the empty
-	// on like we do here.
+	// one like we do here.
 	if (v.flags & SLABDB_FLAG_TRUNCATE) {
 		if (pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == -1) {
 			XERRF(e, XLOG_ERRNO, errno, "%s: pread_x");
@@ -1974,7 +1982,9 @@ scrub_local_slab(const char *path)
 	if (hdr.v.f.flags & SLAB_DIRTY) {
 		/*
 		 * This slab was unclaimed but not written to outgoing.
-		 * A common reason for this could be a delayed truncation.
+		 * A common reason for this could be a delayed truncation,
+		 * or not enough space to complete the copy to the outgoing
+		 * dir.
 		 */
 		xlog(LOG_NOTICE, NULL, "%s: slab %s was dirty despite "
 		    "being unclaimed; incrementing revision and sending "
