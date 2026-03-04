@@ -1,3 +1,9 @@
+potatofs (3.2.1-1) unstable; urgency=medium
+
+  * Fix counter variable
+
+ -- Pascal Lalonde <plalonde@overnet.ca>  Wed, 04 Mar 2026 12:02:43 -0500
+
 potatofs (3.2.0-1) unstable; urgency=medium
 
   * Increase soft limit for openfiles since we ran in situations where we
