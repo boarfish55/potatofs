@@ -158,6 +158,10 @@ KNOWN ISSUES
 
 TODO
 ====
+* slabs.db backup
+* Dynamically adjust purge_threshold_pct based on how many times we
+  block for claim, then go back up to the configured setting when we
+  don't block after X time. Or the current size of outgoing? Or both?
 * Limit how many outgoing slabs we can have to make space usage more
   predictable. Also maybe tune the number of slabs and outgoing slabs
   based on available space in the partition.
