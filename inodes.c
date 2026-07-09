@@ -49,7 +49,11 @@ static int   async_writes = 0;
 static int
 inode_cmp(struct oinode *i1, struct oinode *i2)
 {
-	return i1->ino.v.f.inode - i2->ino.v.f.inode;
+	if (i1->ino.v.f.inode < i2->ino.v.f.inode)
+		return -1;
+	if (i1->ino.v.f.inode > i2->ino.v.f.inode)
+		return 1;
+	return 0;
 }
 
 SPLAY_PROTOTYPE(ino_tree, oinode, entry, inode_cmp);
