@@ -100,6 +100,13 @@ fs_info_open(struct fs_info *dst_info, struct xerr *e)
 		goto end;
 	}
 
+	if (fs_info.slab_size != fs_config.slab_size) {
+		XERRF(e, XLOG_APP, XLOG_MISMATCH, "requested slab size is %lu, "
+		    "actual slab size is %lu",
+		    fs_config.slab_size, fs_info.slab_size);
+		goto end;
+	}
+
 	if (fs_info.clean != 1)
 		fs_info.error = 1;
 	fs_info.clean = 0;
