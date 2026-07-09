@@ -64,6 +64,7 @@ static int  do_purge(int, char **);
 static int  do_offline(int, char **);
 static int  do_online(int, char **);
 static int  do_wait(int, char **);
+static int  do_mgr(int, char **);
 static void usage();
 static int  load_dir(int, char **, struct inode *, int *, struct xerr *);
 static int  write_dir(int, char *, struct inode *);
@@ -95,6 +96,7 @@ struct subc {
 	{ "offline", &do_offline, 0 },
 	{ "online", &do_online, 0 },
 	{ "wait", &do_wait, 0 },
+	{ "mgr", &do_mgr, 0 },
 	{ "inode_tables", &inode_tables, 0 },
 	{ "fsck", &fsck, 0 },
 	{ "", NULL }
@@ -179,8 +181,9 @@ usage()
 	    "           online\n"
 	    "           offline\n"
 	    "           fsck [verbose]\n"
-	    "           claim <inode> <offset> [create]\n"
+	    "           claim <inode> <offset> [create] [nounclaim]\n"
 	    "           slabdb\n"
+	    "           mgr\n"
 	    "\n"
 	    "\t-h\t\t\tPrints this help\n"
 	    "\t-c <config path>\tPath to the configuration file\n"
@@ -1193,6 +1196,20 @@ do_wait(int argc, char **argv)
 	if (flock(fd, LOCK_EX) == -1)
 		err(1, "flock");
 	close(fd);
+	return 0;
+}
+
+/*
+ * Spawns a standalone mgr and leaves it running, unlike other
+ * subcommands which shut theirs down on completion. Mostly useful
+ * for testing, where mgr-only commands (e.g. scrub, claim) need to
+ * run without a mounted fs.
+ */
+int
+do_mgr(int argc, char **argv)
+{
+	if (mgr_start(fs_config.workers, fs_config.bgworkers) == -1)
+		err(1, "mgr_start");
 	return 0;
 }
 
@@ -2339,7 +2356,8 @@ claim(int argc, char **argv)
 {
 	ino_t          ino;
 	off_t          base;
-	int            mgr, fd;
+	int            mgr, fd, i;
+	int            nounclaim = 0;
 	struct mgr_msg m;
 	struct oslab   b;
 	struct xerr    e;
@@ -2355,9 +2373,13 @@ claim(int argc, char **argv)
 	if ((base = strtoull(argv[1], NULL, 10)) == ULLONG_MAX)
 		errx(1, "base provided is invalid");
 
-	if (argc > 2) {
-		if (strcmp(argv[2], "create") == 0)
+	for (i = 2; i < argc; i++) {
+		if (strcmp(argv[i], "create") == 0)
 			oflags &= ~OSLAB_NOCREATE;
+		else if (strcmp(argv[i], "nounclaim") == 0)
+			nounclaim = 1;
+		else
+			errx(1, "unknown claim argument: %s", argv[i]);
 	}
 
 	if ((mgr = mgr_connect(0, xerrz(&e))) == -1)
@@ -2401,6 +2423,17 @@ claim(int argc, char **argv)
 		goto fail;
 
 	print_slab_hdr(&b.hdr, NULL);
+
+	if (nounclaim) {
+		/*
+		 * Exit without unclaiming, leaving the slab in the same
+		 * state as if the fs had crashed while holding a claim
+		 * on it. Our fd and its flock are released at process
+		 * exit.
+		 */
+		close(mgr);
+		return 0;
+	}
 
 	m.m = MGR_MSG_UNCLAIM;
 	memcpy(&m.v.unclaim.key, &b.hdr.v.f.key, sizeof(struct slab_key));

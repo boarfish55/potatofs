@@ -566,6 +566,8 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	struct fs_config *c = (struct fs_config *)userdata;
 	struct oinode    *oi;
 
+	xlog(LOG_NOTICE, NULL, "max_write=%u, max_readahead=%u",
+	    conn->max_write, conn->max_readahead);
 	xlog(LOG_NOTICE, NULL, "entry timeouts: %u", c->entry_timeouts);
 
 	if (counter_init(xerrz(&e)) == -1)

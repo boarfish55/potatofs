@@ -99,6 +99,10 @@ static void   bg_df();
 static int    bgworker(const char *, void(*)(), int);
 static void   bg_flush();
 static void   scrub_local_slab(const char *path);
+static int    check_slab_integrity_fd(int, const struct slab_key *,
+                  struct xerr *);
+static int    repair_slabdb_lag(int, const struct slab_key *,
+                  struct slab_hdr *, struct slabdb_val *, struct xerr *);
 static int    delayed_truncate(const struct slab_key *,
                   const struct slabdb_val *, void *);
 static void   scrub();
@@ -1041,10 +1045,6 @@ check_slab_header(struct slab_hdr *hdr, uint32_t header_crc, uint64_t rev,
 	uint32_t crc;
 
 	if (hdr->v.f.revision != rev) {
-		/*
-		 * backend doesn't have correct (latest?) version
-		 * of slab. Are we dealing with eventual consistency?
-		 */
 		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
 		    "mismatching slab revision: "
 		    "expected=%lu, slab=%lu", rev, hdr->v.f.revision);
@@ -1364,6 +1364,23 @@ new_slab_again:
 			xlog(LOG_CRIT, NULL,
 			    "%s: possibly dealing with a past fs crash; "
 			    "refetching from backend", __func__);
+		} else if (!(hdr.v.f.flags & SLAB_DIRTY) &&
+		    hdr.v.f.revision == v.revision + 1) {
+			/*
+			 * A clean local slab exactly one revision ahead
+			 * of the slabdb is the aftermath of a crash
+			 * between an unclaim()'s local header update and
+			 * its slabdb_put(). Repair the slabdb rather
+			 * than refetching, which would either roll the
+			 * slab back or fail against the stale entry.
+			 */
+			if (repair_slabdb_lag(*dst_fd, sk, &hdr, &v,
+			    xerrz(e)) == 0)
+				goto end;
+			xlog(LOG_CRIT, e, "%s: slabdb lag repair failed "
+			    "for slab %s; refetching from backend",
+			    __func__, dst);
+			xerrz(e);
 		} else if (v.revision == 0) {
 			/*
 			 * This branch is specifically to handle reopening
@@ -1971,14 +1988,137 @@ fail:
 	closedir(dir);
 }
 
+static int
+check_slab_integrity_fd(int fd, const struct slab_key *sk, struct xerr *e)
+{
+	uint32_t        crc;
+	char            buf[BUFSIZ];
+	struct slab_hdr hdr;
+	ssize_t         r;
+
+	if ((r = pread_x(fd, &hdr, sizeof(hdr), 0)) < sizeof(hdr)) {
+		if (r == -1)
+			return XERRF(e, XLOG_ERRNO, errno,
+			    "short read on slab header");
+		return XERRF(e, XLOG_APP, XLOG_IO,
+		    "short read on slab header; read %d bytes", r);
+	}
+
+	if (hdr.v.f.slab_version != SLAB_VERSION)
+		return XERRF(e, XLOG_APP, XLOG_INVAL,
+		    "unsupported slab version %d", hdr.v.f.slab_version);
+	if (sk->ino != hdr.v.f.key.ino || sk->base != hdr.v.f.key.base)
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
+		    "file name slab key does not match header slab key");
+
+	if (lseek(fd, sizeof(struct slab_hdr), SEEK_SET) == -1)
+		return XERRF(e, XLOG_ERRNO, errno, "lseek fd");
+	crc = crc32_z(0L, Z_NULL, 0);
+
+	while ((r = read_x(fd, buf, sizeof(buf)))) {
+		if (r == -1)
+			return XERRF(e, XLOG_ERRNO, errno, "read_x");
+		crc = crc32_z(crc, (Bytef *)buf, r);
+	}
+
+	if (hdr.v.f.checksum != crc)
+		return XERRF(e, XLOG_APP, XLOG_MISMATCH,
+		    "slab content checksum does not match header checksum");
+
+	return 0;
+}
+
+/*
+ * Repairs the slabdb entry for a clean local slab whose header revision
+ * is exactly one ahead of what the slabdb has, which is the aftermath
+ * of a crash between an unclaim()'s local header update and its
+ * slabdb_put(). The local slab must pass internal validation and, if a
+ * copy is still present in outgoing, both headers must be identical.
+ * An absent outgoing copy is fine; bg_flush may have already sent and
+ * unlinked it.
+ *
+ * On success the new revision and header CRC are saved to the slabdb
+ * with ownership cleared, and v reflects the saved values. Retryable
+ * failures are reported as XLOG_ERRNO; anything in XLOG_APP means the
+ * slab or its outgoing copy failed validation. The caller must be
+ * holding a lock on fd.
+ */
+static int
+repair_slabdb_lag(int fd, const struct slab_key *sk, struct slab_hdr *hdr,
+    struct slabdb_val *v, struct xerr *e)
+{
+	char            out_path[PATH_MAX], name[NAME_MAX + 1];
+	struct slab_hdr out_hdr;
+	int             outgoing_fd;
+	ssize_t         r;
+
+	if (check_slab_integrity_fd(fd, sk, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (slab_path(name, sizeof(name), sk, 1, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (snprintf(out_path, sizeof(out_path), "%s/%s/%s",
+	    fs_config.data_dir, OUTGOING_DIR, name) >= sizeof(out_path))
+		return XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
+		    "outgoing slab name too long: %s", name);
+
+	if ((outgoing_fd = open_wflock(out_path, O_RDONLY, 0,
+	    LOCK_SH, flock_timeout)) == -1 && errno != ENOENT) {
+		/*
+		 * EWOULDBLOCK, EMFILE and the like are retryable; the
+		 * repair can be attempted again on the next claim or
+		 * scrub pass.
+		 */
+		return XERRF(e, XLOG_ERRNO, errno,
+		    "open_wflock: %s", out_path);
+	}
+
+	if (outgoing_fd != -1) {
+		if ((r = pread_x(outgoing_fd, &out_hdr,
+		    sizeof(out_hdr), 0)) < sizeof(out_hdr)) {
+			/*
+			 * Treat an unreadable outgoing copy like an
+			 * absent one, but say something; this could be
+			 * disk trouble.
+			 */
+			if (r == -1)
+				xlog_strerror(LOG_ERR, errno,
+				    "%s: failed reading outgoing slab "
+				    "header", __func__);
+			else
+				xlog(LOG_ERR, NULL, "%s: short read on "
+				    "outgoing slab header", __func__);
+		} else if (memcmp(hdr, &out_hdr, sizeof(out_hdr)) != 0) {
+			CLOSE_X(outgoing_fd);
+			return XERRF(e, XLOG_APP, XLOG_MISMATCH,
+			    "non-dirty slab and its outgoing copy differ");
+		}
+		CLOSE_X(outgoing_fd);
+	}
+
+	v->revision = hdr->v.f.revision;
+	v->header_crc = crc32_z(0L, (Bytef *)hdr, sizeof(struct slab_hdr));
+	uuid_clear(v->owner);
+	if (slabdb_put(sk, v, SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|
+	    SLABDB_PUT_OWNER, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	xlog(LOG_NOTICE, NULL, "%s: slabdb was lagging behind local slab "
+	    "sk=%lu/%ld; repaired to revision %lu", __func__,
+	    sk->ino, sk->base, v->revision);
+
+	return 0;
+}
+
 static void
 scrub_local_slab(const char *path)
 {
-	struct slab_hdr   hdr;
-	int               fd;
-	struct slab_key   sk;
-	struct slabdb_val v;
-	struct xerr       e = XLOG_ERR_INITIALIZER;
+	struct slab_hdr    hdr;
+	int                fd;
+	struct slab_key    sk;
+	struct slabdb_val  v;
+	struct xerr        e = XLOG_ERR_INITIALIZER;
 
 	if (slab_parse_path(path, &sk, &e) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
@@ -2022,20 +2162,23 @@ scrub_local_slab(const char *path)
 		goto end;
 	}
 
-	if (check_slab_header(&hdr, v.header_crc, v.revision, &e) != 0) {
-		if (hdr.v.f.revision == 0) {
-			xlog(LOG_ERR, NULL, "%s: slab %s has revision 0, "
-			    "meaning it was never unclaimed yet did not have "
-			    "a lock on it. Are we dealing with a slab from a "
-			    "previous fs crash?", __func__, path);
-			return;
-		}
-		xlog(LOG_CRIT, &e, "%s: %s", __func__, path);
-		set_fs_error();
-		goto end;
-	}
-
 	if (hdr.v.f.flags & SLAB_DIRTY) {
+		/*
+		 * If the slab has a mismatching CRC from the slab DB and
+		 * is at revision zero, this probably means the fs crashed
+		 * before having had a chance to unclaim a fresh slab.
+		 * Keep it, and send it to outgoing.
+		 *
+		 * Otherwise something's wrong.
+		 */
+		if (hdr.v.f.revision > 0 &&
+		    check_slab_header(&hdr, v.header_crc,
+		    v.revision, &e) != 0) {
+			xlog(LOG_CRIT, &e, "%s: %s", __func__, path);
+			set_fs_error();
+			goto end;
+		}
+
 		/*
 		 * This slab was unclaimed but not written to outgoing.
 		 * A common reason for this could be a delayed truncation,
@@ -2071,6 +2214,50 @@ scrub_local_slab(const char *path)
 		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
 		    &e) == -1) {
 			xlog(LOG_CRIT, &e, __func__);
+			set_fs_error();
+			goto end;
+		}
+	} else if (check_slab_header(&hdr, v.header_crc, v.revision, &e) != 0) {
+		/*
+		 * Slab is not dirty AND has the wrong CRC/revision.
+		 */
+		if (hdr.v.f.revision < v.revision) {
+			/*
+			 * In a distributed world, we can have a local slab
+			 * out-of-date if we didn't own it for some time.
+			 * Remove it.
+			 */
+			v.flags &= ~SLABDB_FLAG_LOCAL;
+			if (slabdb_put(&sk, &v, SLABDB_PUT_LOCAL, &e) == -1) {
+				xlog(LOG_CRIT, &e, __func__);
+				set_fs_error();
+				goto end;
+			}
+			unlink(path);
+			goto end;
+		} else if (hdr.v.f.revision == v.revision + 1) {
+			/*
+			 * We may have crashed after updating our local
+			 * header but before being able to update the
+			 * slabdb; see repair_slabdb_lag(). Retryable
+			 * failures are left for the next scrub pass.
+			 */
+			if (repair_slabdb_lag(fd, &sk, &hdr, &v,
+			    xerrz(&e)) == -1) {
+				if (e.sp == XLOG_ERRNO) {
+					xlog(LOG_WARNING, &e, __func__);
+				} else {
+					xlog(LOG_CRIT, &e, "%s: %s",
+					    __func__, path);
+					set_fs_error();
+				}
+			}
+			goto end;
+		} else {
+			/*
+			 * Anything else is dubious so fail-safe.
+			 */
+			xlog(LOG_CRIT, &e, "%s: %s", __func__, path);
 			set_fs_error();
 			goto end;
 		}
