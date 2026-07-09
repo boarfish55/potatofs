@@ -1229,9 +1229,9 @@ inode_splice_begin_read(struct inode_splice_bufvec *si,
 			 * the file size in our slab, most likely as a result
 			 * of fallocate().
 			 */
-			si->v[si->nv].count = (count > slab_get_max_size())
-			    ? slab_get_max_size()
-			    : count;
+			si->v[si->nv].count = MIN(count,
+			    slab_get_max_size() -
+			    (offset % slab_get_max_size()));
 			si->v[si->nv].rel_offset = 0;
 			si->v[si->nv].buf = slab_zeroes;
 			si->v[si->nv].fd = -1;

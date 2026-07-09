@@ -855,7 +855,7 @@ again:
 
 		counter_add(COUNTER_READ_BYTES, fuse_buf_size(bv));
 
-		if (fs_config.noatime) {
+		if (!fs_config.noatime) {
 			inode_lock(oi, LK_LOCK_RW);
 			fs_set_time(oi, INODE_ATTR_ATIME);
 			if (inode_flush(oi, 0, xerrz(&e)) == -1) {
@@ -1735,7 +1735,7 @@ again:
 	link[offset] = '\0';
 	inode_unlock(oi);
 
-	if (fs_config.noatime) {
+	if (!fs_config.noatime) {
 		inode_lock(oi, LK_LOCK_RW);
 		fs_set_time(oi, INODE_ATTR_ATIME);
 		if (inode_flush(oi, 0, xerrz(&e)) == -1)

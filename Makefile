@@ -24,6 +24,16 @@ TESTSRCS = potatofs_tests.c slabs.c inodes.c dirinodes.c openfiles.c xlog.c \
 	util.c fs_error.c fs_info.c counters.c mgr.c config.c slabdb.c
 TESTOBJS = $(TESTSRCS:.c=.o)
 
+BUGTESTSRCS = potatofs_bug_tests.c slabs.c inodes.c dirinodes.c openfiles.c \
+	xlog.c util.c fs_error.c fs_info.c counters.c mgr.c config.c slabdb.c
+BUGTESTOBJS = $(BUGTESTSRCS:.c=.o)
+
+# Objects linked with potatofs_unit_tests.c, which #includes inodes.c
+# (for the static inode_cmp) and is linked against a shift-sanitized
+# slabs.o so the itbl bitmap UB traps.
+UNITOBJS = dirinodes.o openfiles.o xlog.o util.o fs_error.o fs_info.o \
+	counters.o mgr.o config.o slabdb.o
+
 all: potatofs potatoctl potatofs_tests
 	GOCACHE=/tmp/.go_cache make -C backends/backend_s3
 
@@ -41,6 +51,27 @@ potatofs_tests: $(TESTOBJS)
 tests: potatofs_tests
 	./potatofs_tests.sh
 
+potatofs_bug_tests: $(BUGTESTOBJS)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatofs_bug_tests \
+		$(BUGTESTOBJS) $(LDFLAGS)
+
+potatofs_dirinodes_tests: potatofs_dirinodes_tests.c dirinodes.o xlog.o
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -o potatofs_dirinodes_tests \
+		potatofs_dirinodes_tests.c dirinodes.o xlog.o $(LDFLAGS)
+
+slabs_ubsan.o: slabs.c
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -fsanitize=shift \
+		-fno-sanitize-recover=shift -c slabs.c -o slabs_ubsan.o
+
+potatofs_unit_tests: potatofs_unit_tests.c inodes.c slabs_ubsan.o $(UNITOBJS)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -fsanitize=shift \
+		-fno-sanitize-recover=shift -o potatofs_unit_tests \
+		potatofs_unit_tests.c slabs_ubsan.o $(UNITOBJS) $(LDFLAGS)
+
+bug_tests: potatofs potatoctl potatofs_bug_tests potatofs_dirinodes_tests \
+	potatofs_unit_tests
+	./potatofs_bug_tests.sh
+
 .c.o:
 	@mkdir -p $(DEPDIR)
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS) -c $<
@@ -48,7 +79,9 @@ tests: potatofs_tests
 .PHONY: clean
 
 clean:
-	rm -f *.o potatofs potatoctl potatofs_tests $(DEPDIR)/* *.gcda *.gcno *.gcov
+	rm -f *.o potatofs potatoctl potatofs_tests potatofs_bug_tests \
+		potatofs_dirinodes_tests potatofs_unit_tests \
+		$(DEPDIR)/* *.gcda *.gcno *.gcov
 	test -d $(DEPDIR) && rmdir $(DEPDIR) || true
 
 -include $(DEPDIR)/*

@@ -1292,9 +1292,7 @@ slab_splice_fd(struct oslab *b, off_t offset, size_t count,
 	struct xerr e = XLOG_ERR_INITIALIZER;
 
 	*rel_offset = offset % slab_get_max_size();
-	*b_count = (count > slab_get_max_size() - *rel_offset)
-	    ? slab_get_max_size() - *rel_offset
-	    : count;
+	*b_count = MIN(count, slab_get_max_size() - *rel_offset);
 	*fd = b->fd;
 	*rel_offset += sizeof(b->hdr);
 	if (write_fd && slab_set_dirty_hdr(b, &e) == -1) {
