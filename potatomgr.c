@@ -54,6 +54,7 @@ struct mgr_shared {
 	uint64_t counters[COUNTER_LAST];
 	uint64_t mgr_counters[MGR_COUNTER_LAST];
 	int      shutdown_requested;
+	int      attached;
 	int      offline;
 };
 
@@ -92,7 +93,7 @@ static int    copy_incoming_slab(int, int, uint32_t, uint64_t, struct xerr *);
 static int    claim(struct slab_key *, int *, uint32_t, struct xerr *);
 static int    client_claim(int, struct mgr_msg *, struct xerr *);
 static int    claim_next_itbls(int, struct mgr_msg *, struct xerr *);
-static int    set_shutdown_requested(time_t);
+static int    set_shutdown_requested(time_t, int);
 static int    do_shutdown(int, struct mgr_msg *, struct xerr *);
 static int    info(int, struct mgr_msg *, struct xerr *);
 static void   bg_df();
@@ -1707,7 +1708,7 @@ fail:
 }
 
 static int
-set_shutdown_requested(time_t grace_period)
+set_shutdown_requested(time_t grace_period, int fs_detach)
 {
 	struct timespec now;
 
@@ -1716,23 +1717,65 @@ set_shutdown_requested(time_t grace_period)
 	} else {
 		clock_gettime_x(CLOCK_REALTIME, &now);
 		mgr_shared->shutdown_requested = now.tv_sec + grace_period;
+		if (fs_detach)
+			mgr_shared->attached = 0;
 		mgr_shared_unlock();
 	}
 	return 0;
 }
 
 static int
+fs_attached()
+{
+	/*
+	 * Default to attached if we can't claim the lock so callers
+	 * don't assume the fs is clean.
+	 */
+	int attached = 1;
+
+	if (mgr_shared_lock() == -1) {
+		xlog_strerror(LOG_ERR, errno, "mgr_shared_lock");
+	} else {
+		attached = mgr_shared->attached;
+		mgr_shared_unlock();
+	}
+
+	return attached;
+}
+
+static int
+do_fs_attach(int c, struct mgr_msg *m, struct xerr *e)
+{
+	if (fs_info_read(&m->v.fs_attach.fs_info, e) == -1) {
+		xlog(LOG_ERR, e, __func__);
+		memcpy(&m->v.err, e, sizeof(struct xerr));
+		m->m = MGR_MSG_FS_ATTACH_ERR;
+	} else if (mgr_shared_lock() == -1) {
+		XERRF(&m->v.err, XLOG_ERRNO, errno, "mgr_shared_lock");
+		m->m = MGR_MSG_FS_ATTACH_ERR;
+	} else {
+		m->m = MGR_MSG_FS_ATTACH_OK;
+		mgr_shared->attached = 1;
+		mgr_shared_unlock();
+	}
+
+	if (mgr_send(c, -1, m, xerrz(e)) == -1)
+		return -1;
+	return 0;
+}
+
+static int
 do_shutdown(int c, struct mgr_msg *m, struct xerr *e)
 {
-	if (set_shutdown_requested(m->v.shutdown.grace_period) == -1) {
+	if (set_shutdown_requested(m->v.shutdown.grace_period,
+	    m->v.shutdown.fs_detach) == -1) {
 		XERRF(&m->v.err, XLOG_ERRNO, errno, "set_shutdown_requested");
 		m->m = MGR_MSG_SHUTDOWN_ERR;
 	} else {
 		m->m = MGR_MSG_SHUTDOWN_OK;
+		xlog(LOG_NOTICE, NULL, "shutdown requested; grace period %lu",
+		    m->v.shutdown.grace_period);
 	}
-
-	xlog(LOG_NOTICE, NULL, "shutdown requested; grace period %lu",
-	    m->v.shutdown.grace_period);
 
 	if (mgr_send(c, -1, m, xerrz(e)) == -1)
 		return -1;
@@ -1854,7 +1897,7 @@ bgworker(const char *name, void(*fn)(), int interval_secs)
 
 	if ((pid = fork()) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
-		set_shutdown_requested(0);
+		set_shutdown_requested(0, 0);
 		return -1;
 	} else if (pid > 0)
 		return 0;
@@ -2619,7 +2662,7 @@ worker(int lsock)
 
 	if ((pid = fork()) == -1) {
 		xlog_strerror(LOG_ERR, errno, "%s: fork", __func__);
-		set_shutdown_requested(0);
+		set_shutdown_requested(0, 0);
 		return -1;
 	} else if (pid > 0)
 		return 0;
@@ -2709,6 +2752,9 @@ worker(int lsock)
 				break;
 			case MGR_MSG_INFO:
 				info(c, &m, xerrz(&e));
+				break;
+			case MGR_MSG_FS_ATTACH:
+				do_fs_attach(c, &m, xerrz(&e));
 				break;
 			case MGR_MSG_SHUTDOWN:
 				do_shutdown(c, &m, xerrz(&e));
@@ -2895,16 +2941,16 @@ mgr_start(int workers, int bgworkers)
 		_exit(1);
 	}
 
-	xlog(LOG_INFO, NULL, "%s: cache size is %llu bytes (%lu slabs)",
-	    __func__, stv.f_blocks * stv.f_frsize,
-	    stv.f_blocks * stv.f_frsize /
-	    (fs_config.slab_size + sizeof(struct slab_hdr)));
-
 	if (fs_info_open(&fs_info, xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
 		_exit(1);
 	}
 	uuid_copy(instance_id, fs_info.instance_id);
+
+	xlog(LOG_INFO, NULL, "%s: cache size is %llu bytes (%lu slabs)",
+	    __func__, stv.f_blocks * stv.f_frsize,
+	    stv.f_blocks * stv.f_frsize /
+	    (fs_config.slab_size + sizeof(struct slab_hdr)));
 
 	if (slab_make_dirs(xerrz(&e)) == -1) {
 		xlog(LOG_ERR, &e, "%s", __func__);
@@ -3022,7 +3068,7 @@ mgr_start(int workers, int bgworkers)
 		xlog(LOG_CRIT, &e, "%s", __func__);
 		_exit(1);
 	} else {
-		if (fs_info.error == 0)
+		if (fs_info.error == 0 && !fs_attached())
 			fs_info.clean = 1;
 
 		if (fs_info_write(&fs_info, &e) == -1) {

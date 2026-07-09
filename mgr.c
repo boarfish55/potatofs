@@ -185,8 +185,8 @@ again:
 	return 0;
 }
 
-int
-mgr_send_shutdown(time_t grace_period, struct xerr *e)
+static int
+mgr_send_shutdown_detach(time_t grace_period, int fs_detach, struct xerr *e)
 {
 	int            mgr;
 	struct mgr_msg m;
@@ -197,6 +197,7 @@ mgr_send_shutdown(time_t grace_period, struct xerr *e)
 	bzero(&m, sizeof(m));
 	m.m = MGR_MSG_SHUTDOWN;
 	m.v.shutdown.grace_period = grace_period;
+	m.v.shutdown.fs_detach = fs_detach;
 
 	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
 		CLOSE_X(mgr);
@@ -219,6 +220,18 @@ mgr_send_shutdown(time_t grace_period, struct xerr *e)
 	}
 
 	return 0;
+}
+
+int
+mgr_fs_detach(time_t grace_period, struct xerr *e)
+{
+	return mgr_send_shutdown_detach(grace_period, 1, e);
+}
+
+int
+mgr_send_shutdown(time_t grace_period, struct xerr *e)
+{
+	return mgr_send_shutdown_detach(grace_period, 0, e);
 }
 
 int
@@ -252,5 +265,39 @@ mgr_fs_info(int retry, struct fs_info *fs_info, struct xerr *e)
 		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
 	}
 	memcpy(fs_info, &m.v.info.fs_info, sizeof(struct fs_info));
+	return 0;
+}
+
+int
+mgr_fs_attach(struct fs_info *fs_info, struct xerr *e)
+{
+	int            mgr;
+	struct mgr_msg m;
+
+	if ((mgr = mgr_connect(1, xerrz(e))) == -1)
+		return XERR_PREPENDFN(e);
+
+	bzero(&m, sizeof(m));
+	m.m = MGR_MSG_FS_ATTACH;
+	if (mgr_send(mgr, -1, &m, xerrz(e)) == -1) {
+		CLOSE_X(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	if (mgr_recv(mgr, NULL, &m, xerrz(e)) == -1) {
+		CLOSE_X(mgr);
+		return XERR_PREPENDFN(e);
+	}
+
+	CLOSE_X(mgr);
+
+	if (m.m == MGR_MSG_FS_ATTACH_ERR) {
+		memcpy(e, &m.v.err, sizeof(struct xerr));
+		return XERR_PREPENDFN(e);
+	} else if (m.m != MGR_MSG_FS_ATTACH_OK) {
+		return XERRF(e, XLOG_APP, XLOG_MGRERROR,
+		    "%s: mgr_recv: unexpected response: %d", __func__, m.m);
+	}
+	memcpy(fs_info, &m.v.fs_attach.fs_info, sizeof(struct fs_info));
 	return 0;
 }

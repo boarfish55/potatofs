@@ -51,6 +51,10 @@ struct mgr_msg {
 		MGR_MSG_INFO_OK,
 		MGR_MSG_INFO_ERR,
 
+		MGR_MSG_FS_ATTACH,
+		MGR_MSG_FS_ATTACH_OK,
+		MGR_MSG_FS_ATTACH_ERR,
+
 		MGR_MSG_SHUTDOWN,
 		MGR_MSG_SHUTDOWN_OK,
 		MGR_MSG_SHUTDOWN_ERR,
@@ -132,7 +136,12 @@ struct mgr_msg {
 		} get_offline;
 
 		struct {
+			struct fs_info fs_info;
+		} fs_attach;
+
+		struct {
 			time_t grace_period;
+			int    fs_detach;
 		} shutdown;
 
 		struct xerr err;
@@ -147,5 +156,7 @@ int  mgr_send(int, int, struct mgr_msg *, struct xerr *);
 /* Helpers */
 int  mgr_send_shutdown(time_t, struct xerr *);
 int  mgr_fs_info(int, struct fs_info *, struct xerr *);
+int  mgr_fs_attach(struct fs_info *, struct xerr *);
+int  mgr_fs_detach(time_t, struct xerr *);
 
 #endif

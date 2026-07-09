@@ -668,17 +668,19 @@ test_parent_mtime_after_mknod()
 struct test_status *
 test_atime()
 {
-	char        *p = makepath("atime");
-	struct stat  st;
-	int          fd;
-	char         buf[1];
+	char            *p = makepath("atime");
+	int              fd;
+	char             buf[1];
+	struct timespec  tp;
 
-	if (mknod(p, 0640, 0) == -1)
+	if ((fd = open(p, O_CREAT|O_WRONLY, 0640)) == -1)
 		return ERR("", errno);
-	if (stat(p, &st) == -1)
+	if (write(fd, "x", 1) == -1)
 		return ERR("", errno);
+	close(fd);
 
 	xnanosleep();
+	clock_gettime_x(CLOCK_REALTIME, &tp);
 
 	if ((fd = open(p, O_RDONLY)) == -1)
 		return ERR("", errno);
@@ -686,7 +688,7 @@ test_atime()
 		return ERR("", errno);
 	close(fd);
 
-	return check_utime_gte(p, &st.st_atim, ST_ATIME);
+	return check_utime_gte(p, &tp, ST_ATIME);
 }
 
 struct test_status *

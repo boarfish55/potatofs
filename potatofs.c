@@ -552,7 +552,7 @@ fs_destroy(void *unused)
 	LK_UNLOCK(&fs_tree_lock);
 
 	xlog(LOG_INFO, NULL, "sending shutdown to potatomgr");
-	if (mgr_send_shutdown(fs_config.shutdown_grace_period, xerrz(&e)) == -1)
+	if (mgr_fs_detach(fs_config.shutdown_grace_period, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 
 	wait_for_mgr_shutdown();
@@ -728,7 +728,7 @@ again:
 		}
 	}
 end:
-	if (fs_config.noatime) {
+	if (!fs_config.noatime) {
 		inode_lock(oi, LK_LOCK_RW);
 		fs_set_time(oi, INODE_ATTR_ATIME);
 		if (inode_flush(oi, 0, xerrz(&e)) == -1)
@@ -2297,15 +2297,16 @@ fs_rename(fuse_req_t req, fuse_ino_t oldparent, const char *oldname,
 int
 main(int argc, char **argv)
 {
-	struct fuse_args  args = FUSE_ARGS_INIT(argc, argv);
-	struct fuse_chan *ch;
-	char             *mountpoint;
-	int               st = -1;
-	struct sigaction  act;
-	int               foreground;
-	int               multithreaded;
-	struct fs_info    fs_info;
-	struct xerr       e;
+	struct fuse_args     args = FUSE_ARGS_INIT(argc, argv);
+	struct fuse_chan    *ch;
+	char                *mountpoint;
+	int                  st = -1;
+	struct sigaction     act;
+	int                  foreground;
+	int                  multithreaded;
+	struct fs_info       fs_info;
+	struct xerr          e;
+	struct fuse_session *se;
 
 	if (getenv("POTATOFS_CONFIG"))
 		fs_config.cfg_path = getenv("POTATOFS_CONFIG");
@@ -2343,7 +2344,7 @@ main(int argc, char **argv)
 	    &multithreaded, &foreground) == -1)
 		goto kill_mgr;
 
-	if (mgr_fs_info(1, &fs_info, xerrz(&e)) == -1) {
+	if (mgr_fs_attach(&fs_info, xerrz(&e)) == -1) {
 		xerr_print(&e);
 		goto kill_mgr;
 	}
@@ -2352,32 +2353,44 @@ main(int argc, char **argv)
 		goto kill_mgr;
 	}
 
-	if ((ch = fuse_mount(mountpoint, &args)) != NULL) {
-		struct fuse_session *se;
+	if ((ch = fuse_mount(mountpoint, &args)) == NULL)
+		goto kill_mgr;
 
-		se = fuse_lowlevel_new(&args, &fs_ops,
-		    sizeof(fs_ops), &fs_config);
-		if (se != NULL) {
-			if (fuse_set_signal_handlers(se) != -1) {
-				fuse_session_add_chan(se, ch);
-				if (fuse_daemonize(foreground) == 0) {
-					if (multithreaded)
-						st = fuse_session_loop_mt(se);
-					else
-						st = fuse_session_loop(se);
-				}
-				fuse_remove_signal_handlers(se);
-				fuse_session_remove_chan(ch);
-			}
-			fuse_session_destroy(se);
-		}
-		fuse_unmount(mountpoint, ch);
-	}
+	if ((se = fuse_lowlevel_new(&args, &fs_ops,
+	    sizeof(fs_ops), &fs_config)) == NULL)
+		goto unmount;
+
+	if (fuse_set_signal_handlers(se) == -1)
+		goto destroy_session;
+
+	fuse_session_add_chan(se, ch);
+
+	if (fuse_daemonize(foreground) == -1)
+		goto remove_chan;
+
+	if (multithreaded)
+		st = fuse_session_loop_mt(se);
+	else
+		st = fuse_session_loop(se);
+
+	fuse_remove_signal_handlers(se);
+	fuse_session_remove_chan(ch);
+	fuse_session_destroy(se);
+	fuse_unmount(mountpoint, ch);
+
 	fuse_opt_free_args(&args);
 
 	return st ? 1 : 0;
+
+remove_chan:
+	fuse_remove_signal_handlers(se);
+	fuse_session_remove_chan(ch);
+destroy_session:
+	fuse_session_destroy(se);
+unmount:
+	fuse_unmount(mountpoint, ch);
 kill_mgr:
-	if (mgr_send_shutdown(0, xerrz(&e)) == -1)
+	if (mgr_fs_detach(0, xerrz(&e)) == -1)
 		xlog(LOG_ERR, &e, __func__);
 	return 1;
 }
