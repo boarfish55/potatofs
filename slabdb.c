@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <uuid/uuid.h>
+#include <zlib.h>
 #include "slabdb.h"
 
 /*
@@ -389,8 +390,10 @@ int
 slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
     struct xerr *e)
 {
-	char        u[37];
-	struct xerr e2;
+	char                  u[37];
+	struct xerr           e2;
+	struct slab_hdr       hdr;
+	struct slab_itbl_hdr *ihdr;
 
 	if (slabdb_begin_txn(e) == -1)
 		return -1;
@@ -400,10 +403,26 @@ slabdb_get(const struct slab_key *sk, struct slabdb_val *v, uint32_t oflags,
 		    (oflags & OSLAB_NOCREATE))
 			goto fail;
 
+		/*
+		 * Create a throwaway header just so we can compute
+		 * the CRC for an empty fresh slab.
+		 */
+		bzero(&hdr, sizeof(hdr));
+		hdr.v.f.slab_version = SLAB_VERSION;
+		memcpy(&hdr.v.f.key, sk, sizeof(struct slab_key));
+		hdr.v.f.flags = SLAB_DIRTY;
+		hdr.v.f.revision = 0;
+		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
+		if (sk->ino == 0) {
+			ihdr = (struct slab_itbl_hdr *)hdr.v.padding.data;
+			ihdr->initialized = 1;
+			ihdr->n_free = slab_inode_max();
+		}
+
 		xerrz(e);
 		bzero(v, sizeof(struct slabdb_val));
 		v->revision = 0;
-		v->header_crc = 0L;
+		v->header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
 		v->flags = 0;
 		v->truncate_offset = 0;
 		uuid_copy(v->owner, instance_id);

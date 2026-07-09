@@ -42,6 +42,8 @@ fs_info_open(struct fs_info *dst_info, struct xerr *e)
 	char           path[PATH_MAX];
 	struct fs_info fs_info;
 
+	xerrz(e);
+
 	if (fs_config.slab_size < SLAB_SIZE_FLOOR ||
 	    fs_config.slab_size > SLAB_SIZE_CEIL ||
 	    (fs_config.slab_size & (fs_config.slab_size - 1)) != 0)
@@ -124,6 +126,8 @@ fs_info_read(struct fs_info *fs_info, struct xerr *e)
 	ssize_t r;
 	char    path[PATH_MAX];
 
+	xerrz(e);
+
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {
 		XERRF(e, XLOG_APP, XLOG_NAMETOOLONG,
@@ -166,6 +170,8 @@ fs_info_write(const struct fs_info *fs_info, struct xerr *e)
 	int            fd = -1;
 	ssize_t        r;
 	char           path[PATH_MAX];
+
+	xerrz(e);
 
 	if (snprintf(path, sizeof(path), "%s/%s", fs_config.data_dir,
 	    potatofs_stat_path) >= sizeof(path)) {

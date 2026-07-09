@@ -1194,17 +1194,20 @@ copy_again:
 static int
 claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 {
-	char              name[NAME_MAX + 1];
-	char              in_path[PATH_MAX], out_path[PATH_MAX], dst[PATH_MAX];
-	int               fd_flags = O_RDWR|O_CREAT|O_CLOEXEC;
-	int               incoming_fd, outgoing_fd;
-	size_t            in_bytes;
-	struct slab_hdr   hdr;
-	struct stat       st;
-	struct statvfs    stv;
-	struct slabdb_val v;
-	struct fs_info    fs_info;
-	pid_t             pid;
+	char                  name[NAME_MAX + 1];
+	char                  in_path[PATH_MAX], out_path[PATH_MAX];
+	char                  dst[PATH_MAX];
+	int                   fd_flags = O_RDWR|O_CREAT|O_CLOEXEC;
+	int                   incoming_fd, outgoing_fd;
+	size_t                in_bytes;
+	struct slab_hdr       hdr;
+	struct slab_itbl_hdr *ihdr;
+	struct stat           st;
+	struct statvfs        stv;
+	struct slabdb_val     v;
+	struct fs_info        fs_info;
+	pid_t                 pid;
+	ssize_t               r;
 
 	if (slab_key_valid(sk, e) == -1)
 		return XERR_PREPENDFN(e);
@@ -1220,6 +1223,11 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	 * TODO: compare owners; need to reach consensus about who really
 	 * owns this slab. If the owner is another instance, we'll need
 	 * to relay bytes instead. For now, we just fail.
+	 *
+	 * We can never steal ownership because, especially for itbls,
+	 * there could be local writes that are not yet on the backend.
+	 * Stealing the slab would drop all those changes. Probably
+	 * the only alternative would be a distributed metadata journal.
 	 */
 	if (uuid_compare(v.owner, instance_id) != 0)
 		return XERRF(e, XLOG_APP, XLOG_IO,
@@ -1282,8 +1290,19 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 		return -1;
 	}
 
+	if (fstat(*dst_fd, &st) == -1) {
+		XERRF(e, XLOG_ERRNO, errno, "fstat");
+		goto fail_close_dst;
+	}
+
 new_slab_again:
-	if (v.revision == 0) {
+	/*
+	 * Slab DB says this is new and never had a full header or data
+	 * written to it (we could have crashed while writing the header).
+	 *
+	 * If we do have enough for a header, don't wipe the slab.
+	 */
+	if (v.revision == 0 && st.st_size < sizeof(hdr)) {
 		if (fs_info_read(&fs_info, e) == -1) {
 			XERR_PREPENDFN(e);
 			goto fail_close_dst;
@@ -1296,9 +1315,6 @@ new_slab_again:
 		}
 
 		/*
-		 * If revision is zero, we're dealing with a brand new slab that
-		 * the fs did not have a change to unclaim yet. This _could_ be
-		 * due to an fs process crash.
 		 * The entry is already in the slabdb, no need to slabdb_put()
 		 * here.
 		 */
@@ -1308,6 +1324,13 @@ new_slab_again:
 		hdr.v.f.flags = SLAB_DIRTY;
 		hdr.v.f.revision = 0;
 		hdr.v.f.checksum = crc32(0L, Z_NULL, 0);
+
+		if (sk->ino == 0) {
+			ihdr = (struct slab_itbl_hdr *)hdr.v.padding.data;
+			ihdr->initialized = 1;
+			ihdr->n_free = slab_inode_max();
+		}
+
 		if (write_x(*dst_fd, &hdr, sizeof(hdr)) < sizeof(hdr)) {
 			if (errno == ENOSPC) {
 				xlog(LOG_ERR, NULL,
@@ -1332,41 +1355,67 @@ new_slab_again:
 		goto end;
 	}
 
-	if (fstat(*dst_fd, &st) == -1) {
-		XERRF(e, XLOG_ERRNO, errno, "fstat");
-		goto fail_close_dst;
-	}
-
-	if (st.st_size >= sizeof(hdr) &&
-	    pread_x(*dst_fd, &hdr, sizeof(hdr), 0) == sizeof(hdr)) {
-		/*
-		 * This is the most common case, where a slab was previously
-		 * claimed and is still present in our local disk cache.
-		 * The header CRC/revision check may be superfluous, but
-		 * until we are confident we can remove it, we will keep it
-		 * as an extra sanity check.
-		 */
-		if (check_slab_header(&hdr, v.header_crc, v.revision, e) == 0) {
-			if (!(oflags & OSLAB_NOHINT)) {
-				if ((pid = fork()) == -1) {
-					XERRF(e, XLOG_ERRNO, errno, "fork");
-					goto fail_close_dst;
-				} else if (pid == 0) {
-					CLOSE_X(*dst_fd);
-					backend_hint(sk);
-				}
-			}
-			goto end;
-		} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
+	if (st.st_size >= sizeof(hdr)) {
+		if ((r = pread_x(*dst_fd, &hdr, sizeof(hdr), 0)) == -1) {
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "%s: failed to read slab header", __func__);
 			goto fail_close_dst;
+		} else if (r < sizeof(hdr)) {
+			xlog(LOG_CRIT, NULL,
+			    "%s: possibly dealing with a past fs crash; "
+			    "refetching from backend", __func__);
+		} else if (v.revision == 0) {
+			/*
+			 * This branch is specifically to handle reopening
+			 * newly created slabs after a crash, for slabs that
+			 * were never unclaimed yet. We validate the fields
+			 * we can but not the CRC against the contents of
+			 * the slabdb.
+			 */
+			if (hdr.v.f.slab_version == SLAB_VERSION &&
+			    hdr.v.f.revision == 0 &&
+			    memcmp(&hdr.v.f.key, sk,
+			    sizeof(struct slab_key)) == 0)
+				goto end;
 
-		/*
-		 * Wrong rev/header_crc is fine, just proceed with retrieving.
-		 * This could mean we're dealing with a previous fs crash.
-		 */
-		xlog(LOG_CRIT, e,
-		    "%s: possibly dealing with a past fs crash", __func__);
-		xerrz(e);
+			XERRF(e, XLOG_APP, XLOG_IO,
+			    "slab at revision 0 has mismatching data in "
+			    "header; unrecoverable");
+			goto fail_close_dst;
+		} else {
+			/*
+			 * This is probably the most common case, where a slab
+			 * was previously claimed and is still present in our
+			 * local disk cache. The header CRC/revision check may
+			 * be superfluous, but until we are confident we can
+			 * remove it, we will keep it as an extra sanity check.
+			 */
+			if (check_slab_header(&hdr, v.header_crc,
+			    v.revision, e) == 0) {
+				if (!(oflags & OSLAB_NOHINT)) {
+					if ((pid = fork()) == -1) {
+						XERRF(e, XLOG_ERRNO, errno,
+						    "fork");
+						goto fail_close_dst;
+					} else if (pid == 0) {
+						CLOSE_X(*dst_fd);
+						backend_hint(sk);
+					}
+				}
+				goto end;
+			} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
+				goto fail_close_dst;
+
+			/*
+			 * Wrong rev/header_crc is fine, just proceed with
+			 * retrieving.  This could mean we're dealing with a
+			 * previous fs crash.
+			 */
+			xlog(LOG_CRIT, NULL,
+			    "%s: wrong revision/header_crc; "
+			    "refetching from backend", __func__);
+			xerrz(e);
+		}
 	}
 
 	/*
@@ -1949,9 +1998,16 @@ scrub_local_slab(const char *path)
 
 	if (slabdb_get(&sk, &v, OSLAB_NOCREATE, &e) == -1) {
 		if (xerr_is(&e, XLOG_APP, XLOG_NOSLAB)) {
-			xlog(LOG_ERR, NULL, "%s: slab %s not found in db; "
-			    "unlinking", __func__, path);
-			unlink(path);
+			xlog(LOG_ERR, NULL, "%s: slab %s not found in db",
+			    __func__, path);
+			/*
+			 * Don't unlink. That slab might be our only
+			 * way to recover data if somehow we lost a DB row.
+			 * We should quarantine it.
+			 */
+			// TODO: Only unlink if the file is completely zeroed,
+			// just as if it had just been created.
+			set_fs_error();
 			goto end;
 		}
 		xlog(LOG_ERR, &e, "%s", __func__);

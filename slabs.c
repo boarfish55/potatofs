@@ -484,6 +484,7 @@ slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 {
 	struct oslab         *b;
 	struct slab_itbl_hdr *ihdr;
+	struct xerr           e2;
 
 	if ((b = slab_load(sk, (async_writes) ? 0 : OSLAB_SYNC, e)) == NULL) {
 		XERR_PREPENDFN(e);
@@ -492,11 +493,13 @@ slab_load_itbl(const struct slab_key *sk, struct xerr *e)
 
 	ihdr = (struct slab_itbl_hdr *)slab_hdr_data(b);
 
-	LK_LOCK(&b->lock, LK_LOCK_RW);
+	LK_LOCK(&b->lock, LK_LOCK_RD);
 	if (ihdr->initialized == 0) {
-		ihdr->initialized = 1;
-		bzero(ihdr->bitmap, sizeof(ihdr->bitmap));
-		ihdr->n_free = slab_inode_max();
+		LK_UNLOCK(&b->lock);
+		if (slab_forget(b, &e2) == -1)
+			xlog(LOG_NOTICE, &e2, __func__);
+		XERRF(e, XLOG_APP, XLOG_IO, "inode table not initialized");
+		return NULL;
 	}
 	LK_UNLOCK(&b->lock);
 
