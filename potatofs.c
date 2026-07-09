@@ -937,6 +937,9 @@ again:
 	 * protected by the inode lock, yet.
 	 */
 	if ((w = fuse_buf_copy(bv, bufv, FUSE_BUF_FORCE_SPLICE)) < 0) {
+		if (inode_splice_end_write(&si, 0, xerrz(&e)) == -1)
+			FS_ERR(&r_sent, req, &e);
+		free(bv);
 		inode_unlock(oi);
 		FUSE_REPLY(&r_sent, fuse_reply_err(req, -w));
 		return;
