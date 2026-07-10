@@ -78,7 +78,7 @@ static int    snd_counters(int, struct mgr_msg *, struct xerr *);
 static int    rcv_counters(int, struct mgr_msg *, struct xerr *);
 static int    mgr_spawn(char *const[], int *, char *, size_t, char *, size_t,
 		  char *, size_t, int, struct xerr *);
-static int    copy_outgoing_slab(int, struct slab_key *,
+static int    copy_outgoing_slab(int, const struct slab_key *,
                   struct slab_hdr *, struct xerr *);
 static int    unclaim(int, struct mgr_msg *, int, struct xerr *);
 static int    truncate_slab(int, struct mgr_msg *, struct xerr *);
@@ -486,7 +486,7 @@ mgr_spawn(char *const argv[], int *wstatus, char *stdin, size_t stdin_len,
  * Modifies the checksum and flags fields in 'hdr'.
  */
 static int
-copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
+copy_outgoing_slab(int fd, const struct slab_key *sk, struct slab_hdr *hdr,
     struct xerr *e)
 {
 	int             dst_fd;
@@ -556,7 +556,10 @@ copy_outgoing_slab(int fd, struct slab_key *sk, struct slab_hdr *hdr,
 		sz += r;
 	}
 
+	// TODO: not sure this belongs here. This should be set somewhere
+	// around where we make the slab dirty.
 	uuid_copy(dst_hdr.v.f.last_owner, instance_id);
+
 	dst_hdr.v.f.revision++;
 	dst_hdr.v.f.flags &= ~SLAB_DIRTY;
 	header_crc = crc32_z(0L, (Bytef *)&dst_hdr, sizeof(dst_hdr));
@@ -583,6 +586,29 @@ fail:
 		xlog_strerror(LOG_ERR, errno, "%s: unlink dst", __func__);
 	CLOSE_X(dst_fd);
 	return -1;
+}
+
+static int
+recover_dirty_slab(int fd, const struct slab_key *sk,
+    struct slab_hdr *hdr, struct slabdb_val *v, struct xerr *e)
+{
+	if (copy_outgoing_slab(fd, sk, hdr, e) == -1)
+		return XERR_PREPENDFN(e);
+
+	if (pwrite_x(fd, hdr, sizeof(struct slab_hdr), 0)
+	    < sizeof(struct slab_hdr))
+		return XERRF(e, XLOG_ERRNO, errno,
+		    "%s: short write on slab header", __func__);
+
+	v->revision = hdr->v.f.revision;
+	v->header_crc = crc32_z(0L, (Bytef *)hdr, sizeof(struct slab_hdr));
+	uuid_clear(v->owner);
+	if (slabdb_put(sk, v,
+	    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
+	    e) == -1)
+		return XERR_PREPENDFN(e);
+
+	return 0;
 }
 
 static int
@@ -1209,6 +1235,7 @@ claim(struct slab_key *sk, int *dst_fd, uint32_t oflags, struct xerr *e)
 	struct fs_info        fs_info;
 	pid_t                 pid;
 	ssize_t               r;
+	int                   do_hint = 0;
 
 	if (slab_key_valid(sk, e) == -1)
 		return XERR_PREPENDFN(e);
@@ -1410,24 +1437,33 @@ new_slab_again:
 			 */
 			if (check_slab_header(&hdr, v.header_crc,
 			    v.revision, e) == 0) {
-				if (!(oflags & OSLAB_NOHINT)) {
-					if ((pid = fork()) == -1) {
-						XERRF(e, XLOG_ERRNO, errno,
-						    "fork");
-						goto fail_close_dst;
-					} else if (pid == 0) {
-						CLOSE_X(*dst_fd);
-						backend_hint(sk);
-					}
-				}
+				do_hint = 1;
 				goto end;
 			} else if (!xerr_is(e, XLOG_APP, XLOG_MISMATCH))
 				goto fail_close_dst;
 
+			if (hdr.v.f.flags & SLAB_DIRTY &&
+			    hdr.v.f.revision == v.revision) {
+				/*
+				 * Revisions match, but CRC doesn't because
+				 * we had bytes written and we're dirty.
+				 *
+				 * Either we couldn't copy the slab to
+				 * outgoing, or we had an fs crash while a slab
+				 * was claimed and flagged dirty.
+				 *
+				 * We need to recover it.
+				 */
+				if (recover_dirty_slab(*dst_fd, sk, &hdr,
+				    &v, xerrz(e)) == -1)
+					xlog(LOG_WARNING, e, __func__);
+				do_hint = 1;
+				goto end;
+			}
+
 			/*
-			 * Wrong rev/header_crc is fine, just proceed with
-			 * retrieving.  This could mean we're dealing with a
-			 * previous fs crash.
+			 * At this point, attempt a refetch. We've tried
+			 * all we can locally.
 			 */
 			xlog(LOG_CRIT, NULL,
 			    "%s: wrong revision/header_crc; "
@@ -1480,15 +1516,7 @@ new_slab_again:
 		if (copy_incoming_slab(*dst_fd, outgoing_fd, v.header_crc,
 		    v.revision, xerrz(e)) == 0) {
 			CLOSE_X(outgoing_fd);
-			if (!(oflags & OSLAB_NOHINT)) {
-				if ((pid = fork()) == -1) {
-					XERRF(e, XLOG_ERRNO, errno, "fork");
-					goto fail_close_dst;
-				} else if (pid == 0) {
-					CLOSE_X(*dst_fd);
-					backend_hint(sk);
-				}
-			}
+			do_hint = 1;
 			goto end;
 		}
 		xlog(LOG_WARNING, e, "%s: fetching slab %s from backend even "
@@ -1559,6 +1587,16 @@ get_again:
 	unlink(in_path);
 	CLOSE_X(incoming_fd);
 end:
+	if (do_hint && !(oflags & OSLAB_NOHINT)) {
+		if ((pid = fork()) == -1) {
+			xlog_strerror(LOG_ERR, errno,
+			    "%s: fork backend_hint", __func__);
+		} else if (pid == 0) {
+			CLOSE_X(*dst_fd);
+			backend_hint(sk);
+		}
+	}
+
 	if (!(oflags & OSLAB_EPHEMERAL)) {
 		/*
 		 * We don't update last_claimed for "ephemeral" slabs,
@@ -2206,32 +2244,25 @@ scrub_local_slab(const char *path)
 	}
 
 	if (hdr.v.f.flags & SLAB_DIRTY) {
-		/*
-		 * If the slab has a mismatching CRC from the slab DB and
-		 * is at revision zero, this probably means the fs crashed
-		 * before having had a chance to unclaim a fresh slab.
-		 * Keep it, and send it to outgoing.
-		 *
-		 * Otherwise something's wrong.
-		 */
-		if (hdr.v.f.revision > 0 &&
-		    check_slab_header(&hdr, v.header_crc,
-		    v.revision, &e) != 0) {
+		if (check_slab_header(&hdr, v.header_crc,
+		    v.revision, &e) != 0 &&
+		    v.revision != hdr.v.f.revision) {
 			xlog(LOG_CRIT, &e, "%s: %s", __func__, path);
 			set_fs_error();
 			goto end;
 		}
 
 		/*
-		 * This slab was unclaimed but not written to outgoing.
-		 * A common reason for this could be a delayed truncation,
-		 * or not enough space to complete the copy to the outgoing
-		 * dir.
+		 * CRC is wrong but revision matches.  We're recovering a slab
+		 * that was made dirty and unclaimed (forcefully?) without
+		 * being sent to outgoing. Recover it.
 		 */
+
 		xlog(LOG_NOTICE, NULL, "%s: slab %s was dirty despite "
 		    "being unclaimed; incrementing revision and sending "
 		    "to outgoing now", __func__, path);
-		if (copy_outgoing_slab(fd, &sk, &hdr, &e) == -1) {
+
+		if (recover_dirty_slab(fd, &sk, &hdr, &v, xerrz(&e)) == -1) {
 			if (xerr_is(&e, XLOG_APP, XLOG_BUSY) ||
 			    xerr_is(&e, XLOG_ERRNO, ENOSPC)) {
 				xlog(LOG_WARNING, &e, __func__);
@@ -2239,24 +2270,6 @@ scrub_local_slab(const char *path)
 				goto end;
 			}
 			xlog(LOG_ERR, &e, __func__);
-			set_fs_error();
-			goto end;
-		}
-
-		if (pwrite_x(fd, &hdr, sizeof(hdr), 0) < sizeof(hdr)) {
-			xlog_strerror(LOG_ERR, errno,
-			    "%s: short write on slab header", __func__);
-			set_fs_error();
-			goto end;
-		}
-
-		v.revision = hdr.v.f.revision;
-		v.header_crc = crc32_z(0L, (Bytef *)&hdr, sizeof(hdr));
-		uuid_clear(v.owner);
-		if (slabdb_put(&sk, &v,
-		    SLABDB_PUT_REVISION|SLABDB_PUT_HEADER_CRC|SLABDB_PUT_OWNER,
-		    &e) == -1) {
-			xlog(LOG_CRIT, &e, __func__);
 			set_fs_error();
 			goto end;
 		}
