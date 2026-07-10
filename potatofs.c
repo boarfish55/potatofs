@@ -577,7 +577,7 @@ fs_init(void *userdata, struct fuse_conn_info *conn)
 	    c->async, xerrz(&e)) == -1)
 		goto fail;
 
-	if (inode_startup(c->async, &e) == -1)
+	if (inode_startup(c->async, conn->max_write, &e) == -1)
 		goto fail;
 
 	xlog(LOG_NOTICE, NULL, "noatime is %s", (c->noatime) ? "set" : "unset");
@@ -2328,6 +2328,7 @@ main(int argc, char **argv)
 	fuse_opt_add_arg(&args, "-osplice_write");
 	fuse_opt_add_arg(&args, "-osplice_move");
 	fuse_opt_add_arg(&args, "-osplice_read");
+	fuse_opt_add_arg(&args, "-omax_write=1048576");
 
 	config_read();
 

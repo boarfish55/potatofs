@@ -43,8 +43,9 @@ static struct oinodes {
         PTHREAD_MUTEX_INITIALIZER
 };
 
-static char *slab_zeroes;
-static int   async_writes = 0;
+static char      *slab_zeroes;
+static int        async_writes = 0;
+static blksize_t  blksize = FS_BLOCK_SIZE;
 
 static int
 inode_cmp(struct oinode *i1, struct oinode *i2)
@@ -170,12 +171,14 @@ alloc_inode(ino_t *inode, struct xerr *e)
 }
 
 int
-inode_startup(int async, struct xerr *e)
+inode_startup(int async, blksize_t max_write, struct xerr *e)
 {
 	async_writes = async;
 	if ((slab_zeroes = calloc(slab_get_max_size(), 1)) == NULL)
 		return XERRF(e, XLOG_ERRNO, errno,
 		    "calloc: failed to allocate zeroes");
+
+	blksize = MIN(max_write, 1 << 20);  /* Up to 1 MB */
 	return 0;
 }
 
@@ -326,7 +329,7 @@ inode_cp_stat(struct stat *dst, const struct inode *ino)
 	dst->st_nlink = ino->v.f.nlink;
 	dst->st_uid = ino->v.f.uid;
 	dst->st_gid = ino->v.f.gid;
-	dst->st_blksize = FS_BLOCK_SIZE;
+	dst->st_blksize = blksize;
 
 	dst->st_size = ino->v.f.size;
 	dst->st_blocks = ino->v.f.blocks;
