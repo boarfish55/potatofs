@@ -1572,6 +1572,7 @@ fs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 	struct oinode           *oi = NULL, *parent_oi;
 	struct fuse_entry_param  entry;
 	int                      r_sent = 0;
+	int                      set_time = 0;
 
 	bzero(&new_de, sizeof(new_de));
 
@@ -1625,16 +1626,19 @@ again:
 	entry.generation = oi->ino.v.f.generation;
 	entry.attr_timeout = fs_config.entry_timeouts;
 	entry.entry_timeout = fs_config.entry_timeouts;
+
+	if (di_mkdirent(parent_oi, &new_de, 0, xerrz(&e)) == -1) {
+		if (e.sp == XLOG_FS)
+			FUSE_REPLY(&r_sent, fuse_reply_err(req, e.code));
+		else
+			FS_ERR(&r_sent, req, &e);
+		goto end;
+	}
 	inode_nlookup(oi, 1);
 	inode_nlink(oi, 1);
 	fs_set_time(oi, INODE_ATTR_CTIME);
 	inode_stat(oi, &entry.attr);
-
-	if (di_mkdirent(parent_oi, &new_de, 0, xerrz(&e)) == -1) {
-		FS_ERR(&r_sent, req, &e);
-		inode_nlink(oi, -1);
-		inode_nlookup(oi, -1);
-	}
+	set_time = 1;
 	if (inode_flush(oi, 0, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);
 end:
@@ -1644,7 +1648,8 @@ end:
 			FS_ERR(&r_sent, req, &e);
 	}
 
-	fs_set_time(parent_oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
+	if (set_time)
+		fs_set_time(parent_oi, INODE_ATTR_MTIME|INODE_ATTR_CTIME);
 	inode_unlock(parent_oi);
 	if (inode_unload(parent_oi, xerrz(&e)) == -1)
 		FS_ERR(&r_sent, req, &e);

@@ -296,13 +296,14 @@ int
 open_wflock(const char *path, int flags, mode_t mode, int lk,
     uint32_t wait_seconds)
 {
-	int             fd = -1, retries;
+	int             fd = -1;
+	uint64_t        retries;
 	struct timespec tp = {0, 1000000}, req, rem;  /* 1ms */
 
 	if (wait_seconds > 0)
 		lk |= LOCK_NB;
 
-	for (retries = (wait_seconds * 10000000000) / tp.tv_nsec;
+	for (retries = (wait_seconds * 1000000000ULL) / tp.tv_nsec;
 	    retries > 0 || !wait_seconds; retries--) {
 		if (flags & O_CREAT) {
 			if ((fd = open(path, flags, mode)) == -1)
